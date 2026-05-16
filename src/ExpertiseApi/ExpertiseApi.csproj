@@ -25,6 +25,15 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <!--
+      Service-host integration. Both packages are no-ops outside their host
+      environment (SystemdHelpers.IsSystemdService / WindowsServiceHelpers.IsWindowsService),
+      so Docker / Helm / `dotnet run` paths are unaffected. See README §
+      "Archetype A2: native OS service install" for the install scripts that
+      depend on these.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
     <PackageReference Include="Microsoft.SemanticKernel.Connectors.Onnx" Version="1.74.0-alpha" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1" />
     <PackageReference Include="Pgvector.EntityFrameworkCore" Version="0.3.0" />

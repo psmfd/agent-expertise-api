@@ -21,6 +21,15 @@ Log.Logger = new LoggerConfiguration()
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Service-host integration. Both calls are no-ops when the corresponding host
+// environment is absent, so Docker / Helm / `dotnet run` paths remain unchanged.
+// Enables the Archetype A2 install scripts under scripts/ (systemd `--user`
+// unit on Linux, launchd LaunchAgent on macOS, Windows Service on Windows) to
+// integrate with the .NET host's lifecycle (Type=notify on systemd, SCM
+// signals on Windows). See README § "Archetype A2: native OS service".
+builder.Host.UseSystemd();
+builder.Host.UseWindowsService(options => options.ServiceName = "ExpertiseApi");
+
 builder.Host.UseSerilog((context, services, config) =>
     config.ReadFrom.Configuration(context.Configuration)
           .ReadFrom.Services(services));

@@ -135,6 +135,19 @@ AI agents (Claude Code, GitHub Copilot) consume this API via HTTP with a bearer 
 
 All endpoints except `/health`, `/query`, and `/metrics` require `Authorization: Bearer <token>`.
 
+## Native OS service install (Archetype A2)
+
+For a solo developer who wants the API as a persistent OS service rather
+than `docker compose up`, see `scripts/install.sh` (macOS + Linux + WSL),
+`scripts/install.ps1` (Windows), and the README's "Archetype A2" section.
+
+The API host wires `builder.Host.UseSystemd().UseWindowsService(...)` in
+`Program.cs` immediately after `WebApplication.CreateBuilder(args)`. Both
+calls are no-ops outside their host environment, so Docker / Helm /
+`dotnet run` paths remain identical.
+
+Daily-use control: `scripts/expertise-apictl {start|stop|restart|status|logs|health}`.
+
 ## Authentication
 
 `Auth:Mode` config switch governs which authentication scheme(s) are accepted:

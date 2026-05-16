@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# expertise-apictl — daily-use service control wrapper for agent-expertise-api.
+#
+# Hides per-OS service-manager differences (systemctl --user, launchctl,
+# sc.exe via WSL interop). Installed by scripts/install.sh; symlink it into
+# your PATH manually if you want a global command.
+#
+# Usage:
+#   expertise-apictl start|stop|restart|status
+#   expertise-apictl logs [-f] [-n LINES]
+#   expertise-apictl health
+#   expertise-apictl --help
+#
+
+set -euo pipefail
+
+SERVICE="expertise-api"
+LABEL="com.thesemicolon.expertise-api"
+HEALTH_URL="${EXPERTISE_API_URL:-http://127.0.0.1:8080}/health"
+
+log() { printf '[expertise-apictl] %s\n' "$1"; }
+err() { printf '[expertise-apictl] ERROR: %s\n' "$1" >&2; exit 1; }
+
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+
+detect_os() {
+  case "$(uname -s)" in
+    Darwin) echo macos ;;
+    Linux)
+      if grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null && command -v sc.exe >/dev/null 2>&1; then
+        echo wsl_to_windows
+      else
+        echo linux
+      fi ;;
+    *) err "unsupported OS: $(uname -s) — use expertise-apictl.ps1 on Windows" ;;
+  esac
+}
+
+OS="$(detect_os)"
+
+cmd_start() {
+  case "${OS}" in
+    linux)          systemctl --user start "${SERVICE}.service" ;;
+    macos)          launchctl kickstart "gui/$(id -u)/${LABEL}" ;;
+    wsl_to_windows) sc.exe start "${SERVICE}" ;;
+  esac
+}
+
+cmd_stop() {
+  case "${OS}" in
+    linux)          systemctl --user stop "${SERVICE}.service" ;;
+    macos)          launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true ;;
+    wsl_to_windows) sc.exe stop "${SERVICE}" ;;
+  esac
+}
+
+cmd_restart() { cmd_stop; sleep 1; cmd_start; }
+
+cmd_status() {
+  case "${OS}" in
+    linux)
+      systemctl --user status --no-pager "${SERVICE}.service" || true ;;
+    macos)
+      if launchctl print "gui/$(id -u)/${LABEL}" 2>/dev/null \
+          | awk '/^[[:space:]]*(state|pid|last exit code|program) =/ {print}'; then
+        :
+      else
+        err "service not loaded — run scripts/install.sh"
+      fi ;;
+    wsl_to_windows)
+      sc.exe query "${SERVICE}" ;;
+  esac
+}
+
+cmd_logs() {
+  local follow=0 lines=200
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--follow) follow=1; shift ;;
+      -n|--lines)  lines="${2:?}"; shift 2 ;;
+      *) err "unknown logs flag: $1" ;;
+    esac
+  done
+  case "${OS}" in
+    linux)
+      if (( follow == 1 )); then
+        journalctl --user -u "${SERVICE}.service" -n "${lines}" -f
+      else
+        journalctl --user -u "${SERVICE}.service" -n "${lines}" --no-pager
+      fi ;;
+    macos)
+      local logfile="${HOME}/Library/Logs/expertise-api/stdout.log"
+      [[ -f "${logfile}" ]] || err "no log file at ${logfile}"
+      if (( follow == 1 )); then
+        tail -n "${lines}" -f "${logfile}"
+      else
+        tail -n "${lines}" "${logfile}"
+      fi ;;
+    wsl_to_windows)
+      powershell.exe -NoProfile -Command \
+        "Get-WinEvent -ProviderName '${SERVICE}' -MaxEvents ${lines} | Format-List" ;;
+  esac
+}
+
+cmd_health() {
+  command -v curl >/dev/null 2>&1 || err "curl not found"
+  if curl -fsS --max-time 5 "${HEALTH_URL}"; then
+    printf '\n'
+    log "health: OK"
+  else
+    err "health check failed against ${HEALTH_URL}"
+  fi
+}
+
+case "${1:-}" in
+  start)      shift; cmd_start "$@" ;;
+  stop)       shift; cmd_stop "$@" ;;
+  restart)    shift; cmd_restart "$@" ;;
+  status)     shift; cmd_status "$@" ;;
+  logs)       shift; cmd_logs "$@" ;;
+  health)     shift; cmd_health "$@" ;;
+  ''|-h|--help) usage ;;
+  *) err "unknown subcommand: $1 (try --help)" ;;
+esac
