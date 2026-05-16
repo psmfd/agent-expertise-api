@@ -125,18 +125,23 @@ if (metricsEnabled)
     app.UseHttpMetrics();
 app.UseSerilogRequestLogging();
 
-app.UseStaticFiles();
-
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
-}
 
-app.MapGet("/query", (IWebHostEnvironment env) =>
-        Results.File(Path.Combine(env.WebRootPath, "query.html"), "text/html"))
-    .AllowAnonymous()
-    .ExcludeFromDescription();
+    // Static-file serving and the /query debug UI are Development-only because
+    // wwwroot/query.html stores the bearer token in localStorage, making it
+    // exfiltratable via any same-origin XSS (issue #124). wwwroot/ currently
+    // contains only query.html; if other static assets are added later they
+    // should live outside wwwroot/ or this gate must be revisited.
+    app.UseStaticFiles();
+
+    app.MapGet("/query", (IWebHostEnvironment env) =>
+            Results.File(Path.Combine(env.WebRootPath, "query.html"), "text/html"))
+        .AllowAnonymous()
+        .ExcludeFromDescription();
+}
 
 app.UseAuthentication();
 app.UseAuthorization();
