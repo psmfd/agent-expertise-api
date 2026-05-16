@@ -5,6 +5,35 @@
   "type": "object",
   "additionalProperties": true,
   "required": ["image", "auth", "postgres"],
+  "$defs": {
+    "k8sQuantity": {
+      "type": "string",
+      "pattern": "^[+]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+|[munpkMGTPE]i?|[munpkMGTPE]?)?$",
+      "description": "Kubernetes resource quantity (e.g. 100m, 256Mi, 1.5, 500Mi)."
+    },
+    "k8sResources": {
+      "type": "object",
+      "properties": {
+        "requests": {
+          "type": "object",
+          "properties": {
+            "cpu":    { "$ref": "#/$defs/k8sQuantity" },
+            "memory": { "$ref": "#/$defs/k8sQuantity" }
+          },
+          "additionalProperties": false
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "cpu":    { "$ref": "#/$defs/k8sQuantity" },
+            "memory": { "$ref": "#/$defs/k8sQuantity" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
   "properties": {
     "replicaCount": {
       "type": "integer",
@@ -117,7 +146,10 @@
     "api": {
       "type": "object",
       "properties": {
-        "resources": { "type": "object" }
+        "resources": {
+          "type": "object",
+          "$ref": "#/$defs/k8sResources"
+        }
       }
     },
     "postgres": {
@@ -131,14 +163,30 @@
           "type": "string",
           "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/([0-9]|[1-2][0-9]|3[0-2])$"
         },
-        "resources": { "type": "object" }
+        "resources": {
+          "type": "object",
+          "$ref": "#/$defs/k8sResources"
+        }
       }
     },
     "pgbouncer": {
       "type": "object",
       "properties": {
         "image": { "type": "string", "minLength": 1 },
-        "resources": { "type": "object" }
+        "resources": {
+          "type": "object",
+          "$ref": "#/$defs/k8sResources"
+        }
+      }
+    },
+    "migrations": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "resources": {
+          "type": "object",
+          "$ref": "#/$defs/k8sResources"
+        }
       }
     },
     "metrics": {

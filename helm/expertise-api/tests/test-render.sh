@@ -212,6 +212,46 @@ else
     err "schema-replicacount-min" "values.schema.json did not reject replicaCount=0"
 fi
 
+# 24. values.schema.json: rejects bogus Kubernetes quantity in api.resources.requests.cpu
+schema_out=$(helm template test-release "$CHART" --set api.resources.requests.cpu=bogus 2>&1 || true)
+if echo "$schema_out" | grep -q 'api/resources/requests/cpu'; then
+    ok "schema-resources-cpu-pattern" "values.schema.json rejects non-quantity cpu (bogus)"
+else
+    err "schema-resources-cpu-pattern" "values.schema.json did not reject api.resources.requests.cpu=bogus"
+fi
+
+# 25. values.schema.json: accepts valid Kubernetes quantity for api.resources.requests.cpu
+schema_out=$(helm template test-release "$CHART" --set api.resources.requests.cpu=250m 2>&1 || true)
+if echo "$schema_out" | grep -qE 'api/resources/requests/cpu|pattern'; then
+    err "schema-resources-cpu-accept" "values.schema.json incorrectly rejected api.resources.requests.cpu=250m"
+else
+    ok "schema-resources-cpu-accept" "values.schema.json accepts api.resources.requests.cpu=250m"
+fi
+
+# 26. values.schema.json: rejects bogus memory quantity
+schema_out=$(helm template test-release "$CHART" --set postgres.resources.limits.memory=notamemorystring 2>&1 || true)
+if echo "$schema_out" | grep -q 'postgres/resources/limits/memory'; then
+    ok "schema-resources-memory-pattern" "values.schema.json rejects non-quantity memory"
+else
+    err "schema-resources-memory-pattern" "values.schema.json did not reject postgres.resources.limits.memory=notamemorystring"
+fi
+
+# 27. values.schema.json: rejects unknown resource field (additionalProperties:false)
+schema_out=$(helm template test-release "$CHART" --set api.resources.requests.gpu=1 2>&1 || true)
+if echo "$schema_out" | grep -qE 'api/resources/requests|additionalProperties|unevaluatedProperties'; then
+    ok "schema-resources-no-extras" "values.schema.json rejects unknown resource field (gpu)"
+else
+    err "schema-resources-no-extras" "values.schema.json did not reject api.resources.requests.gpu=1"
+fi
+
+# 28. values.schema.json: accepts memory quantity with binary suffix (Mi/Gi)
+schema_out=$(helm template test-release "$CHART" --set api.resources.requests.memory=256Mi 2>&1 || true)
+if echo "$schema_out" | grep -qE 'api/resources/requests/memory|pattern'; then
+    err "schema-memory-binary-suffix" "values.schema.json incorrectly rejected memory=256Mi"
+else
+    ok "schema-memory-binary-suffix" "values.schema.json accepts memory=256Mi"
+fi
+
 echo "=================================="
 if [ "$ERRORS" -eq 0 ]; then
     echo "PASS — 0 errors, $WARNINGS warning(s)"
