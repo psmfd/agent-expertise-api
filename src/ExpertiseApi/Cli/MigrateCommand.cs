@@ -1,5 +1,6 @@
 using ExpertiseApi.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Data.Common;
 
 namespace ExpertiseApi.Cli;
 
@@ -63,27 +64,44 @@ internal static class MigrateCommand
             logger.LogInformation("Migrate: applied {Count} migration(s) successfully.", pending.Count);
             return 0;
         }
-#pragma warning disable CA1031 // Do not catch general exception types.
-        // Migrate is an install-pipeline entrypoint whose contract is
-        // "return 0 on success, return 1 on any failure" — install.sh /
-        // install.ps1 inspect the exit code to decide whether to restart the
-        // service. Letting an exception escape would crash the .NET host with
-        // an unwieldy stack trace and bypass the install-script abort branch.
-        // The full exception is logged at Critical for postmortem.
-        catch (Exception ex)
-#pragma warning restore CA1031
+        // Narrowed from `catch (Exception)` to satisfy CodeQL cs/catch-of-all-exceptions
+        // and to align with the safer-by-default posture: process-fatal exceptions
+        // (OutOfMemoryException, AccessViolationException, StackOverflowException)
+        // and OperationCanceledException intentionally propagate. The catch list
+        // below covers every realistic failure of MigrateAsync():
+        //
+        //   * DbException             — base class for Npgsql.PostgresException,
+        //                               Npgsql.NpgsqlException, and any future
+        //                               provider; covers connection-refused,
+        //                               authentication-failed, schema conflict,
+        //                               and timeout.
+        //   * DbUpdateException       — EF Core wraps a DB error during apply.
+        //                               Derives DIRECTLY from System.Exception
+        //                               (NOT from InvalidOperationException);
+        //                               listed explicitly because no other arm
+        //                               subsumes it. Do not prune. Reference:
+        //                               https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.dbupdateexception
+        //   * InvalidOperationException — EF/DI configuration errors
+        //                               ("No database provider has been configured",
+        //                               "The 'X' service is not registered", ...).
+        //
+        // Install-pipeline contract is preserved: any of these returns 1 so
+        // install.sh / install.ps1 abort the install before service restart.
+        //
+        // Connection-string leakage: Npgsql's NpgsqlConnectionStringBuilder marks
+        // Password with [PasswordPropertyText] and redacts it when any
+        // NpgsqlException serializes the conn string into its Message. This
+        // relies on the Npgsql data-source builder NOT having
+        // `IncludeErrorDetail=true` set (which would surface raw parameter
+        // values from failing SQL). Program.cs does not set that flag; do not
+        // enable it without re-evaluating this log path.
+        catch (Exception ex) when (ex is DbException
+                                      or DbUpdateException
+                                      or InvalidOperationException)
         {
             // Single LogCritical entry: the exception parameter carries Type +
             // Message + StackTrace, so a separate LogError would just duplicate
             // the headline.
-            //
-            // Connection-string leakage: Npgsql's NpgsqlConnectionStringBuilder
-            // marks Password with [PasswordPropertyText] and redacts it when
-            // any NpgsqlException serializes the conn string into its Message.
-            // This relies on the Npgsql data-source builder NOT having
-            // `IncludeErrorDetail=true` set (which would surface raw parameter
-            // values from failing SQL). Program.cs does not set that flag;
-            // do not enable it without re-evaluating this log path.
             logger.LogCritical(ex, "Migrate: failed (full exception detail follows).");
             return 1;
         }

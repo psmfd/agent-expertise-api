@@ -1,6 +1,7 @@
 using ExpertiseApi.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using System.Data.Common;
 
 namespace ExpertiseApi.Services.Health;
 
@@ -50,14 +51,29 @@ internal sealed class PendingMigrationHealthCheck : IHealthCheck
             pending = await db.Database.GetPendingMigrationsAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
-#pragma warning disable CA1031 // Health check must classify, not crash, on any DB error
-        catch (Exception ex)
-#pragma warning restore CA1031
+        // Narrowed from `catch (Exception)` to satisfy CodeQL cs/catch-of-all-exceptions
+        // and to align with the safer-by-default posture:
+        //
+        //   * OperationCanceledException propagates by exclusion — ASP.NET Core
+        //     health-check framework relies on cancellation propagation to
+        //     respect HealthCheckOptions.Timeout. Swallowing it here would let
+        //     a runaway probe pin a DB connection past the configured budget.
+        //   * Process-fatal exceptions (OOM, AVE, stack overflow) propagate so
+        //     the host can crash deterministically rather than masquerading
+        //     as "DB unreachable."
+        //   * DbException covers Npgsql.PostgresException / NpgsqlException
+        //     (connection refused, auth failed, schema missing __EFMigrationsHistory).
+        //   * InvalidOperationException covers EF/DI misconfiguration
+        //     (e.g., DbContext disposed, no provider configured).
+        catch (Exception ex) when (ex is DbException or InvalidOperationException)
         {
             // DB unreachable / __EFMigrationsHistory missing — surface as Unhealthy so
             // the operator distinguishes "can't tell" from "behind schema". The
             // DbContext check will likely also be Unhealthy in this case, providing
-            // a corroborating signal.
+            // a corroborating signal. The ex argument is consumed by the framework
+            // for its diagnostics payload; the response writer
+            // (WriteStatusOnlyPlainText in HealthEndpoints.cs) ensures the message
+            // and stack trace never reach the wire.
             return HealthCheckResult.Unhealthy(
                 "Unable to query pending migrations (DB unreachable or migration history missing).",
                 ex);
