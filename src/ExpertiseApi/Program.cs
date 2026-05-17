@@ -145,6 +145,17 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 
 var app = builder.Build();
 
+if (MigrateCommand.IsMigrateRequested(args))
+{
+    // Surfaces a non-zero exit code so scripts/install.{sh,ps1} and
+    // scripts/migrate.{sh,ps1} can detect failure and abort before restarting
+    // the service. Environment.ExitCode is the only viable mechanism because
+    // top-level statements use `return;` (void) and switching to `int Main`
+    // would conflict with the existing Reembed/Rehash dispatch shape.
+    Environment.ExitCode = await MigrateCommand.RunAsync(app);
+    return;
+}
+
 if (ReembedCommand.IsReembedRequested(args))
 {
     await ReembedCommand.RunAsync(app, args);

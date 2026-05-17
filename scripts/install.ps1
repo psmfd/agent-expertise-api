@@ -141,7 +141,13 @@ function Confirm-ConfigStubs {
 # secrets.env — read by the service at start. Do NOT commit. Do NOT log.
 #
 # Set the connection string after install. Example:
-#   ConnectionStrings__DefaultConnection=Host=127.0.0.1;Port=5432;Database=expertise;Username=expertise;Password=CHANGE_ME
+#   ConnectionStrings__DefaultConnection="Host=127.0.0.1;Port=5432;Database=expertise;Username=expertise;Password=CHANGE_ME"
+#
+# The double quotes match the Linux/macOS secrets.env convention; Windows
+# reads them via scripts/migrate.ps1's parser which strips a single enclosing
+# pair of quotes. Without quotes a `;` inside the value would still be safe
+# on Windows (the parser splits on first `=` only) but cross-platform parity
+# is easier to maintain if all platforms agree on quoting.
 '@
         Set-Content -Path $SecretsFile -Value $stub -Encoding UTF8
         # Restrict ACL: only the service identity + Administrators
@@ -197,8 +203,52 @@ function Install-WindowsService {
     # Grant Virtual Account write to ProgramData
     icacls $DataPrefix /grant:r "${account}:(OI)(CI)M" | Out-Null
 
+    # NOTE: Start-Service intentionally deferred to a separate Start-ExpertiseService
+    # step below so the install pipeline can run migrate between service-create
+    # and service-start (issue #144). Starting here would race the migrate verb
+    # against the API's own MigrationReversibilityTests-style startup checks.
+}
+
+# ---- Migrate -------------------------------------------------------------
+function Invoke-Migrate {
+    # Conditional, matching scripts/install.sh maybe_migrate(): a fresh install
+    # has a placeholder secrets.env and cannot meaningfully migrate. Detect
+    # that case, tell the operator, and continue (the service still gets
+    # created — it just won't start cleanly until secrets are edited and
+    # scripts/migrate.ps1 is run manually).
+    $conn = $null
+    if (Test-Path $SecretsFile) {
+        foreach ($line in (Get-Content -LiteralPath $SecretsFile)) {
+            $trim = $line.Trim()
+            if (-not $trim -or $trim.StartsWith('#')) { continue }
+            if ($trim -match '^ConnectionStrings__DefaultConnection\s*=\s*(.*)$') {
+                $conn = $Matches[1].Trim('"', "'")
+                break
+            }
+        }
+    }
+
+    if (-not $conn -or $conn -match 'CHANGE_ME') {
+        Write-Warn "skipping migrate — ConnectionStrings__DefaultConnection unset or placeholder in $SecretsFile"
+        Write-Warn "After editing the secrets file, run: $PSScriptRoot\migrate.ps1"
+        Write-Warn "Then start the service: Start-Service $ServiceName"
+        return
+    }
+
+    Write-Log 'running migrate (scripts/migrate.ps1 — idempotent; no-op when up to date)'
+    & (Join-Path $PSScriptRoot 'migrate.ps1') `
+        -InstallPrefix $InstallPrefix `
+        -DataPrefix $DataPrefix `
+        -SecretsFile $SecretsFile
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "migrate failed — service NOT started; prior state intact. Inspect the output above, fix the schema/DB issue, then re-run scripts/install.ps1."
+    }
+}
+
+# ---- Service start ------------------------------------------------------
+function Start-ExpertiseService {
     Start-Service $ServiceName
-    Write-Log "service started"
+    Write-Log 'service started'
 }
 
 # ---- Main ----------------------------------------------------------------
@@ -207,6 +257,8 @@ Invoke-Publish
 Confirm-Models
 Confirm-ConfigStubs
 Install-WindowsService
+Invoke-Migrate
+Start-ExpertiseService
 
 Write-Log 'install complete'
 Write-Log "  binary:  $BinDir"

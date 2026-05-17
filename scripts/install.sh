@@ -215,7 +215,13 @@ ensure_config_stubs() {
 # chmod 600. Do NOT commit. Do NOT log.
 #
 # Set the connection string after install. Example for native Postgres:
-#   ConnectionStrings__DefaultConnection=Host=127.0.0.1;Port=5432;Database=expertise;Username=expertise;Password=CHANGE_ME
+#   ConnectionStrings__DefaultConnection="Host=127.0.0.1;Port=5432;Database=expertise;Username=expertise;Password=CHANGE_ME"
+#
+# The double quotes are REQUIRED: bash sources this file via `set -a; . file`
+# from the launch wrapper (and scripts/migrate.sh), and an unquoted value
+# containing `;` would be split as separate commands. systemd's own
+# EnvironmentFile= parser is literal and tolerates the unquoted form, but
+# the launchd-on-macOS path and the migrate scripts both use the bash sourcer.
 #
 # When Auth:Mode=Oidc, populate per-issuer overrides via Auth__Oidc__Issuers__N__*
 # environment variables — see appsettings.json for the shape.
@@ -261,6 +267,52 @@ EOF
   mv "${WRAPPER_SCRIPT}.tmp" "${WRAPPER_SCRIPT}"
   chmod 755 "${WRAPPER_SCRIPT}"
   log "wrapper: ${WRAPPER_SCRIPT}"
+}
+
+# ---------------------------------------------------------------------------
+# Migrate — apply pending EF Core migrations BEFORE service start (issue #144)
+# ---------------------------------------------------------------------------
+maybe_migrate() {
+  # Conditional, not unconditional. The fresh-install flow generates a
+  # placeholder secrets.env in ensure_config_stubs above, and the operator
+  # can't have filled in the connection string yet — attempting migrate
+  # would always fail with a misleading Npgsql connect timeout. Detect that
+  # case and tell the operator how to recover; do NOT abort install.
+  #
+  # On the upgrade path the secrets file is preserved by ensure_config_stubs
+  # and contains a real connection string, so migrate runs to completion or
+  # fails fatally (correctly aborting the install before service restart).
+  local conn=""
+  if [[ -f "${SECRETS_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    conn=$( (set -a; . "${SECRETS_FILE}"; set +a; printf '%s' "${ConnectionStrings__DefaultConnection:-}") )
+  fi
+
+  if [[ -z "${conn}" || "${conn}" == *CHANGE_ME* ]]; then
+    warn "skipping migrate — ConnectionStrings__DefaultConnection unset or placeholder in ${SECRETS_FILE}"
+    warn "After editing the secrets file, run: ${SCRIPT_DIR}/migrate.sh"
+    warn "Then start the service: ${SCRIPT_DIR}/expertise-apictl start"
+    return 0
+  fi
+
+  # Legacy upgrade footgun (PR #157 review): pre-#144 stub examples showed the
+  # connection string UNQUOTED, which under `set -a; . file` gets split on `;`
+  # — the first segment (`Host=127.0.0.1`) becomes the value and the rest
+  # (`Port=5432`, `Database=...`, ...) are exported as separate vars. The
+  # resulting truncated conn passes the non-empty + non-placeholder checks
+  # above but fails to connect, aborting the upgrade with a generic Npgsql
+  # error. Detect the smoking gun (Host= present, no `;` separator, and a
+  # Port= line elsewhere in the file) and surface a remediation-specific
+  # error instead.
+  if [[ "${conn}" == *Host=* && "${conn}" != *\;* ]] \
+      && grep -qE '^[[:space:]]*Port=' "${SECRETS_FILE}" 2>/dev/null; then
+    err "detected legacy unquoted ConnectionStrings__DefaultConnection in ${SECRETS_FILE}: the bash sourcer split on ';' and only kept the Host= segment. Wrap the value in double quotes (e.g., ConnectionStrings__DefaultConnection=\"Host=...;Port=...;Database=...;Username=...;Password=...\") and re-run scripts/install.sh."
+  fi
+
+  log "running migrate (scripts/migrate.sh — idempotent; no-op when up to date)"
+  if ! "${SCRIPT_DIR}/migrate.sh" --prefix "${PREFIX}" --secrets-file "${SECRETS_FILE}"; then
+    err "migrate failed — service NOT restarted; prior state intact. Inspect the output above, fix the schema/DB issue, then re-run scripts/install.sh."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -349,6 +401,7 @@ main() {
   ensure_models
   ensure_config_stubs
   write_wrapper
+  maybe_migrate
   install_service
 
   log "install complete"
