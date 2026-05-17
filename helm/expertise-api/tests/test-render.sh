@@ -212,9 +212,15 @@ else
     err "schema-replicacount-min" "values.schema.json did not reject replicaCount=0"
 fi
 
+# Helm 4 reports schema-violation paths as '/api/resources/requests/cpu' (slash-delimited,
+# leading slash); Helm 3 (CI pin via azure/setup-helm @ v3.18.3) reports them as
+# 'api.resources.requests.cpu:' (dot-delimited, no leading slash). The greps below use
+# [./] character classes so the suite stays green across Helm 3.x and Helm 4.x.
+# See #155 (issue) / #150 (Helm 4 upgrade deferral).
+
 # 24. values.schema.json: rejects bogus Kubernetes quantity in api.resources.requests.cpu
 schema_out=$(helm template test-release "$CHART" --set api.resources.requests.cpu=bogus 2>&1 || true)
-if echo "$schema_out" | grep -q 'api/resources/requests/cpu'; then
+if echo "$schema_out" | grep -qE 'api[./]resources[./]requests[./]cpu'; then
     ok "schema-resources-cpu-pattern" "values.schema.json rejects non-quantity cpu (bogus)"
 else
     err "schema-resources-cpu-pattern" "values.schema.json did not reject api.resources.requests.cpu=bogus"
@@ -222,7 +228,7 @@ fi
 
 # 25. values.schema.json: accepts valid Kubernetes quantity for api.resources.requests.cpu
 schema_out=$(helm template test-release "$CHART" --set api.resources.requests.cpu=250m 2>&1 || true)
-if echo "$schema_out" | grep -qE 'api/resources/requests/cpu|pattern'; then
+if echo "$schema_out" | grep -qE 'api[./]resources[./]requests[./]cpu|pattern'; then
     err "schema-resources-cpu-accept" "values.schema.json incorrectly rejected api.resources.requests.cpu=250m"
 else
     ok "schema-resources-cpu-accept" "values.schema.json accepts api.resources.requests.cpu=250m"
@@ -230,7 +236,7 @@ fi
 
 # 26. values.schema.json: rejects bogus memory quantity
 schema_out=$(helm template test-release "$CHART" --set postgres.resources.limits.memory=notamemorystring 2>&1 || true)
-if echo "$schema_out" | grep -q 'postgres/resources/limits/memory'; then
+if echo "$schema_out" | grep -qE 'postgres[./]resources[./]limits[./]memory'; then
     ok "schema-resources-memory-pattern" "values.schema.json rejects non-quantity memory"
 else
     err "schema-resources-memory-pattern" "values.schema.json did not reject postgres.resources.limits.memory=notamemorystring"
@@ -238,7 +244,7 @@ fi
 
 # 27. values.schema.json: rejects unknown resource field (additionalProperties:false)
 schema_out=$(helm template test-release "$CHART" --set api.resources.requests.gpu=1 2>&1 || true)
-if echo "$schema_out" | grep -qE 'api/resources/requests|additionalProperties|unevaluatedProperties'; then
+if echo "$schema_out" | grep -qE 'api[./]resources[./]requests|additionalProperties|unevaluatedProperties'; then
     ok "schema-resources-no-extras" "values.schema.json rejects unknown resource field (gpu)"
 else
     err "schema-resources-no-extras" "values.schema.json did not reject api.resources.requests.gpu=1"
@@ -246,7 +252,7 @@ fi
 
 # 28. values.schema.json: accepts memory quantity with binary suffix (Mi/Gi)
 schema_out=$(helm template test-release "$CHART" --set api.resources.requests.memory=256Mi 2>&1 || true)
-if echo "$schema_out" | grep -qE 'api/resources/requests/memory|pattern'; then
+if echo "$schema_out" | grep -qE 'api[./]resources[./]requests[./]memory|pattern'; then
     err "schema-memory-binary-suffix" "values.schema.json incorrectly rejected memory=256Mi"
 else
     ok "schema-memory-binary-suffix" "values.schema.json accepts memory=256Mi"
@@ -254,7 +260,7 @@ fi
 
 # 28b. values.schema.json: accepts uppercase binary kibi suffix (1Ki)
 schema_out=$(helm template test-release "$CHART" --set api.resources.requests.memory=1Ki 2>&1 || true)
-if echo "$schema_out" | grep -qE 'api/resources/requests/memory|pattern'; then
+if echo "$schema_out" | grep -qE 'api[./]resources[./]requests[./]memory|pattern'; then
     err "schema-memory-Ki-accept" "values.schema.json incorrectly rejected memory=1Ki"
 else
     ok "schema-memory-Ki-accept" "values.schema.json accepts memory=1Ki (uppercase canonical binary kibi)"
@@ -262,7 +268,7 @@ fi
 
 # 28c. values.schema.json: rejects lowercase binary suffix (100mi is NOT a K8s quantity)
 schema_out=$(helm template test-release "$CHART" --set api.resources.requests.memory=100mi 2>&1 || true)
-if echo "$schema_out" | grep -q 'api/resources/requests/memory'; then
+if echo "$schema_out" | grep -qE 'api[./]resources[./]requests[./]memory'; then
     ok "schema-memory-mi-reject" "values.schema.json rejects memory=100mi (lowercase binary suffix invalid per K8s grammar)"
 else
     err "schema-memory-mi-reject" "values.schema.json did not reject memory=100mi"
@@ -270,7 +276,7 @@ fi
 
 # 28d. values.schema.json: accepts scientific notation (1e3)
 schema_out=$(helm template test-release "$CHART" --set api.resources.requests.cpu=1e3 2>&1 || true)
-if echo "$schema_out" | grep -qE 'api/resources/requests/cpu|pattern'; then
+if echo "$schema_out" | grep -qE 'api[./]resources[./]requests[./]cpu|pattern'; then
     err "schema-cpu-sci-accept" "values.schema.json incorrectly rejected cpu=1e3"
 else
     ok "schema-cpu-sci-accept" "values.schema.json accepts cpu=1e3 (scientific notation)"
@@ -278,7 +284,7 @@ fi
 
 # 28e. values.schema.json: rejects bogus suffix (KB is not a K8s quantity)
 schema_out=$(helm template test-release "$CHART" --set api.resources.requests.memory=1KB 2>&1 || true)
-if echo "$schema_out" | grep -q 'api/resources/requests/memory'; then
+if echo "$schema_out" | grep -qE 'api[./]resources[./]requests[./]memory'; then
     ok "schema-memory-KB-reject" "values.schema.json rejects memory=1KB (KB is not a K8s quantity suffix)"
 else
     err "schema-memory-KB-reject" "values.schema.json did not reject memory=1KB"
@@ -323,7 +329,7 @@ fi
 
 # 31. postgres.enabled=false: schema allows postgres without image/secretName
 schema_out=$(helm template test-release "$CHART" --set postgres.enabled=false --set postgres.image=null --set postgres.secretName=null --set networkPolicy.enabled=false 2>&1 || true)
-if echo "$schema_out" | grep -qE 'postgres.*missing property'; then
+if echo "$schema_out" | grep -qE "postgres.*missing property|postgres:.*is required"; then
     err "postgres-external-relax-required" "schema incorrectly required postgres.image/secretName when enabled=false"
 else
     ok "postgres-external-relax-required" "schema relaxes postgres.image/secretName when enabled=false"
@@ -331,7 +337,7 @@ fi
 
 # 32. postgres.enabled=true (default): schema still requires postgres.image
 schema_out=$(helm template test-release "$CHART" --set postgres.image=null 2>&1 || true)
-if echo "$schema_out" | grep -q "missing property 'image'"; then
+if echo "$schema_out" | grep -qE "missing property 'image'|postgres: image is required"; then
     ok "postgres-default-still-requires" "schema still requires postgres.image when enabled=true"
 else
     err "postgres-default-still-requires" "schema did not require postgres.image when enabled=true"
@@ -362,7 +368,7 @@ fi
 
 # 36. external.cidr schema: rejects bogus CIDR
 schema_out=$(helm template test-release "$CHART" --set postgres.enabled=false --set 'postgres.external.cidr=notacidr' 2>&1 || true)
-if echo "$schema_out" | grep -q 'postgres/external/cidr'; then
+if echo "$schema_out" | grep -qE 'postgres[./]external[./]cidr'; then
     ok "schema-external-cidr-pattern" "schema rejects bogus postgres.external.cidr"
 else
     err "schema-external-cidr-pattern" "schema did not reject postgres.external.cidr=notacidr"
