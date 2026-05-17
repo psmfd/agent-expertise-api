@@ -27,6 +27,13 @@
   <key>ThrottleInterval</key>
   <integer>10</integer>
 
+  <!-- Stop budget. Must exceed HostOptions.ShutdownTimeout (30s) configured
+       in src/ExpertiseApi/Program.cs. launchd default is 20s, which would
+       SIGKILL the .NET host mid-drain under load. 45s = 30s app drain + 15s
+       OS-level dispose / log flush. See #142. -->
+  <key>ExitTimeOut</key>
+  <integer>45</integer>
+
   <key>ProcessType</key>
   <string>Interactive</string>
 

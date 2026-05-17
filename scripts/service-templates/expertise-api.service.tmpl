@@ -17,6 +17,11 @@ RestartSec=10
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
+# Stop budget. Must exceed HostOptions.ShutdownTimeout (30s) configured in
+# src/ExpertiseApi/Program.cs. systemd sends SIGTERM, waits this long, then
+# SIGKILL. 45s = 30s app drain + 15s OS-level dispose / log flush. See #142.
+TimeoutStopSec=45
+
 # Environment file (optional — install.sh creates a chmod-600 stub)
 EnvironmentFile=-@@SECRETS_FILE@@
 

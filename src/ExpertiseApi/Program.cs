@@ -8,6 +8,7 @@ using ExpertiseApi.Endpoints;
 using ExpertiseApi.Services;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using Microsoft.SemanticKernel;
 using Prometheus;
 using Serilog;
@@ -33,6 +34,22 @@ builder.Host.UseWindowsService(options => options.ServiceName = "ExpertiseApi");
 builder.Host.UseSerilog((context, services, config) =>
     config.ReadFrom.Configuration(context.Configuration)
           .ReadFrom.Services(services));
+
+// Default HostOptions.ShutdownTimeout is 5s — insufficient under load to drain
+// in-flight HTTP requests, close the Npgsql connection pool, and dispose the
+// ONNX inference session before systemd / launchd / SCM escalates to SIGKILL.
+// 30s matches the explicit TimeoutStopSec=45 / ExitTimeOut=45 budgets in the
+// service templates under scripts/service-templates/ (issue #142).
+//
+// MUST be registered AFTER UseSystemd() / UseWindowsService() above: the
+// Windows lifetime internally registers an IConfigureOptions<HostOptions>
+// that overwrites ShutdownTimeout with the SCM-reported stop timeout (~20s),
+// and DI options-pattern resolution honours last-writer-wins. Moving this
+// block above those lines will silently regress the Windows service path.
+builder.Services.Configure<HostOptions>(options =>
+{
+    options.ShutdownTimeout = TimeSpan.FromSeconds(30);
+});
 
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();

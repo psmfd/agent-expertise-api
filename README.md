@@ -183,6 +183,14 @@ as a native OS service:
 - **Windows**: Windows Service via `sc.exe` with Virtual Account
   `NT SERVICE\expertise-api`, failure recovery 5s/5s/30s
 
+**Graceful stop budgets** (#142): the host configures
+`HostOptions.ShutdownTimeout = 30s` to drain in-flight HTTP, close the
+Npgsql pool, and dispose the ONNX session before the service manager
+escalates to SIGKILL. The systemd unit (`TimeoutStopSec=45`) and the launchd
+plist (`ExitTimeOut=45`) add a 15s OS-level margin on top — stop the service
+and the .NET host has 30s to drain, after which systemd/launchd will fire
+SIGKILL at the 45s mark.
+
 Quick start (macOS / Linux / WSL):
 
 ```bash
