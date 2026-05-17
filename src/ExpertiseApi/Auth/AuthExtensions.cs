@@ -186,9 +186,23 @@ internal static class AuthExtensions
                         return match.Name;
                 }
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is SecurityTokenException
+                                          or ArgumentException
+                                          or FormatException)
             {
+                // JWT could not be parsed (malformed, bad base64, missing claims, etc.).
                 // Fall through to first scheme; JwtBearer will reject cleanly.
+                //
+                // Narrowed from `catch (Exception)` to satisfy CodeQL
+                // cs/catch-of-all-exceptions. Process-fatal exceptions
+                // (OutOfMemoryException, AccessViolationException) propagate
+                // by exclusion — do not widen without re-triage. Covered surface:
+                //   * SecurityTokenException — base of all
+                //     Microsoft.IdentityModel.Tokens.SecurityToken*Exception
+                //     (Malformed, InvalidSignature, Expired, etc.).
+                //   * ArgumentException     — ReadJsonWebToken null/empty input.
+                //   * FormatException       — base64url decode failure on a
+                //     malformed segment that slipped past LooksLikeJwt.
             }
             return issuers[0].Name;
         }

@@ -1,9 +1,11 @@
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
 using ExpertiseApi.Models;
 using ExpertiseApi.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Pgvector;
 
 namespace ExpertiseApi.Endpoints;
@@ -249,8 +251,23 @@ internal static class ExpertiseEndpoints
 
             return Results.Json(results.ToList(), statusCode: 207);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is InvalidOperationException
+                                      or HttpRequestException
+                                      or TimeoutException
+                                      or IOException
+                                      or ArgumentException)
         {
+            // Narrowed from `catch (Exception)` to satisfy CodeQL
+            // cs/catch-of-all-exceptions. The IEmbeddingGenerator abstraction
+            // is pluggable, so we cover the realistic failure surface across
+            // both the local ONNX backend (InvalidOperationException for
+            // session/state errors, IOException for model-file issues,
+            // ArgumentException / ArgumentOutOfRangeException from BERT
+            // tokenizer pre-processing on pathological input — lone surrogates,
+            // sequences exceeding positional limits) and any HTTP-backed
+            // backend (HttpRequestException, TimeoutException).
+            // Process-fatal exceptions (OOM, AVE) and OperationCanceledException
+            // (handled by the sibling catch above) propagate by exclusion.
             logger.LogWarning(ex, "Batch embedding generation failed");
 
             foreach (var (index, _) in validItems)
@@ -271,8 +288,18 @@ internal static class ExpertiseEndpoints
 
             return Results.Json(results.ToList(), statusCode: 207);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is DbException
+                                      or DbUpdateException
+                                      or InvalidOperationException
+                                      or ArgumentException)
         {
+            // Narrowed from `catch (Exception)` to satisfy CodeQL
+            // cs/catch-of-all-exceptions. CheckBatchAsync issues bulk DB
+            // queries via the repo and may surface Npgsql/EF errors
+            // (DbException / DbUpdateException), DI/state errors
+            // (InvalidOperationException), or argument-shape mismatches
+            // (ArgumentException — thrown explicitly when embeddings.Count
+            // does not match requests.Count). Process-fatal and OCE propagate.
             logger.LogWarning(ex, "Batch deduplication failed");
 
             foreach (var (index, _) in validItems)
@@ -305,8 +332,16 @@ internal static class ExpertiseEndpoints
                     results[validItems[k].Index] = new BatchEntryResult(validItems[k].Index, BatchEntryStatus.Failed, null, "Request was cancelled.");
                 break;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is DbException
+                                          or DbUpdateException
+                                          or InvalidOperationException)
             {
+                // Narrowed from `catch (Exception)` per CodeQL
+                // cs/catch-of-all-exceptions. repo.CreateAsync ultimately calls
+                // db.SaveChangesAsync, which raises DbUpdateException for
+                // constraint violations, DbException for transport-level
+                // Npgsql errors, and InvalidOperationException for tenant-mismatch
+                // guard trips (line ~145). Process-fatal and OCE propagate.
                 logger.LogWarning(ex, "Batch entry {Index} failed", index);
                 results[index] = new BatchEntryResult(index, BatchEntryStatus.Failed, null, "Entry could not be created.");
             }
