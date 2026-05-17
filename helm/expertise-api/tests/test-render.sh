@@ -385,6 +385,29 @@ else
     ok "netpol-external-nil-deref" "NetworkPolicy renders cleanly when external is unset (no nil-deref)"
 fi
 
+# 38. Deployment probes: liveness uses /health/live (issue #143, T4).
+output=$(helm template test-release "$CHART" 2>&1)
+if echo "$output" | awk '/livenessProbe:/,/readinessProbe:/' | grep -qE 'path:[[:space:]]*/health/live'; then
+    ok "probe-liveness-path" "livenessProbe.httpGet.path = /health/live"
+else
+    err "probe-liveness-path" "livenessProbe.httpGet.path did not render as /health/live"
+fi
+
+# 39. Deployment probes: readiness uses /health/ready (issue #143, T4).
+if echo "$output" | awk '/readinessProbe:/,/^      volumes:/' | grep -qE 'path:[[:space:]]*/health/ready'; then
+    ok "probe-readiness-path" "readinessProbe.httpGet.path = /health/ready"
+else
+    err "probe-readiness-path" "readinessProbe.httpGet.path did not render as /health/ready"
+fi
+
+# 40. Deployment probes: startup uses /health/ready so the pod isn't declared
+# started until DB, ONNX, and migration checks all pass (issue #143, T4).
+if echo "$output" | awk '/startupProbe:/,/livenessProbe:/' | grep -qE 'path:[[:space:]]*/health/ready'; then
+    ok "probe-startup-path" "startupProbe.httpGet.path = /health/ready"
+else
+    err "probe-startup-path" "startupProbe.httpGet.path did not render as /health/ready"
+fi
+
 echo "=================================="
 if [ "$ERRORS" -eq 0 ]; then
     echo "PASS — 0 errors, $WARNINGS warning(s)"

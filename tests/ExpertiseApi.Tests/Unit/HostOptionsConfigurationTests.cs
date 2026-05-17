@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace ExpertiseApi.Tests.Unit;
 
+[Collection("SequentialApiFactory")]
 public class HostOptionsConfigurationTests
 {
     [Fact]

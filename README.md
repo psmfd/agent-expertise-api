@@ -50,11 +50,13 @@ flowchart LR
 | GET | `/expertise/search?q=` | Keyword full-text search (tsvector, Approved only) |
 | GET | `/expertise/search/semantic?q=` | Semantic vector search (pgvector, Approved only) |
 | GET | `/audit` | Cross-tenant audit log (cursor-paginated, requires `expertise.admin`) |
-| GET | `/health` | Liveness probe (no auth required) |
+| GET | `/health/live` | Liveness — 200 while the process responds; no dependency checks. Map this to k8s `livenessProbe` and `systemd WatchdogSec=`. No auth. |
+| GET | `/health/ready` | Readiness — 200 only when DB, ONNX model, and pending-migration checks are all healthy; 503 otherwise. Map this to k8s `readinessProbe` and load-balancer health checks. No auth. |
+| GET | `/health` | Back-compat alias for `/health/ready`. No auth. |
 | GET | `/metrics` | Prometheus scrape endpoint (no auth required) |
 | GET | `/query` | Interactive query page (read-only, no auth to load) |
 
-All endpoints except `/health`, `/query`, and `/metrics` require `Authorization: Bearer <token>` — a JWT (`Auth:Mode = Oidc`) or, in Development, an API key or LocalDev token (`Auth:Mode = Hybrid`). See [SKILL.md](.claude/skills/expertise-api-design/SKILL.md) for scopes, modes, and configuration.
+All endpoints except `/health`, `/health/live`, `/health/ready`, `/query`, and `/metrics` require `Authorization: Bearer <token>` — a JWT (`Auth:Mode = Oidc`) or, in Development, an API key or LocalDev token (`Auth:Mode = Hybrid`). See [SKILL.md](.claude/skills/expertise-api-design/SKILL.md) for scopes, modes, and configuration.
 
 ## Quick Start
 

@@ -97,19 +97,19 @@ spec:
               mountPath: /tmp
           startupProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: {{ .Values.service.targetPort }}
             failureThreshold: 30
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: {{ .Values.service.targetPort }}
             periodSeconds: 30
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: {{ .Values.service.targetPort }}
             periodSeconds: 10
             failureThreshold: 3

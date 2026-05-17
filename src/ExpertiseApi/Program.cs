@@ -64,6 +64,29 @@ builder.Services.AddDbContext<ExpertiseDbContext>(options =>
         builder.Configuration.GetConnectionString("DefaultConnection"),
         o => o.UseVector()));
 
+// Health checks (issue #143). All readiness signals carry the "ready" tag so
+// HealthEndpoints.MapHealthEndpoints can filter /health/ready to dependency
+// checks while keeping /health/live as a tag-free liveness signal.
+//   - AddDbContextCheck: pings the configured Npgsql connection. Cheaper than
+//     AddNpgSql and avoids an extra DI service registration; failure mode is
+//     ~connection-timeout-bounded (Npgsql default 15s, suitable for readiness).
+//   - OnnxModelHealthCheck: model/vocab file presence + DI resolution.
+//   - PendingMigrationHealthCheck: HealthStatus.Degraded when EF Core reports
+//     unapplied migrations. The framework default maps Degraded → 200 OK; the
+//     readyOptions registration in HealthEndpoints.cs explicitly overrides
+//     ResultStatusCodes so Degraded surfaces as 503.
+string[] readyTag = ["ready"];
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<ExpertiseDbContext>(
+        name: "db",
+        tags: readyTag)
+    .AddCheck<ExpertiseApi.Services.Health.OnnxModelHealthCheck>(
+        name: "onnx",
+        tags: readyTag)
+    .AddCheck<ExpertiseApi.Services.Health.PendingMigrationHealthCheck>(
+        name: "migrations",
+        tags: readyTag);
+
 builder.Services.AddScoped<IExpertiseRepository, ExpertiseRepository>();
 builder.Services.AddScoped<ITenantContextAccessor, HttpTenantContextAccessor>();
 builder.Services.AddExpertiseAuth(builder.Configuration, builder.Environment);
