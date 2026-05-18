@@ -1,5 +1,6 @@
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
+using ExpertiseApi.Models;
 using ExpertiseApi.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -15,7 +16,16 @@ internal static class SemanticSearchEndpoints
             .RequireAuthorization("ReadAccess")
             .RequireRateLimiting("semantic-search");
 
-        group.MapGet("/", SemanticSearch);
+        group.MapGet("/", SemanticSearch)
+            .WithSummary("Vector similarity search using cosine distance over title+body embeddings")
+            .WithDescription("Generates an embedding for `q` via the configured ONNX/SBERT model and returns the top `limit` (clamped 1\u2013100) " +
+                             "Approved entries by cosine similarity. Tenant-scoped (own tenant + shared). Subject to the `semantic-search` " +
+                             "rate-limit policy (token bucket, 10/min) because each call runs ONNX inference.")
+            .Produces<List<ExpertiseEntry>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         return group;
     }

@@ -19,7 +19,15 @@ internal static class AuditEndpoints
             .RequireAuthorization(AuthConstants.Policies.AdminAccess)
             .RequireRateLimiting("expertise-read");
 
-        group.MapGet("/", ListAudit);
+        group.MapGet("/", ListAudit)
+            .WithSummary("List audit log entries (admin-only, cross-tenant)")
+            .WithDescription("Cross-tenant audit log query for admins. Filters: `entryId`, `principal`, `action`, `from`, `to`, `limit`. " +
+                             "Pagination uses a keyset cursor of `(afterTimestamp, afterId)` \u2014 both must be supplied together; " +
+                             "providing only one is treated as cursor absent.")
+            .Produces<List<ExpertiseAuditLog>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         return group;
     }

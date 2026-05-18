@@ -69,6 +69,13 @@ internal static class HealthEndpoints
             },
         };
 
+        // NOTE: Health endpoints are intentionally absent from the generated OpenAPI
+        // document. MapHealthChecks does not register API-Explorer descriptors
+        // (no MethodInfo / ParameterDescriptions), so summary / Produces metadata
+        // attached here would be dead weight. The endpoints are documented in the
+        // README "API Surface" table and exercised by HealthEndpointTests — those
+        // are the actual contract surface for operators.
+
         app.MapHealthChecks("/health/live", liveOptions)
             .WithTags("Health")
             .AllowAnonymous()

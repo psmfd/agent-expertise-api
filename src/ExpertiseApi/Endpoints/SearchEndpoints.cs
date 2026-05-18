@@ -1,5 +1,6 @@
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
+using ExpertiseApi.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -14,7 +15,15 @@ internal static class SearchEndpoints
             .RequireAuthorization("ReadAccess")
             .RequireRateLimiting("expertise-read");
 
-        group.MapGet("/", KeywordSearch);
+        group.MapGet("/", KeywordSearch)
+            .WithSummary("Keyword search over entry title + body")
+            .WithDescription("PostgreSQL full-text search (`to_tsvector`) over Approved entries visible to the caller's tenant. " +
+                             "Query string `q` is required. Set `includeDeprecated=true` to surface soft-deleted entries.")
+            .Produces<List<ExpertiseEntry>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         return group;
     }

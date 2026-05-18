@@ -21,39 +21,121 @@ internal static class ExpertiseEndpoints
 
         group.MapGet("/", ListEntries)
             .RequireAuthorization("ReadAccess")
-            .RequireRateLimiting("expertise-read");
+            .RequireRateLimiting("expertise-read")
+            .WithSummary("List approved expertise entries")
+            .WithDescription("Returns approved entries scoped to the caller's tenant plus any `shared` entries. " +
+                             "Optional filters: `domain`, `tags` (CSV), `entryType`, `severity`, `includeDeprecated`. " +
+                             "Drafts and rejected entries are excluded \u2014 reviewers see those via GET /expertise/drafts.")
+            .Produces<List<ExpertiseEntry>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapGet("/drafts", ListDrafts)
             .RequireAuthorization(AuthConstants.Policies.WriteApproveAccess)
-            .RequireRateLimiting("expertise-read");
+            .RequireRateLimiting("expertise-read")
+            .WithSummary("List draft + rejected entries for review")
+            .WithDescription("Reviewer-only queue (`expertise.write.approve` scope). Returns Draft and Rejected entries " +
+                             "in the caller's tenant; shared entries are never surfaced (they bypass the draft state).")
+            .Produces<List<ExpertiseEntry>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapGet("/{id:guid}", GetEntry)
             .RequireAuthorization("ReadAccess")
-            .RequireRateLimiting("expertise-read");
+            .RequireRateLimiting("expertise-read")
+            .WithSummary("Fetch a single entry by id")
+            .WithDescription("Returns 200 with the entry if it is visible to the caller's tenant (own tenant or shared); " +
+                             "404 otherwise. Drafts are not surfaced through this endpoint.")
+            .Produces<ExpertiseEntry>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapPost("/", CreateEntry)
             .RequireAuthorization("WriteAccess")
-            .RequireRateLimiting("expertise-write");
+            .RequireRateLimiting("expertise-write")
+            .Accepts<CreateExpertiseRequest>("application/json")
+            .WithSummary("Create a new expertise entry (Draft by default)")
+            .WithDescription("Creates an entry in Draft state in the caller's tenant. Optional `tenant: \"shared\"` requires " +
+                             "`expertise.write.approve` and bypasses the draft queue (created as Approved). " +
+                             "Returns 409 if a near-duplicate is detected by the dedup service.")
+            .Produces<ExpertiseEntry>(StatusCodes.Status201Created)
+            .Produces<ExpertiseEntry>(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapPatch("/{id:guid}", UpdateEntry)
             .RequireAuthorization("WriteAccess")
-            .RequireRateLimiting("expertise-write");
+            .RequireRateLimiting("expertise-write")
+            .Accepts<UpdateExpertiseRequest>("application/json")
+            .WithSummary("Partially update an entry")
+            .WithDescription("Only the supplied fields are modified. If `title` or `body` change the embedding is regenerated. " +
+                             "Returns 409 (ConcurrentConflict) when the entry was modified by another request between read and write.")
+            .Produces<ExpertiseEntry>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapDelete("/{id:guid}", DeleteEntry)
             .RequireAuthorization("WriteAccess")
-            .RequireRateLimiting("expertise-write");
+            .RequireRateLimiting("expertise-write")
+            .WithSummary("Soft-delete an entry")
+            .WithDescription("Marks the entry as deprecated. Soft-deleting a `shared` entry requires `expertise.write.approve`.")
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapPost("/batch", CreateBatch)
             .RequireAuthorization("WriteAccess")
-            .RequireRateLimiting("expertise-write");
+            .RequireRateLimiting("expertise-write")
+            .Accepts<List<CreateExpertiseRequest>>("application/json")
+            .WithSummary("Batch ingest up to 100 entries with per-item failure isolation")
+            .WithDescription("Returns 200 with `BatchEntryResult[]` when every item is Created, or 207 (Multi-Status) when any item is " +
+                             "Duplicate / Rejected / Failed. Embedding generation and deduplication are batched into a single ONNX call " +
+                             "and bulk DB query respectively, so partial failures in one phase do not roll back successful items.")
+            .Produces<List<BatchEntryResult>>(StatusCodes.Status200OK)
+            .Produces<List<BatchEntryResult>>(StatusCodes.Status207MultiStatus)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapPost("/{id:guid}/approve", ApproveEntry)
             .RequireAuthorization(AuthConstants.Policies.WriteApproveAccess)
-            .RequireRateLimiting("expertise-write");
+            .RequireRateLimiting("expertise-write")
+            .Accepts<ApproveExpertiseRequest>("application/json")
+            .WithSummary("Approve a draft entry (reviewer-only)")
+            .WithDescription("Transitions the entry from Draft to Approved with the supplied `Visibility` " +
+                             "(defaults to Private). Returns 409 if the entry is not currently in Draft state.")
+            .Produces<ExpertiseEntry>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapPost("/{id:guid}/reject", RejectEntry)
             .RequireAuthorization(AuthConstants.Policies.WriteApproveAccess)
-            .RequireRateLimiting("expertise-write");
+            .RequireRateLimiting("expertise-write")
+            .Accepts<RejectExpertiseRequest>("application/json")
+            .WithSummary("Reject a draft entry (reviewer-only)")
+            .WithDescription("Transitions the entry from Draft to Rejected. A non-empty `rejectionReason` (\u2264 2000 chars) is required.")
+            .Produces<ExpertiseEntry>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         return group;
     }
