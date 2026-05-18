@@ -53,4 +53,6 @@ Re-open this ADR only if **all** of the following hold:
 2. The MCP tooling ecosystem (`mcp-remote`, Inspector, language SDKs) has had ≥12 months with no RCE-class CVE.
 3. A first-party demand exists from a harness that is MCP-only and that this project intends to support.
 
-Until those triggers are met, the decision stands and is not subject to ad-hoc re-litigation.
+The conjunctive AND across these three triggers is **deliberately a high bar**. Given the disclosure rate documented in "Why not MCP" above (two RCE-class CVEs within ≈6 months of spec ratification), trigger (2) alone may take multiple years to satisfy. Trigger (3) in isolation — a first-party MCP-only demand — is **insufficient** to re-open this decision; it must coincide with (1) and (2) maturity. This asymmetry is intentional: the cost of re-litigating without ecosystem maturity exceeds the cost of declining individual integration requests.
+
+Until all three triggers are met, the decision stands and is not subject to ad-hoc re-litigation.

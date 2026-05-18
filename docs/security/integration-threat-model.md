@@ -91,10 +91,10 @@ The four patterns evaluated as MCP alternatives. Each is described by what the L
 | Finding | One-line summary | Spec anchor (2025-11-25) | OWASP LLM 2025 | Severity |
 |---|---|---|---|---|
 | **M11** | Elicitation message phishing — server-initiated `elicitation/create` allows in-band social engineering | `elicitation` capability | LLM01 | TBD |
-| **M12** | Sampling-with-tools amplification + system-prompt poisoning | SEP-1577 (sampling+tools) | LLM01, LLM06 | TBD |
-| **M13** | Streamable HTTP DNS-rebind / `Last-Event-ID` replay / session hijack | Streamable HTTP transport | LLM06, LLM07 | TBD |
+| **M12** | Sampling-with-tools amplification + system-prompt poisoning | SEP-1577 (sampling+tools) | LLM01, LLM06, LLM07 | TBD |
+| **M13** | Streamable HTTP DNS-rebind / `Last-Event-ID` replay / session hijack | Streamable HTTP transport | LLM02, LLM06 | TBD |
 | **M14** | URL-mode elicitation phishing — clickable URLs in elicitation messages | `elicitation` capability | LLM01 | TBD |
-| **M15** | Client ID Metadata Documents AS-side SSRF | `oauth` / CIMD section | LLM06 | TBD |
+| **M15** | Client ID Metadata Documents AS-side SSRF | `oauth` / CIMD section | LLM02, LLM06 | TBD |
 | **M16** | Experimental `tasks` feature churn risk | SEP-1686 (experimental) | LLM06 | Info |
 
 ---
@@ -142,6 +142,8 @@ The four patterns evaluated as MCP alternatives. Each is described by what the L
 
 The four alternative patterns mitigate or sidestep many MCP threats but presume that the API itself enforces the following eight controls. Each control is tracked against a concrete integration-backlog issue.
 
+**Tenant isolation is assumed in scope of C2.** The API is multi-tenant (drafts scoped to caller's tenant; cross-tenant audit gated by `expertise.admin`). C2 (OIDC auth posture) implicitly subsumes tenant-boundary enforcement; a tenant-boundary bug would convert an LLM01-amplified prompt-injection finding (M1 / M5 / M8) into cross-tenant data exfiltration that none of C1–C8 would catch independently. Tenant-isolation correctness is therefore a non-negotiable property of C2's implementation, not a separate Part D control.
+
 | Control | Description | Gates pattern | Tracked under | Status |
 |---|---|---|---|---|
 | **C1** | **Loopback bind by default.** Kestrel binds `127.0.0.1` unless the deployment explicitly opts into non-loopback exposure via env var or Helm value. | (3), (4); hardens (1), (2) | #167 (gates #146) | ❌ Not implemented |
@@ -181,6 +183,8 @@ These notes will be re-verified against the spec on every minor revision per the
 **Decision.** C7 implementation under #168 is **Option B — PII + injection-neutralization**: strip PII (emails, phone numbers, embedded credentials, AWS access keys, GitHub tokens) AND delimiter-wrap free-text fields (`<expertise_content>…</expertise_content>`), apply instruction-stripping heuristics (`\bignore previous\b`, role-impersonation patterns), and tag content-class in the JSON response. Implementation cost ~200 LOC + heuristic test corpus.
 
 **Rationale.** Under Option B, patterns 1 (in-tree pi extension, #148) and 2 (skill+curl, #147) are equivalent on both LLM01 and LLM02 for read-only operations. Pattern 1's pre-redaction via the `tool_result` middleware becomes defense-in-depth rather than load-bearing. This closes the [path-dependence trap](#d2--path-dependence-trap-skill-pattern-becomes-default) where pattern 2 would otherwise become the project's default integration story at a lower mitigation level than pattern 1.
+
+**Residual-risk note on delimiter integrity.** The delimiter-wrapping component of Option B (`<expertise_content>…</expertise_content>`) is only as strong as the wrapper's ability to defeat payload-side injection of the closing delimiter (or near-variants the LLM treats as terminating). #168 implementation **must** escape or encode the delimiter token inside the payload (e.g., HTML-entity-encode `<` / `>` within wrapped content, or use a per-response nonce delimiter). Delimiter-wrapping without escaping is a paper mitigation.
 
 **Option A (PII-only) was rejected.** Cost was lower (~50 LOC) but it would have left LLM01 (prompt-injection via stored free-text expertise content) un-mitigated at the API layer, making pattern 1's pre-redaction load-bearing rather than belt-and-suspenders. The marginal cost of Option B over Option A (~150 LOC + test corpus) is small enough that the architectural simplification — patterns 1 and 2 truly equivalent on LLM01 — dominates.
 
