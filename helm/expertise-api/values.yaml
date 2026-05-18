@@ -165,3 +165,19 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
     labels: {}
+
+# AllowedHosts — ASP.NET Core HostFiltering middleware allow-list (Part D C1).
+#
+# Default in the container image is `localhost;127.0.0.1;[::1]` (set in
+# src/ExpertiseApi/appsettings.json). When the API is fronted by an Ingress /
+# reverse proxy that injects a non-loopback Host header (the production path),
+# the operator MUST override this with the externally-routable hostname(s),
+# otherwise every request through the ingress 400s with `HostFilteringMiddleware`
+# rejecting the host.
+#
+# Semicolon-separated list, bound by the WebHost via the top-level `AllowedHosts`
+# configuration key. Examples:
+#   allowedHosts: "expertise-api.prod.example.com"
+#   allowedHosts: "expertise-api.example.com;expertise-api.internal.example.com"
+# Leave empty to inherit the tight loopback-only default from appsettings.json.
+allowedHosts: ""

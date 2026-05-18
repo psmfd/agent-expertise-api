@@ -44,6 +44,13 @@ RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages \
     --output /app/efbundle
 
 # ── Runtime stage ──────────────────────────────────────────────────────────────
+# `aspnet:10.0` already sets `ASPNETCORE_HTTP_PORTS=8080` in the base image, so
+# Kestrel binds `+:8080` without an explicit ENV here. If a future change moves
+# the runtime stage to `runtime-deps:10.0-noble-chiseled` (smaller, no ASP.NET
+# Core layer), `ASPNETCORE_HTTP_PORTS` is NOT inherited and must be set
+# explicitly via `ENV ASPNETCORE_HTTP_PORTS=8080` — otherwise Kestrel falls back
+# to `http://localhost:5000` and the container becomes unreachable from the
+# k8s Service. See docs/security/integration-threat-model.md Part D C1.
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 

@@ -6,6 +6,8 @@ using ExpertiseApi.Cli;
 using ExpertiseApi.Data;
 using ExpertiseApi.Endpoints;
 using ExpertiseApi.Services;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
@@ -208,7 +210,22 @@ app.MapAuditEndpoints();
 if (metricsEnabled)
     app.MapMetrics().AllowAnonymous();
 
-try { await app.RunAsync(); }
+try
+{
+    // Diagnostic log of the effective Kestrel bind addresses (Part D C1).
+    // Kestrel already logs "Now listening on: ..." at Info; this prefixed line is
+    // greppable in container logs to confirm the reachability boundary at startup.
+    // See docs/security/integration-threat-model.md Part D C1 for the shape-per-shape model.
+    app.Lifetime.ApplicationStarted.Register(() =>
+    {
+        var addresses = app.Services.GetRequiredService<IServer>()
+            .Features.Get<IServerAddressesFeature>()?.Addresses;
+        if (addresses is not null && addresses.Count > 0)
+            Log.Information("[C1] Kestrel bound to {Addresses}", string.Join(", ", addresses));
+    });
+
+    await app.RunAsync();
+}
 #pragma warning disable CA1031 // Top-level fatal handler — log any unhandled exception then exit. Re-throwing here would suppress the log and produce a less-useful stack trace.
 catch (Exception ex)
 #pragma warning restore CA1031
