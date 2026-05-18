@@ -55,7 +55,25 @@ cmd_stop() {
   esac
 }
 
-cmd_restart() { cmd_stop; sleep 1; cmd_start; }
+cmd_restart() {
+  case "${OS}" in
+    macos)
+      # launchctl bootout is asynchronous: a cmd_stop+sleep+cmd_start sequence
+      # races and surfaces "Service is already loaded" or duplicate-spawns.
+      # `kickstart -k -p` is the atomic primitive (kill existing, then print
+      # the new PID, which blocks until the supervised process is spawned).
+      # See: man launchctl (Sonoma+).
+      launchctl kickstart -k -p "gui/$(id -u)/${LABEL}" ;;
+    linux)
+      # `systemctl --user restart` is itself atomic and synchronous; no need
+      # to compose stop+sleep+start.
+      systemctl --user restart "${SERVICE}.service" ;;
+    wsl_to_windows)
+      # No atomic restart primitive exposed by sc.exe over the WSL interop
+      # boundary; the stop+sleep+start pattern remains correct here.
+      cmd_stop; sleep 1; cmd_start ;;
+  esac
+}
 
 cmd_status() {
   case "${OS}" in
