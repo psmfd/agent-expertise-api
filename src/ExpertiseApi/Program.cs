@@ -110,6 +110,37 @@ builder.Services.AddProblemDetails(options =>
             ctx.ProblemDetails.Instance = null;
             ctx.ProblemDetails.Extensions.Remove("exception");
         }
+
+        // Part D C7 (extension via ADR-008): hygienize the validation 'errors' extension
+        // on ProblemDetails responses. This is where minimal-API model binding emits
+        // user-shaped messages that an attacker can influence (e.g. by sending crafted
+        // input that the binder echoes verbatim). Title and Detail are NOT hygienized
+        // here — they are server-authored strings ("Too Many Requests", "Concurrent
+        // modification", "Domain, Title, Body, and Source are required.") whose exact
+        // text is part of the API contract. Wrapping them would (1) break consumers
+        // that match on the literal title for rejection-class detection and (2) hide
+        // the value behind a nonce-bearing wrapper when the value is deterministic and
+        // safe by construction. The C4 scrub above already nulls Detail in non-Dev.
+        var hygiene = ctx.HttpContext.RequestServices.GetService<ExpertiseApi.Hygiene.IResponseHygiene>();
+        if (hygiene is null)
+            return;
+
+        if (ctx.ProblemDetails.Extensions.TryGetValue("errors", out var errorsObj)
+            && errorsObj is IDictionary<string, string[]> errors)
+        {
+            var nonce = hygiene.MintNonce();
+            var sanitized = new Dictionary<string, string[]>(errors.Count, StringComparer.Ordinal);
+            foreach (var (field, messages) in errors)
+            {
+                sanitized[field] = messages
+                    .Select(m => hygiene.Hygienize(
+                            m, ExpertiseApi.Hygiene.ContentClass.UserSuppliedFreeText, nonce)
+                        .Value ?? string.Empty)
+                    .ToArray();
+            }
+            ctx.ProblemDetails.Extensions["errors"] = sanitized;
+            ctx.ProblemDetails.Extensions["_hygiene"] = hygiene.GetManifest(nonce);
+        }
     };
 });
 
