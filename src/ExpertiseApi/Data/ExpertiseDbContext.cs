@@ -108,6 +108,16 @@ internal class ExpertiseDbContext(
                 .HasConversion<string>()
                 .IsRequired();
 
+            // Part D C6 — actor classification. Stored as text via HasConversion<string>()
+            // to match the convention used for Action / Visibility / ReviewState (text
+            // columns, not PgEnum) so the migration style stays consistent. The defense
+            // here is that any future code path that constructs an audit row without
+            // setting ActorClass gets ActorClass.Human (enum 0) via .NET default, which
+            // matches the C6 "default human" rule.
+            entity.Property(e => e.ActorClass)
+                .HasConversion<string>()
+                .IsRequired();
+
             entity.Property(e => e.Tenant).IsRequired();
             entity.Property(e => e.Principal).IsRequired();
 
@@ -120,6 +130,10 @@ internal class ExpertiseDbContext(
                 .IncludeProperties(e => e.Action);
 
             entity.HasIndex(e => new { e.Principal, e.Timestamp });
+
+            // Supports the /audit?actor_class= filter introduced with C6. Composite with
+            // Timestamp keeps the index aligned with the (Timestamp DESC, Id) sort order.
+            entity.HasIndex(e => new { e.ActorClass, e.Timestamp });
         });
     }
 }
