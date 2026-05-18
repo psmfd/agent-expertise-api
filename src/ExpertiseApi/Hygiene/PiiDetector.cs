@@ -55,19 +55,22 @@ internal static class PiiDetector
     private static readonly Regex Email = new(
         @"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", NbOpts, FastTimeout);
 
-    // Phone (E.164-ish). Lookaround used to skip dotted version strings like "1.10.0",
-    // so this falls back to backtracking with a tight timeout.
+    // Phone (strict E.164, requires a leading + per ITU). Without a + prefix we don't
+    // attempt detection — false positives on hex nonces and numeric identifiers were
+    // worse than the false negatives on bare 10-digit US numbers in our content.
     private static readonly Regex Phone = new(
-        @"(?<![\d.])\+?[1-9]\d{1,2}[\s.\-]?\(?\d{2,4}\)?[\s.\-]?\d{3,4}[\s.\-]?\d{3,4}(?![\d.])",
-        LookaroundOpts, FastTimeout);
+        @"\+[1-9]\d{0,2}[\s.\-]?\(?\d{2,4}\)?[\s.\-]?\d{3,4}[\s.\-]?\d{3,4}",
+        NbOpts, FastTimeout);
 
     private static readonly Regex AwsAccessKey = new(
         @"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", NbOpts, FastTimeout);
 
-    // AWS secret: requires a context word within 64 chars before the candidate (40-char
-    // base64-ish run). Lookaround for context proximity; tight timeout.
+    // AWS secret: requires a context word within 32 chars before the candidate (40-char
+    // base64-ish run). The lookbehind allows any non-alphanumeric separator (e.g. '=',
+    // ':', ' ', newline) between the context word and the secret. Tight timeout because
+    // of the lookbehind quantifier.
     private static readonly Regex AwsSecret = new(
-        @"(?<=(?:aws[_-]?secret|AWS[_-]?SECRET[_-]?ACCESS[_-]?KEY|secret(?:[_-]?key)?)[^A-Za-z0-9/+=]{0,32})[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])",
+        @"(?<=(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret(?:[_-]?key)?)[^A-Za-z0-9/+]{0,32})[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])",
         LookaroundOpts, SlowTimeout);
 
     private static readonly Regex GithubPat = new(
@@ -102,13 +105,15 @@ internal static class PiiDetector
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
         var current = input;
 
+        // Order matters: URL credentials FIRST so the user:pass@host segment is replaced
+        // before the email pattern would otherwise consume the @host tail.
+        current = ApplyOne(current, UrlCredentials, "url-credentials", counts);
         current = ApplyOne(current, Email, "email", counts);
         current = ApplyOne(current, AwsAccessKey, "aws-access-key", counts);
         current = ApplyOne(current, AwsSecret, "aws-secret", counts);
         current = ApplyOne(current, GithubPat, "github-pat", counts);
         current = ApplyOne(current, Jwt, "jwt", counts);
         current = ApplyOne(current, PrivateKeyHeader, "private-key-header", counts);
-        current = ApplyOne(current, UrlCredentials, "url-credentials", counts);
         current = ApplyOne(current, Phone, "phone", counts);
         current = ApplyOne(current, IpAddress, "ip-address", counts);
 
