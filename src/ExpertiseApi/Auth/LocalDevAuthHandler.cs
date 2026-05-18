@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using ExpertiseApi.Models;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
 
@@ -19,7 +20,8 @@ namespace ExpertiseApi.Auth;
 internal class LocalDevAuthHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options,
     ILoggerFactory logger,
-    UrlEncoder encoder)
+    UrlEncoder encoder,
+    IOptionsMonitor<AgentUserAgentOptions> agentUaOptions)
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
     public const string SchemeName = "LocalDev";
@@ -71,11 +73,27 @@ internal class LocalDevAuthHandler(
         var identity = new ClaimsIdentity(claims, SchemeName);
         var principal = new ClaimsPrincipal(identity);
 
+        // Part D C6: LocalDev is interactive developer auth; default Human. The
+        // X-Actor-Class: agent header path is supported when expertise.agent is in the
+        // scope set OR the UA matches the allowlist (e.g. running a skill against a
+        // dev token).
+        var (actorClass, rawHeader) = ActorClassResolver.Resolve(
+            Context,
+            principal,
+            expanded,
+            authMethod: SchemeName,
+            agentUaOptions.CurrentValue.Patterns,
+            schemeDefault: ActorClass.Human,
+            Logger);
+
         var tenantContext = new TenantContext(
             Tenant: tenant,
             Principal: principal,
             Agent: null,
-            Scopes: expanded);
+            Scopes: expanded,
+            ActorClass: actorClass,
+            AuthMethod: SchemeName,
+            ActorClassHeader: rawHeader);
         Context.SetTenantContext(tenantContext);
 
         var ticket = new AuthenticationTicket(principal, SchemeName);
@@ -88,6 +106,7 @@ internal class LocalDevAuthHandler(
         "draft" => AuthConstants.WriteDraftScope,
         "approve" => AuthConstants.WriteApproveScope,
         "admin" => AuthConstants.AdminScope,
+        "agent" => AuthConstants.AgentScope,
         _ => scope
     };
 }

@@ -25,6 +25,11 @@ internal static class AuthExtensions
         services.AddHttpContextAccessor();
         services.AddSingleton<IAuthorizationHandler, ScopeAuthorizationHandler>();
 
+        // Part D C6: bind the User-Agent allowlist for ActorClassResolver corroboration.
+        // IOptionsMonitor lets ops adjust the list at runtime without restart.
+        services.AddOptions<AgentUserAgentOptions>()
+            .Bind(configuration.GetSection(AgentUserAgentOptions.SectionName));
+
         var authBuilder = services.AddAuthentication(BearerScheme);
 
         // Always register the policy scheme first so the default scheme exists even if we
