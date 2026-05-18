@@ -246,6 +246,12 @@ builder.Services.AddScoped<IExpertiseRepository, ExpertiseRepository>();
 builder.Services.AddScoped<ITenantContextAccessor, HttpTenantContextAccessor>();
 builder.Services.AddExpertiseAuth(builder.Configuration, builder.Environment);
 
+// Part D C7 — response hygiene. Always-on for /expertise/* read responses per ADR-008.
+// Singleton: compiled regexes in PiiDetector/InjectionHeuristic + thread-safe nonce
+// provider (RandomNumberGenerator). No per-request state on the orchestrator.
+builder.Services.AddSingleton<ExpertiseApi.Hygiene.INonceProvider, ExpertiseApi.Hygiene.NonceProvider>();
+builder.Services.AddSingleton<ExpertiseApi.Hygiene.IResponseHygiene, ExpertiseApi.Hygiene.ResponseHygiene>();
+
 var baseDir = AppContext.BaseDirectory;
 var modelPath = builder.Configuration["Onnx:ModelPath"] ?? Path.Combine(baseDir, "models", "model.onnx");
 var vocabPath = builder.Configuration["Onnx:VocabPath"] ?? Path.Combine(baseDir, "models", "vocab.txt");
