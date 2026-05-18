@@ -68,7 +68,13 @@ builder.Services.Configure<HostOptions>(options =>
 // consumers in the integration backlog (#147 skill = plain curl/JSON; #148 pi extension
 // = TypeScript codegen) are 3.1-compatible. If a 3.0-only consumer surfaces later, pin
 // here and verify the emitter honours it on the then-current SDK.
-builder.Services.AddOpenApi();
+//
+// BearerSecuritySchemeTransformer advertises the JWT Bearer scheme on every secured
+// operation so Scalar UI, codegen, and LLM agents know how to authenticate (#146).
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer<ExpertiseApi.OpenApi.BearerSecuritySchemeTransformer>();
+});
 
 // ProblemDetails sanitization (Part D C4). Always emit a traceId extension so
 // client-side error reports can be cross-referenced to server logs; outside
@@ -327,9 +333,22 @@ if (metricsEnabled)
     app.UseHttpMetrics();
 app.UseSerilogRequestLogging();
 
+// OpenAPI document discovery: exposed in ALL environments (#146). The spec is also
+// published as a GitHub Release asset (openapi.json + .sha256) via release.yml so
+// downstream agents/codegen can pin a version offline; the runtime endpoint serves
+// the live deployment's surface for ad-hoc discovery. Anonymous + not rate-limited
+// because (1) the spec is non-sensitive (already public via Release assets) and
+// (2) downstream tools must discover the API before holding a bearer token.
+app.MapOpenApi()
+    .AllowAnonymous()
+    .DisableRateLimiting();
+
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    // Scalar interactive UI stays Development-only — it's a browser-rendered HTML
+    // page that, like the /query debug UI below, would invite token-handling
+    // anti-patterns in a deployed environment. Downstream consumers should fetch
+    // the JSON document from /openapi/v1.json or the Release asset.
     app.MapScalarApiReference();
 
     // Static-file serving and the /query debug UI are Development-only because
