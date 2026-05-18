@@ -290,6 +290,14 @@ New features and bug fixes should include tests. See [CLAUDE.md](CLAUDE.md) for 
 | [.claude/skills/expertise-api-design/SKILL.md](.claude/skills/expertise-api-design/SKILL.md) | Authoritative design reference (data model, API, architecture) |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | Copilot agent instructions |
 
+## Security
+
+| Topic | Document |
+|-------|----------|
+| Integration threat model (MCP alternatives, M1–M16, eight required server-side controls) | [docs/security/integration-threat-model.md](docs/security/integration-threat-model.md) |
+| Why this project does not expose MCP as a first-party channel | [ADR-007](adrs/007-avoid-mcp-as-llm-integration-channel.md) |
+| Scanning stack (CodeQL, Trivy, Hadolint, OSV-Scanner) | [ADR-004](adrs/004-security-scanning-stack.md) |
+
 ## License
 
 This project is not yet licensed. All rights reserved until a license is added.
