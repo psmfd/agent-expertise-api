@@ -48,8 +48,19 @@ jobs:
             exit 1
           fi
 
+      # Build-time OpenAPI document emission (Part D C8) is wired via
+      # Microsoft.Extensions.ApiDescription.Server in the API csproj. The generator
+      # runs as part of `dotnet build`; runtime startup guards that would otherwise
+      # reject the source-controlled placeholder configuration are bypassed for the
+      # `dotnet-getdocument` entry assembly. See AuthExtensions.IsBuildTimeOpenApiContext.
       - name: Build
         run: dotnet build ExpertiseApi.slnx --configuration Release --no-restore --disable-build-servers
+
+      # Smoke-check that build-time OpenAPI document emission (Part D C8) succeeded.
+      # release.yml picks up artifacts/openapi/ExpertiseApi.json for the GitHub Release
+      # asset attachment. Fail loud here rather than discover the absence in a release run.
+      - name: Verify openapi.json artifact present
+        run: test -f src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
 
       # Analyzer baseline gate (issue #101, ADR-006). The codebase reached
       # zero analyzer warnings via PR7a/PR7b/PR7c; this step prevents

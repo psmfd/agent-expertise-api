@@ -97,11 +97,19 @@ internal static class AuthExtensions
     /// footgun where <c>/health</c> and <c>/metrics</c> look green while every
     /// protected endpoint is broken. Fires in any environment because explicit
     /// <c>Auth:Mode=Oidc</c> with zero issuers is misconfiguration regardless of where.
+    ///
+    /// Build-time exception: when invoked under the <c>dotnet-getdocument</c> tool
+    /// (Microsoft.Extensions.ApiDescription.Server, Part D C8), the host runs against
+    /// source-controlled placeholder configuration that intentionally has no real OIDC
+    /// issuers. The guard's purpose — catching production misconfigurations — cannot
+    /// manifest in that context because nothing is actually being deployed, so it is
+    /// bypassed via the entry-assembly check. The runtime behaviour is unchanged.
     /// </summary>
     internal static void EnforceOidcIssuersGuard(AuthMode mode, IReadOnlyList<OidcIssuerOptions> issuers)
     {
         if (mode != AuthMode.Oidc) return;
         if (issuers.Count > 0) return;
+        if (IsBuildTimeOpenApiContext()) return;
 
         throw new InvalidOperationException(
             "Auth:Mode='Oidc' requires at least one valid Auth:Oidc:Issuers entry. " +
@@ -109,6 +117,21 @@ internal static class AuthExtensions
             "blank or starts with '<TODO' (placeholder values are filtered at load time). " +
             "Either populate Auth:Oidc:Issuers with real issuer URLs, or change Auth:Mode " +
             "(LocalDev/ApiKey/Hybrid permitted only in Development).");
+    }
+
+    /// <summary>
+    /// Detects whether the current host is being constructed by the
+    /// <c>Microsoft.Extensions.ApiDescription.Server</c> build-time OpenAPI document
+    /// generator (Part D C8). The tool loads the API assembly in a subprocess whose
+    /// entry assembly is <c>dotnet-getdocument</c> / <c>GetDocument.Insider</c>;
+    /// production deployments — Kestrel, systemd, IIS, Windows Service — all have
+    /// our own assembly as the entry. Used to bypass production-only startup guards
+    /// that would otherwise reject the source-controlled placeholder configuration.
+    /// </summary>
+    internal static bool IsBuildTimeOpenApiContext()
+    {
+        var entry = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name;
+        return entry is "dotnet-getdocument" or "GetDocument.Insider";
     }
 
     internal static IReadOnlyList<OidcIssuerOptions> LoadIssuers(IConfiguration configuration)

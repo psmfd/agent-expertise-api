@@ -65,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read    # checkout
+      contents: write   # gh release upload (openapi.json + sha256, Part D C8)
       packages: write   # push to GHCR (image + chart OCI artifact)
       id-token: write   # cosign keyless OIDC signing (Sigstore Fulcio)
 
@@ -83,6 +83,25 @@ jobs:
       - name: Download ONNX model files
         if: steps.model-cache.outputs.cache-hit != 'true'
         run: bash scripts/download-models.sh
+
+      # Build-time OpenAPI document emission (Part D C8). Runs on the runner host
+      # — NOT inside the multi-stage Docker build — because we need the resulting
+      # openapi.json file present on the runner for the later `gh release upload`
+      # step. The Docker build has its own SDK image and does its own dotnet publish
+      # in parallel; this duplication adds ~30s and produces the artifact that the
+      # release attaches as a pinned asset for downstream integrators (#147, #148).
+      # See docs/security/integration-threat-model.md Part D C8.
+      - name: Setup .NET (for build-time OpenAPI emission)
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        with:
+          global-json-file: global.json
+
+      - name: Build (emits artifacts/openapi/ExpertiseApi.json)
+        run: |
+          dotnet build src/ExpertiseApi/ExpertiseApi.csproj \
+            --configuration Release \
+            --disable-build-servers
+          test -f src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -209,6 +228,28 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign --yes "ghcr.io/${OWNER_LC}/charts/expertise-api@${CHART_DIGEST}"
+
+      # ---- OpenAPI document + sha256 as pinned release assets (Part D C8) ---
+      # The build-time generator wrote ExpertiseApi.json to artifacts/openapi/
+      # earlier in this job. Compute the sha256 and attach both to the GitHub
+      # Release that semantic-release created in the upstream job. Downstream
+      # integrators (skill #147, pi extension #148) verify the hash before
+      # consuming the spec. No --clobber: tags are immutable in this pipeline.
+      - name: Attach openapi.json + sha256 to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.release.outputs.new-release-version }}
+        run: |
+          set -euo pipefail
+          src=src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
+          out_dir=dist/openapi
+          mkdir -p "$out_dir"
+          cp "$src" "$out_dir/openapi.json"
+          sha256sum "$out_dir/openapi.json" | awk '{print $1}' > "$out_dir/openapi.json.sha256"
+          gh release upload "$TAG" \
+            "$out_dir/openapi.json" \
+            "$out_dir/openapi.json.sha256" \
+            --repo "${{ github.repository }}"
 
       - name: Dispatch deploy to infra repo
         uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1

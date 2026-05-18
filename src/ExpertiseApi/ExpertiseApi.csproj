@@ -4,6 +4,23 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      Build-time OpenAPI document emission (Part D C8). When the
+      Microsoft.Extensions.ApiDescription.Server package is referenced, `dotnet build`
+      runs the _GenerateOpenApiDocuments MSBuild target which constructs a stripped
+      WebApplicationFactory-equivalent host, walks the ApiExplorer metadata, and writes
+      the OpenAPI document WITHOUT booting Kestrel or processing requests. The CI
+      release pipeline picks the file from OpenApiDocumentsDirectory, computes a
+      sha256, and uploads both as GitHub Release assets.
+
+      Default output filename is $(AssemblyName).json (i.e. ExpertiseApi.json); release.yml
+      renames it to openapi.json before uploading.
+
+      See docs/security/integration-threat-model.md Part D C8.
+    -->
+    <OpenApiGenerateDocuments>true</OpenApiGenerateDocuments>
+    <OpenApiDocumentsDirectory>$(MSBuildProjectDirectory)/artifacts/openapi</OpenApiDocumentsDirectory>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +38,15 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.7" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7" />
+    <!--
+      Build-time OpenAPI document generator (Part D C8). PrivateAssets=all keeps the
+      package out of the published output (it's an MSBuild task, not a runtime dependency).
+      IncludeAssets covers the build / buildMultitargeting / buildTransitive surfaces
+      that the task uses across SDK styles.
+    -->
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.0"
+                      PrivateAssets="all"
+                      IncludeAssets="build;buildMultitargeting;buildTransitive" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

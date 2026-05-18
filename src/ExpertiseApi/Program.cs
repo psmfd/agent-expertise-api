@@ -60,6 +60,14 @@ builder.Services.Configure<HostOptions>(options =>
     options.ShutdownTimeout = TimeSpan.FromSeconds(30);
 });
 
+// AddOpenApi registers the document(s) consumed by both runtime MapOpenApi() and the
+// build-time _GenerateOpenApiDocuments target (Part D C8). The build-time output
+// (artifacts/openapi/ExpertiseApi.json) is OpenAPI 3.1.1 by the .NET 10 default — the
+// `OpenApiOptions.OpenApiVersion` knob in Microsoft.AspNetCore.OpenApi 10.0.7 does NOT
+// currently propagate to the build-time emitter (verified 2026-05-18). Downstream
+// consumers in the integration backlog (#147 skill = plain curl/JSON; #148 pi extension
+// = TypeScript codegen) are 3.1-compatible. If a 3.0-only consumer surfaces later, pin
+// here and verify the emitter honours it on the then-current SDK.
 builder.Services.AddOpenApi();
 
 // ProblemDetails sanitization (Part D C4). Always emit a traceId extension so
@@ -227,6 +235,22 @@ if (File.Exists(modelPath) && File.Exists(vocabPath))
     builder.Services.AddBertOnnxEmbeddingGenerator(modelPath, vocabPath);
 }
 builder.Services.AddScoped<EmbeddingService>();
+
+// Build-time OpenAPI document generation (Microsoft.Extensions.ApiDescription.Server,
+// Part D C8) constructs a stripped host with ValidateOnBuild=true. Without ONNX model
+// files staged at build time, IEmbeddingGenerator isn't registered and the validation
+// rejects EmbeddingService's transitive dependency before any endpoint metadata is read.
+// At runtime this validation correctly catches misconfigurations; in the build-time
+// host nothing is actually served, so it is safe (and necessary) to disable. See
+// ExpertiseApi.Auth.AuthExtensions.IsBuildTimeOpenApiContext.
+if (ExpertiseApi.Auth.AuthExtensions.IsBuildTimeOpenApiContext())
+{
+    builder.Host.UseDefaultServiceProvider(opts =>
+    {
+        opts.ValidateOnBuild = false;
+        opts.ValidateScopes = false;
+    });
+}
 
 builder.Services.Configure<DeduplicationOptions>(
     builder.Configuration.GetSection("Deduplication"));
