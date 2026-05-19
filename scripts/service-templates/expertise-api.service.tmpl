@@ -7,7 +7,20 @@ After=network-online.target
 [Service]
 Type=notify
 NotifyAccess=main
-WatchdogSec=30
+# Watchdog intentionally disabled — see issue #217.
+#
+# Microsoft.Extensions.Hosting.Systemd registers SystemdNotifier for
+# READY=1 and STOPPING=1 only; it does NOT periodically ping
+# WATCHDOG=1. Enabling 'WatchdogSec=' without a hosted-service that
+# pings WATCHDOG=1 every WatchdogSec/2 causes systemd to SIGABRT the
+# unit after the first interval expires, producing a silent restart
+# loop under any GC/load condition that delays the runtime by ~half
+# the configured interval.
+#
+# To re-enable: add a hosted service that calls sd_notify("WATCHDOG=1")
+# on a timer (e.g. via the Tmds.Systemd or libsystemd P/Invoke route),
+# then reinstate 'WatchdogSec=30' here.
+#WatchdogSec=30
 WorkingDirectory=@@WORKDIR@@
 ExecStart=@@WRAPPER@@
 
