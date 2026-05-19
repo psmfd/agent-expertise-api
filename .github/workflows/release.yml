@@ -251,6 +251,34 @@ jobs:
             "$out_dir/openapi.json.sha256" \
             --repo "${{ github.repository }}"
 
+      # ---- cosign sign-blob over openapi.json (Part D C8 trust anchor) ------
+      # The sha256 file is in-band with the artifact it attests to. Anyone
+      # with `contents: write` on the repo (admins, future write collaborators,
+      # a compromised GITHUB_TOKEN in any workflow on main) could swap both
+      # files consistently and break the C8 trust anchor without detection.
+      # cosign sign-blob via the same Sigstore Fulcio keyless OIDC identity
+      # used for the image and chart binds provenance to *this workflow's*
+      # OIDC token, moving the trust root from "GitHub Releases is honest"
+      # to "Sigstore Fulcio cert chain + GitHub Actions OIDC issuer".
+      # Ordered AFTER the upload so a signing failure does not leave a
+      # release without the primary artifacts; the partial-state degrades
+      # to pre-#172 trust posture (sha256-only) rather than no-artifact.
+      - name: Sign openapi.json with cosign (keyless OIDC)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.release.outputs.new-release-version }}
+        run: |
+          set -euo pipefail
+          out_dir=dist/openapi
+          cosign sign-blob --yes \
+            --output-signature "$out_dir/openapi.json.sig" \
+            --output-certificate "$out_dir/openapi.json.pem" \
+            "$out_dir/openapi.json"
+          gh release upload "$TAG" \
+            "$out_dir/openapi.json.sig" \
+            "$out_dir/openapi.json.pem" \
+            --repo "${{ github.repository }}"
+
       - name: Dispatch deploy to infra repo
         uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
         with:

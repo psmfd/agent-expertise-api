@@ -319,21 +319,33 @@ The chart version equals the application version (e.g. `0.4.2` chart serves the 
 
 ### Supply-chain verification (cosign keyless OIDC)
 
-Both the image and the chart artifact are signed via Sigstore keyless OIDC (the workflow's GitHub Actions OIDC token, no long-lived keys). Verify before installing:
+The image, the chart artifact, and the `openapi.json` release asset are all signed via Sigstore keyless OIDC (the workflow's GitHub Actions OIDC token, no long-lived keys). Verify before installing or consuming:
 
 ```bash
 # Verify image
 cosign verify ghcr.io/thesemicolon/agent-expertise-api:vX.Y.Z \
-  --certificate-identity-regexp 'https://github\.com/TheSemicolon/agent-expertise-api/\.github/workflows/release\.yml@refs/heads/main' \
+  --certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # Verify chart artifact
 cosign verify ghcr.io/thesemicolon/charts/expertise-api:X.Y.Z \
-  --certificate-identity-regexp 'https://github\.com/TheSemicolon/agent-expertise-api/\.github/workflows/release\.yml@refs/heads/main' \
+  --certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# Verify openapi.json (download .sig + .pem alongside it from the release page)
+cosign verify-blob \
+  --certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature openapi.json.sig \
+  --certificate openapi.json.pem \
+  openapi.json
 ```
 
+All three recipes use `--certificate-identity` (exact match) rather than `--certificate-identity-regexp`. Cosign evaluates `--certificate-identity-regexp` with Go's `regexp.MatchString`, which is **unanchored** — a pattern ending `release.yml@refs/heads/main` substring-matches a malicious `release.yml@refs/heads/main-evil` cert SAN. Exact match removes that bypass surface; there is exactly one legitimate signing identity for this repo and exact match expresses it precisely. If [#138](https://github.com/TheSemicolon/agent-expertise-api/issues/138) introduces maintenance release branches, all three recipes broaden together — with right-anchored regexps (`...@refs/heads/(main|release/.*)$`) or repeated `--certificate-identity` flags, not unanchored patterns.
+
 A missing or invalid signature exits non-zero — wire it into your deploy pipeline as a hard gate.
+
+The sibling `openapi.json.sha256` file is retained for environments without cosign in their toolchain (a one-line `sha256sum -c` against a published hash). **Treat `cosign verify-blob` as the required gate; `sha256sum -c` against the in-band `.sha256` file is informational only and does not defend against a `contents: write` adversary** — such an attacker can swap both `openapi.json` and `.sha256` consistently. `cosign verify-blob` adds provenance binding the artifact to this repo's release workflow OIDC identity via the Fulcio cert chain, plus Rekor transparency-log inclusion (Sigstore's public log; openapi.json is intentionally public so this disclosure is desired).
 
 ### Archetype A2: native OS service install (no Docker)
 
