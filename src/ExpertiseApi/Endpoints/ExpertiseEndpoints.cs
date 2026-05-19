@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
+using ExpertiseApi.Hygiene;
 using ExpertiseApi.Models;
 using ExpertiseApi.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -26,7 +27,7 @@ internal static class ExpertiseEndpoints
             .WithDescription("Returns approved entries scoped to the caller's tenant plus any `shared` entries. " +
                              "Optional filters: `domain`, `tags` (CSV), `entryType`, `severity`, `includeDeprecated`. " +
                              "Drafts and rejected entries are excluded \u2014 reviewers see those via GET /expertise/drafts.")
-            .Produces<List<ExpertiseEntry>>(StatusCodes.Status200OK)
+            .Produces<List<ExpertiseEntryResponse>>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status403Forbidden)
             .ProducesProblem(StatusCodes.Status429TooManyRequests);
@@ -37,7 +38,7 @@ internal static class ExpertiseEndpoints
             .WithSummary("List draft + rejected entries for review")
             .WithDescription("Reviewer-only queue (`expertise.write.approve` scope). Returns Draft and Rejected entries " +
                              "in the caller's tenant; shared entries are never surfaced (they bypass the draft state).")
-            .Produces<List<ExpertiseEntry>>(StatusCodes.Status200OK)
+            .Produces<List<ExpertiseEntryResponse>>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status403Forbidden)
             .ProducesProblem(StatusCodes.Status429TooManyRequests);
@@ -48,7 +49,7 @@ internal static class ExpertiseEndpoints
             .WithSummary("Fetch a single entry by id")
             .WithDescription("Returns 200 with the entry if it is visible to the caller's tenant (own tenant or shared); " +
                              "404 otherwise. Drafts are not surfaced through this endpoint.")
-            .Produces<ExpertiseEntry>(StatusCodes.Status200OK)
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status403Forbidden)
             .ProducesProblem(StatusCodes.Status404NotFound)
@@ -62,8 +63,8 @@ internal static class ExpertiseEndpoints
             .WithDescription("Creates an entry in Draft state in the caller's tenant. Optional `tenant: \"shared\"` requires " +
                              "`expertise.write.approve` and bypasses the draft queue (created as Approved). " +
                              "Returns 409 if a near-duplicate is detected by the dedup service.")
-            .Produces<ExpertiseEntry>(StatusCodes.Status201Created)
-            .Produces<ExpertiseEntry>(StatusCodes.Status409Conflict)
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status201Created)
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status409Conflict)
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status403Forbidden)
@@ -76,7 +77,7 @@ internal static class ExpertiseEndpoints
             .WithSummary("Partially update an entry")
             .WithDescription("Only the supplied fields are modified. If `title` or `body` change the embedding is regenerated. " +
                              "Returns 409 (ConcurrentConflict) when the entry was modified by another request between read and write.")
-            .Produces<ExpertiseEntry>(StatusCodes.Status200OK)
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status403Forbidden)
             .ProducesProblem(StatusCodes.Status404NotFound)
@@ -116,7 +117,7 @@ internal static class ExpertiseEndpoints
             .WithSummary("Approve a draft entry (reviewer-only)")
             .WithDescription("Transitions the entry from Draft to Approved with the supplied `Visibility` " +
                              "(defaults to Private). Returns 409 if the entry is not currently in Draft state.")
-            .Produces<ExpertiseEntry>(StatusCodes.Status200OK)
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status403Forbidden)
             .ProducesProblem(StatusCodes.Status404NotFound)
@@ -129,7 +130,7 @@ internal static class ExpertiseEndpoints
             .Accepts<RejectExpertiseRequest>("application/json")
             .WithSummary("Reject a draft entry (reviewer-only)")
             .WithDescription("Transitions the entry from Draft to Rejected. A non-empty `rejectionReason` (\u2264 2000 chars) is required.")
-            .Produces<ExpertiseEntry>(StatusCodes.Status200OK)
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status403Forbidden)
@@ -143,6 +144,7 @@ internal static class ExpertiseEndpoints
     private static async Task<IResult> ListEntries(
         HttpContext httpContext,
         IExpertiseRepository repo,
+        IResponseHygiene hygiene,
         [FromQuery] string? domain,
         [FromQuery] string? tags,
         [FromQuery] EntryType? entryType,
@@ -156,28 +158,30 @@ internal static class ExpertiseEndpoints
         var tagList = tags?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
         var entries = await repo.ListAsync(tenantContext, domain, tagList, entryType, severity, includeDeprecated, ct);
-        return Results.Ok(entries);
+        return Results.Ok(ExpertiseEntryResponse.FromMany(entries, hygiene));
     }
 
     private static async Task<IResult> ListDrafts(
         HttpContext httpContext,
         IExpertiseRepository repo,
+        IResponseHygiene hygiene,
         CancellationToken ct)
     {
         var tenantContext = httpContext.RequireTenantContext();
         var entries = await repo.ListDraftsAsync(tenantContext, ct);
-        return Results.Ok(entries);
+        return Results.Ok(ExpertiseEntryResponse.FromMany(entries, hygiene));
     }
 
     private static async Task<IResult> GetEntry(
         Guid id,
         HttpContext httpContext,
         IExpertiseRepository repo,
+        IResponseHygiene hygiene,
         CancellationToken ct)
     {
         var tenantContext = httpContext.RequireTenantContext();
         var entry = await repo.GetByIdAsync(id, tenantContext, ct);
-        return entry is null ? Results.NotFound() : Results.Ok(entry);
+        return entry is null ? Results.NotFound() : Results.Ok(ExpertiseEntryResponse.From(entry, hygiene));
     }
 
     private static bool IsRequestValid(CreateExpertiseRequest request) =>
@@ -192,6 +196,7 @@ internal static class ExpertiseEndpoints
         IExpertiseRepository repo,
         EmbeddingService embeddingService,
         DeduplicationService dedup,
+        IResponseHygiene hygiene,
         CancellationToken ct)
     {
         if (!IsRequestValid(request))
@@ -218,10 +223,10 @@ internal static class ExpertiseEndpoints
 
         var (isDuplicate, existing) = await dedup.CheckAsync(request, embedding, tenantContext, ct);
         if (isDuplicate && existing is not null)
-            return Results.Conflict(existing);
+            return Results.Conflict(ExpertiseEntryResponse.From(existing, hygiene));
 
         var created = await repo.CreateAsync(BuildEntry(request, embedding, tenantContext), tenantContext, ct);
-        return Results.Created($"/expertise/{created.Id}", created);
+        return Results.Created($"/expertise/{created.Id}", ExpertiseEntryResponse.From(created, hygiene));
     }
 
     private static async Task<IResult> UpdateEntry(
@@ -230,6 +235,7 @@ internal static class ExpertiseEndpoints
         HttpContext httpContext,
         IExpertiseRepository repo,
         EmbeddingService embeddingService,
+        IResponseHygiene hygiene,
         CancellationToken ct)
     {
         var tenantContext = httpContext.RequireTenantContext();
@@ -255,7 +261,7 @@ internal static class ExpertiseEndpoints
 
         return outcome switch
         {
-            WriteOutcome.Success => Results.Ok(updated),
+            WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(updated!, hygiene)),
             WriteOutcome.NotFound => Results.NotFound(),
             WriteOutcome.ConcurrentConflict => Results.Problem(
                 title: "Concurrent modification",
@@ -501,6 +507,7 @@ internal static class ExpertiseEndpoints
         Guid id,
         HttpContext httpContext,
         IExpertiseRepository repo,
+        IResponseHygiene hygiene,
         ApproveExpertiseRequest? request,
         CancellationToken ct)
     {
@@ -510,7 +517,7 @@ internal static class ExpertiseEndpoints
         var (outcome, entry) = await repo.ApproveAsync(id, tenantContext, visibility, ct);
         return outcome switch
         {
-            WriteOutcome.Success => Results.Ok(entry),
+            WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(entry!, hygiene)),
             WriteOutcome.NotFound => Results.NotFound(),
             WriteOutcome.InvalidState => Results.Problem(
                 "Entry is not in Draft state and cannot be approved.",
@@ -527,6 +534,7 @@ internal static class ExpertiseEndpoints
         RejectExpertiseRequest request,
         HttpContext httpContext,
         IExpertiseRepository repo,
+        IResponseHygiene hygiene,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.RejectionReason))
@@ -540,7 +548,7 @@ internal static class ExpertiseEndpoints
         var (outcome, entry) = await repo.RejectAsync(id, tenantContext, request.RejectionReason, ct);
         return outcome switch
         {
-            WriteOutcome.Success => Results.Ok(entry),
+            WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(entry!, hygiene)),
             WriteOutcome.NotFound => Results.NotFound(),
             WriteOutcome.InvalidState => Results.Problem(
                 "Entry is not in Draft state and cannot be rejected.",

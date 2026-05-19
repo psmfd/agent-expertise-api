@@ -63,7 +63,7 @@ public class ExpertiseEndpointTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetProperty("id").GetGuid().Should().Be(seeded.Id);
-        json.GetProperty("title").GetString().Should().Be("Test entry");
+        json.GetProperty("title").GetProperty("value").GetString().Should().Contain("Test entry");
     }
 
     [Fact]

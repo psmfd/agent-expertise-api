@@ -66,6 +66,12 @@ internal class ExpertiseRepository(
             Tenant = entry.Tenant,
             Principal = principal,
             Agent = ctx.Agent,
+            // Part D C6: actor-class fields. ActorClass is required (defaults to Human via
+            // TenantContext.ActorClass default); AuthMethod/ActorClassHeader are recoverable
+            // forensic context that makes the fail-open-to-Human decision queryable.
+            ActorClass = ctx.ActorClass,
+            AuthMethod = ctx.AuthMethod,
+            ActorClassHeader = ctx.ActorClassHeader,
             BeforeHash = beforeHash,
             AfterHash = afterHash,
             IpAddress = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString()
@@ -315,6 +321,8 @@ internal class ExpertiseRepository(
             query = query.Where(a => a.Principal == principal);
         if (filter.Action is { } action)
             query = query.Where(a => a.Action == action);
+        if (filter.ActorClass is { } actorClass)
+            query = query.Where(a => a.ActorClass == actorClass);
         if (filter.From is { } from)
             query = query.Where(a => a.Timestamp >= from);
         if (filter.To is { } to)
@@ -335,6 +343,16 @@ internal class ExpertiseRepository(
             .ThenByDescending(a => a.Id)
             .Take(limit)
             .ToListAsync(ct);
+    }
+
+    public Task<ExpertiseAuditLog?> GetAuditByIdAsync(Guid id, CancellationToken ct)
+    {
+        // Admin-only forensic accessor (gated at the endpoint). No tenant/actor-class
+        // filter — the caller has expertise.admin scope and the use case is incident
+        // triage of the row identified by id.
+        return db.ExpertiseAuditLogs
+            .Where(a => a.Id == id)
+            .FirstOrDefaultAsync(ct);
     }
 
     public async Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated, CancellationToken ct)

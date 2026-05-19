@@ -1,5 +1,6 @@
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
+using ExpertiseApi.Hygiene;
 using ExpertiseApi.Models;
 using ExpertiseApi.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -21,7 +22,7 @@ internal static class SemanticSearchEndpoints
             .WithDescription("Generates an embedding for `q` via the configured ONNX/SBERT model and returns the top `limit` (clamped 1\u2013100) " +
                              "Approved entries by cosine similarity. Tenant-scoped (own tenant + shared). Subject to the `semantic-search` " +
                              "rate-limit policy (token bucket, 10/min) because each call runs ONNX inference.")
-            .Produces<List<ExpertiseEntry>>(StatusCodes.Status200OK)
+            .Produces<List<ExpertiseEntryResponse>>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
             .ProducesProblem(StatusCodes.Status403Forbidden)
@@ -34,6 +35,7 @@ internal static class SemanticSearchEndpoints
         HttpContext httpContext,
         IExpertiseRepository repo,
         EmbeddingService embeddingService,
+        IResponseHygiene hygiene,
         [FromQuery] string q,
         [FromQuery] int limit = 10,
         [FromQuery] bool includeDeprecated = false,
@@ -46,6 +48,6 @@ internal static class SemanticSearchEndpoints
         var clampedLimit = Math.Clamp(limit, 1, 100);
         var queryVector = await embeddingService.GenerateEmbeddingAsync(q, ct);
         var results = await repo.SemanticSearchAsync(queryVector, tenantContext, clampedLimit, includeDeprecated, ct);
-        return Results.Ok(results);
+        return Results.Ok(ExpertiseEntryResponse.FromMany(results, hygiene));
     }
 }

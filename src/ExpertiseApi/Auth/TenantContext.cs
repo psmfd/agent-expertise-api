@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using ExpertiseApi.Models;
 
 namespace ExpertiseApi.Auth;
 
@@ -13,12 +14,21 @@ namespace ExpertiseApi.Auth;
 /// <see cref="Scopes"/> is the expanded closure: a token carrying only <c>expertise.admin</c>
 /// has all four scopes present (admin ⊇ approve ⊇ draft ⊇ read).
 /// </para>
+/// <para>
+/// <see cref="ActorClass"/>, <see cref="AuthMethod"/>, and <see cref="ActorClassHeader"/>
+/// are Part D C6 audit-attribution fields populated by <see cref="ActorClassResolver"/>.
+/// Default values preserve source compatibility for older test fixtures that constructed
+/// the four-arg form. See <c>docs/security/integration-threat-model.md</c> Part D C6.
+/// </para>
 /// </summary>
 internal sealed record TenantContext(
     string? Tenant,
     ClaimsPrincipal Principal,
     string? Agent,
-    IReadOnlySet<string> Scopes);
+    IReadOnlySet<string> Scopes,
+    ActorClass ActorClass = ActorClass.Human,
+    string? AuthMethod = null,
+    string? ActorClassHeader = null);
 
 internal static class TenantContextHttpExtensions
 {

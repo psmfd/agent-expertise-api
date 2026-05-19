@@ -1,6 +1,6 @@
 # Four-scope split with Draft/Approved review state for ASI06 mitigation
 
-- Status: accepted
+- Status: accepted (amended by [ADR-008](008-response-hygiene-and-actor-class.md) — adds `expertise.agent` scope)
 - Date: 2026-04-28
 
 ## Context and Problem Statement

@@ -12,6 +12,7 @@ public class MigrationReversibilityTests : IAsyncLifetime
 {
     private const string BaselineMigration = "20260416062516_AddTitleLowerIndex";
     private const string TargetMigration = "20260428204727_AddTenantAuditFields";
+    private const string ActorClassMigration = "20260518232947_AddAuditActorClassFields";
 
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("pgvector/pgvector:pg17")
         .WithDatabase("migration_reversibility")
@@ -55,6 +56,41 @@ public class MigrationReversibilityTests : IAsyncLifetime
         // And TargetMigration should now be reported as pending again.
         var pending = await db.Database.GetPendingMigrationsAsync();
         pending.Should().Contain(TargetMigration);
+    }
+
+    [Fact]
+    public async Task AddAuditActorClassFields_AppliesAndRollsBack_Cleanly()
+    {
+        await using var db = NewContext();
+        var migrator = db.GetInfrastructure().GetRequiredService<IMigrator>();
+
+        // Arrange — apply migrations up to and including the prior baseline
+        // (TargetMigration / AddTenantAuditFields). ActorClassMigration is next.
+        await migrator.MigrateAsync(TargetMigration);
+
+        // Act — apply the C6 migration.
+        await migrator.MigrateAsync(ActorClassMigration);
+        var afterUp = await db.Database.GetAppliedMigrationsAsync();
+        afterUp.Should().Contain(ActorClassMigration);
+
+        await AssertActorClassColumnsExist(db, expected: true);
+
+        // Roll back: should leave AddTenantAuditFields applied and the C6 columns gone.
+        await migrator.MigrateAsync(TargetMigration);
+        var afterDown = await db.Database.GetAppliedMigrationsAsync();
+        afterDown.Should().NotContain(ActorClassMigration);
+        afterDown.Should().Contain(TargetMigration);
+
+        await AssertActorClassColumnsExist(db, expected: false);
+    }
+
+    private static async Task AssertActorClassColumnsExist(ExpertiseDbContext db, bool expected)
+    {
+        foreach (var column in new[] { "ActorClass", "AuthMethod", "ActorClassHeader" })
+        {
+            var exists = await ColumnExists(db, "ExpertiseAuditLogs", column);
+            exists.Should().Be(expected, $"column '{column}' should{(expected ? "" : " not")} exist");
+        }
     }
 
     private ExpertiseDbContext NewContext()

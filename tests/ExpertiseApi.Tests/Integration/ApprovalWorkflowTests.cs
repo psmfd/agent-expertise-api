@@ -160,7 +160,7 @@ public class ApprovalWorkflowTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetProperty("reviewState").GetString().Should().Be("Rejected");
-        json.GetProperty("rejectionReason").GetString().Should().Be("Lacks supporting context.");
+        json.GetProperty("rejectionReason").GetProperty("value").GetString().Should().Contain("Lacks supporting context.");
 
         var audit = await LatestAudit(draft.Id);
         audit!.Action.Should().Be(AuditAction.Rejected);
@@ -493,7 +493,7 @@ public class ApprovalWorkflowTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetProperty("reviewState").GetString().Should().Be("Rejected");
-        json.GetProperty("rejectionReason").GetString().Should().Be("needs more detail");
+        json.GetProperty("rejectionReason").GetProperty("value").GetString().Should().Contain("needs more detail");
     }
 
     [Fact]

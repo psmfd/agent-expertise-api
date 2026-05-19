@@ -70,10 +70,10 @@ public class TenantIsolationTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().Be(2);
-        var titles = new[] { json[0].GetProperty("title").GetString(), json[1].GetProperty("title").GetString() };
-        titles.Should().Contain("own-entry");
-        titles.Should().Contain("shared-entry");
-        titles.Should().NotContain("other-entry");
+        var titles = new[] { json[0].GetProperty("title").GetProperty("value").GetString()!, json[1].GetProperty("title").GetProperty("value").GetString()! };
+        titles.Should().Contain(t => t.Contains("own-entry", StringComparison.Ordinal));
+        titles.Should().Contain(t => t.Contains("shared-entry", StringComparison.Ordinal));
+        titles.Should().NotContain(t => t.Contains("other-entry", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public class TenantIsolationTests : IAsyncLifetime
 
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().Be(1);
-        json[0].GetProperty("title").GetString().Should().Be("approved");
+        json[0].GetProperty("title").GetProperty("value").GetString().Should().Contain("approved");
     }
 
     [Fact]
@@ -119,10 +119,10 @@ public class TenantIsolationTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().Be(2);
-        var titles = new[] { json[0].GetProperty("title").GetString(), json[1].GetProperty("title").GetString() };
-        titles.Should().Contain("draft");
-        titles.Should().Contain("rejected");
-        titles.Should().NotContain("approved");
+        var titles = new[] { json[0].GetProperty("title").GetProperty("value").GetString()!, json[1].GetProperty("title").GetProperty("value").GetString()! };
+        titles.Should().Contain(t => t.Contains("draft", StringComparison.Ordinal));
+        titles.Should().Contain(t => t.Contains("rejected", StringComparison.Ordinal));
+        titles.Should().NotContain(t => t.Contains("approved", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -143,7 +143,7 @@ public class TenantIsolationTests : IAsyncLifetime
 
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().Be(1);
-        json[0].GetProperty("title").GetString().Should().Be("own-draft");
+        json[0].GetProperty("title").GetProperty("value").GetString().Should().Contain("own-draft");
     }
 
     [Fact]

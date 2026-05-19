@@ -80,6 +80,14 @@ internal interface IExpertiseRepository
         AuditLogFilter filter,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Loads a single audit row by id WITHOUT any tenant or actor-class filtering.
+    /// Backs the admin-only <c>/audit/{id}/raw</c> escape hatch (security-review-expert
+    /// recommendation under #168 in place of a <c>?raw=true</c> query flag on the main
+    /// read path). Returns null when the row does not exist.
+    /// </summary>
+    Task<ExpertiseAuditLog?> GetAuditByIdAsync(Guid id, CancellationToken ct = default);
+
     Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated = false, CancellationToken ct = default);
 
     Task<List<ExpertiseEntry>> SemanticSearchAsync(Vector queryVector, TenantContext ctx, int limit = 10, bool includeDeprecated = false, CancellationToken ct = default);
@@ -116,6 +124,7 @@ internal record AuditLogFilter(
     Guid? EntryId = null,
     string? Principal = null,
     AuditAction? Action = null,
+    ActorClass? ActorClass = null,
     DateTime? From = null,
     DateTime? To = null,
     int Limit = 50,

@@ -1,5 +1,9 @@
 using System.Security.Claims;
+using ExpertiseApi.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace ExpertiseApi.Auth;
 
@@ -39,11 +43,37 @@ internal static class JwtTenantContextEvents
                     ?? ctx.Principal.FindFirst("azp")?.Value
                     ?? ctx.Principal.FindFirst("client_id")?.Value;
 
+        // Part D C6: resolve actor class from scope + header + UA. Bearer scheme defaults
+        // to Human (interactive user) unless the principal is a client_credentials machine
+        // (azp == client_id but no `sub` user claim), in which case Service is the right
+        // default. ActorClassResolver still honours an X-Actor-Class: agent header as long
+        // as expertise.agent scope OR a UA-allowlist match corroborates it.
+        var hasUserSubject = !string.IsNullOrEmpty(ctx.Principal.FindFirst("sub")?.Value)
+                             && !string.Equals(ctx.Principal.FindFirst("sub")?.Value, agent, StringComparison.Ordinal);
+        var schemeDefault = hasUserSubject ? ActorClass.Human : ActorClass.Service;
+
+        var agentUaOptions = ctx.HttpContext.RequestServices
+            .GetRequiredService<IOptionsMonitor<AgentUserAgentOptions>>().CurrentValue;
+        var resolverLogger = ctx.HttpContext.RequestServices
+            .GetRequiredService<ILoggerFactory>().CreateLogger(typeof(ActorClassResolver).FullName!);
+
+        var (actorClass, rawHeader) = ActorClassResolver.Resolve(
+            ctx.HttpContext,
+            ctx.Principal,
+            expanded,
+            authMethod: AuthExtensions.BearerScheme,
+            agentUaOptions.Patterns,
+            schemeDefault,
+            resolverLogger);
+
         var tenantContext = new TenantContext(
             Tenant: tenant,
             Principal: ctx.Principal,
             Agent: agent,
-            Scopes: expanded);
+            Scopes: expanded,
+            ActorClass: actorClass,
+            AuthMethod: AuthExtensions.BearerScheme,
+            ActorClassHeader: rawHeader);
 
         ctx.HttpContext.SetTenantContext(tenantContext);
         return Task.CompletedTask;

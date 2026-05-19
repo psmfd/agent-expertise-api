@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
+using ExpertiseApi.Models;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
 
@@ -11,7 +12,8 @@ internal class ApiKeyAuthHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options,
     ILoggerFactory logger,
     UrlEncoder encoder,
-    IConfiguration configuration)
+    IConfiguration configuration,
+    IOptionsMonitor<AgentUserAgentOptions> agentUaOptions)
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
     public const string SchemeName = "ApiKey";
@@ -73,11 +75,27 @@ internal class ApiKeyAuthHandler(
         var identity = new ClaimsIdentity(claims, SchemeName);
         var principal = new ClaimsPrincipal(identity);
 
+        // Part D C6: ApiKey is non-interactive by construction (single shared secret, no
+        // user attribution beyond the configured default principal). Default to Service.
+        // The header+UA-allowlist path still permits self-attestation to Agent for the
+        // developer-skill case (dev API key + matching UA), per ActorClassResolver.
+        var (actorClass, rawHeader) = ActorClassResolver.Resolve(
+            Context,
+            principal,
+            expandedScopes,
+            authMethod: SchemeName,
+            agentUaOptions.CurrentValue.Patterns,
+            schemeDefault: ActorClass.Service,
+            Logger);
+
         var tenantContext = new TenantContext(
             Tenant: defaultTenant,
             Principal: principal,
             Agent: null,
-            Scopes: expandedScopes);
+            Scopes: expandedScopes,
+            ActorClass: actorClass,
+            AuthMethod: SchemeName,
+            ActorClassHeader: rawHeader);
         Context.SetTenantContext(tenantContext);
 
         var ticket = new AuthenticationTicket(principal, SchemeName);

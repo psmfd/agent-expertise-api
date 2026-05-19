@@ -35,7 +35,12 @@ public class ApiKeyAuthHandlerLoggingTests
             .AddInMemoryCollection(configEntries)
             .Build();
 
-        var handler = new ApiKeyAuthHandler(options, loggerFactory, UrlEncoder.Default, config);
+        var handler = new ApiKeyAuthHandler(
+            options,
+            loggerFactory,
+            UrlEncoder.Default,
+            config,
+            new StaticAgentUaOptionsMonitor());
 
         var context = new DefaultHttpContext();
         configureContext?.Invoke(context);
