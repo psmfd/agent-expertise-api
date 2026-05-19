@@ -115,6 +115,10 @@ public class JwtApiFactory : WebApplicationFactory<Program>
                 });
 
             services.AddSingleton(mockGenerator);
+            // Auto-inject Idempotency-Key on POSTs server-side so the
+            // suite's pre-existing PostAsJsonAsync call sites still work
+            // under the hard-require flip (ADR-010, 2026-05-19).
+            services.AddTransient<IStartupFilter, AutoIdempotencyKeyStartupFilter>();
         });
     }
 }
