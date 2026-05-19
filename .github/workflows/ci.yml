@@ -93,7 +93,7 @@ jobs:
           retention-days: 14
 
   pi-extension-typecheck:
-    name: pi extension typecheck (expertise-api)
+    name: pi extension typecheck + tests (expertise-api)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -108,6 +108,9 @@ jobs:
       - name: Typecheck
         working-directory: .pi/extensions/expertise-api
         run: npm run typecheck
+      - name: Test
+        working-directory: .pi/extensions/expertise-api
+        run: npm test
 
   helm-lint:
     name: Helm lint + render tests

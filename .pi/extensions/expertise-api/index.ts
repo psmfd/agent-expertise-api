@@ -75,6 +75,59 @@ interface ApiCallResult {
 	rawText?: string;
 }
 
+/**
+ * Idempotency-Key shape validator. Mirrors the server-side
+ * IdempotencyKeyValidator (IETF draft-ietf-httpapi-idempotency-key-
+ * header-06 §2.2 / ADR-010): 1–255 chars, printable ASCII (0x21–0x7E),
+ * no whitespace, no control characters. Returns true if the key is
+ * shape-valid; false otherwise.
+ *
+ * Defense-in-depth for the `init.headers['Idempotency-Key']` override
+ * path: no current call site supplies caller-controlled keys, but if a
+ * future tool handler does, a CRLF-bearing or oversized value should
+ * fail fast client-side rather than reach the server (which would 400).
+ */
+const IDEMPOTENCY_KEY_PATTERN: RegExp = /^[\x21-\x7E]{1,255}$/;
+export function isValidIdempotencyKey(key: string): boolean {
+	return IDEMPOTENCY_KEY_PATTERN.test(key);
+}
+
+/**
+ * Inject an Idempotency-Key header on POST writes per ADR-010 (issue #206).
+ *
+ * Scoped to POST to match the server-side IdempotencyEndpointFilter
+ * (attached only to /expertise, /expertise/{id}/approve, and
+ * /expertise/{id}/reject). A caller-supplied 'Idempotency-Key' is
+ * preserved verbatim so tool handlers that own a retry loop can pin one
+ * key across attempts and hit the server-side replay cache instead of
+ * double-writing. Caller-supplied keys are shape-validated; an invalid
+ * value throws synchronously (apiCall wraps the call site so this
+ * surfaces as a typed error to the tool result, not an unhandled
+ * rejection).
+ *
+ * Exported (vs inlined into apiCall) so unit tests can assert the
+ * contract without mocking fetch.
+ */
+export function applyIdempotencyKey(
+	headers: Headers,
+	method: string | undefined,
+): void {
+	const upper: string = (method ?? "GET").toUpperCase();
+	if (upper !== "POST") {
+		return;
+	}
+	const existing: string | null = headers.get("Idempotency-Key");
+	if (existing !== null) {
+		if (!isValidIdempotencyKey(existing)) {
+			throw new Error(
+				"Idempotency-Key shape invalid: must be 1-255 printable ASCII characters (0x21-0x7E), no whitespace or control characters.",
+			);
+		}
+		return;
+	}
+	headers.set("Idempotency-Key", crypto.randomUUID());
+}
+
 function getBaseUrl(): string {
 	const raw = process.env.EXPERTISE_API_BASE_URL;
 	if (!raw || raw.trim() === "") {
@@ -120,17 +173,25 @@ async function apiCall(
 	init: RequestInit = {},
 	signal?: AbortSignal,
 ): Promise<ApiCallResult> {
-	const base = getBaseUrl();
-	const token = getToken();
-	const url = `${base}${pathAndQuery}`;
-	const headers = new Headers(init.headers ?? {});
+	const base: string = getBaseUrl();
+	const token: string = getToken();
+	const url: string = `${base}${pathAndQuery}`;
+	const headers: Headers = new Headers(init.headers ?? {});
 	headers.set("Authorization", `Bearer ${token}`);
 	headers.set("Accept", "application/json");
 	if (init.body !== undefined && !headers.has("Content-Type")) {
 		headers.set("Content-Type", "application/json");
 	}
 
-	const response = await fetch(url, { ...init, headers, signal });
+	// Idempotency-Key on POST writes (ADR-010, issue #206). Scoped to POST
+	// to match the server-side IdempotencyEndpointFilter, which is
+	// attached only to /expertise, /expertise/{id}/approve, and
+	// /expertise/{id}/reject. Caller-supplied header (via init.headers)
+	// is preserved so tool handlers that own a retry loop can pin one key
+	// across attempts and benefit from server-side replay.
+	applyIdempotencyKey(headers, init.method);
+
+	const response: Response = await fetch(url, { ...init, headers, signal });
 	const rawText = await response.text();
 	let body: unknown = rawText;
 	const ct = response.headers.get("Content-Type") ?? "";

@@ -5,12 +5,17 @@
   "description": "pi extension exposing the agent-expertise-api as typed tools (search, create, approve, reject, etc.) for use inside the pi coding agent.",
   "type": "module",
   "main": "index.ts",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test apiCall.test.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.75.3",
     "@earendil-works/pi-coding-agent": "0.75.3",
+    "tsx": "^4.22.3",
     "typebox": "^1.1.38",
     "typescript": "^5.7.0"
   }
