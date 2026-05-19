@@ -10,6 +10,9 @@
 #   6. reject entry A          -> expected HTTP 409 (state machine)
 #   7. create entry B  (Draft)
 #   8. reject entry B with reason  -> Rejected
+#   9. idempotency replay      -> two POST /expertise calls under one
+#                                 pinned IDEMPOTENCY_KEY return the same
+#                                 entry id (server-side replay, ADR-010)
 #
 # Step 8 is critical: it exercises reject.sh against a real Draft so a
 # wrong-field-name or other reject-body regression is caught (rather than
@@ -122,5 +125,48 @@ case "$rreason" in
     *) fail "reject B: rejectionReason did not round-trip; got '$rreason'" ;;
 esac
 
+# ---- 9. Idempotency replay (ADR-010) ----
+# Two POST /expertise calls under the same pinned IDEMPOTENCY_KEY must
+# (a) return the same entry id and (b) on the second call surface the
+# server-side 'Idempotency-Replay: true' response header. The id check
+# alone would also pass if the server fell back to body-based dedup, so
+# we additionally inspect the response headers to prove the replay path
+# was taken.
+require_cmd uuidgen
+suffix_c="$(date +%s)-$$-c"
+title_c="smoke-test idempotency ${suffix_c}"
+step "idempotency replay: two POSTs under one pinned key (title=${title_c})"
+body_c="$(mk_body "$title_c" "$suffix_c")"
+IDEMPOTENCY_KEY="$(uuidgen)"
+export IDEMPOTENCY_KEY
+# Log a truncated form so CI traces do not echo the full key.
+echo "    pinned IDEMPOTENCY_KEY=${IDEMPOTENCY_KEY:0:8}…${IDEMPOTENCY_KEY: -4}"
+first_c="$(printf '%s' "$body_c" | "${here}/create.sh")" \
+    || fail "idempotency: first create did not return 2xx"
+first_id="$(printf '%s' "$first_c" | jq -er '.id')" \
+    || fail "idempotency: first response missing .id"
+
+# Second call: bypass create.sh so we can capture response headers via
+# `curl -D` and assert the ADR-010 replay marker directly. Reuses the
+# same IDEMPOTENCY_KEY env var the helper consumes.
+headers_file="$(mktemp -t expertise-api-headers.XXXXXX)"
+second_status="$(api_curl_status "/expertise" \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    --data-binary "$body_c" \
+    -D "$headers_file" 2>/dev/null)"
+case "$second_status" in
+    2??) : ;;
+    *)   fail "idempotency: second create returned ${second_status} (expected 2xx replay)" ;;
+esac
+if ! grep -qiE '^Idempotency-Replay:[[:space:]]+true' "$headers_file"; then
+    echo "--- response headers ---" >&2
+    cat "$headers_file" >&2
+    fail "idempotency: second create missing 'Idempotency-Replay: true' header (server-side replay did not engage)"
+fi
+rm -f "$headers_file"
+echo "    confirmed both POSTs returned id=$first_id and second response carried Idempotency-Replay: true"
+unset IDEMPOTENCY_KEY
+
 echo
-echo "OK: skill-smoke-test passed (approve id_a=$id_a, reject id_b=$id_b)"
+echo "OK: skill-smoke-test passed (approve id_a=$id_a, reject id_b=$id_b, idempotent id=$first_id)"

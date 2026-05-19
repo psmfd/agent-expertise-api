@@ -97,6 +97,35 @@ EOF
 | 409 | Concurrency conflict (concurrent approve+reject) _or_ dedup match on create | Re-fetch and reconsider. |
 | 429 | Rate-limited | Honour `Retry-After`. |
 
+## Idempotency on writes
+
+The three POST endpoints (`/expertise`, `/expertise/{id}/approve`,
+`/expertise/{id}/reject`) honour an `Idempotency-Key` header per
+[ADR-010](../../../adrs/010-idempotency-key-handling.md). The `api_curl`
+helper in `scripts/lib/common.sh` injects this header automatically on
+any POST, generated from `uuidgen`. **No caller-side change is required**
+for the common case — a single invocation of `create.sh`, `approve.sh`,
+or `reject.sh` gets a fresh key and the server treats it as a one-shot.
+
+If a caller wraps the script in its own retry loop (e.g. an outer shell
+that re-runs `create.sh` on transient network failure), it must pin one
+key across all attempts so the server returns the _original_ response on
+replay instead of double-creating. Pre-generate the key and export it:
+
+```sh
+export IDEMPOTENCY_KEY="$(uuidgen)"
+for _ in 1 2 3; do
+    ./scripts/create.sh --file /tmp/entry.json && break
+    sleep 2
+done
+unset IDEMPOTENCY_KEY
+```
+
+Keys are scoped to `(tenant, key)` and retained server-side for the
+configured TTL (24h default). A literal byte-equal replay returns the
+original 2xx body plus `Idempotency-Replay: true`; a _different_ request
+body under the same key returns HTTP 409.
+
 ## Design reference
 
 For the underlying schema, scope hierarchy, approval state machine, audit log shape, and authentication modes, load `references/DESIGN.md` from this skill directory on demand. It is intentionally not in scope at skill load time.
