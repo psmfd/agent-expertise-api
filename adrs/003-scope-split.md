@@ -1,6 +1,6 @@
 # Four-scope split with Draft/Approved review state for ASI06 mitigation
 
-- Status: accepted (amended by [ADR-008](008-response-hygiene-and-actor-class.md) — adds `expertise.agent` scope)
+- Status: accepted (amended by [ADR-008](008-response-hygiene-and-actor-class.md) — adds `expertise.agent` scope; clarified 2026-05-19 — see "Draft visibility uses `GET /expertise/drafts`" and "Soft-delete on shared entries requires `expertise.write.approve`" subsections under Decision Outcome)
 - Date: 2026-04-28
 
 ## Context and Problem Statement
@@ -45,6 +45,31 @@ Reasons:
 ### Cross-tenant read returns 404, not 403
 
 A `GET /expertise/{id}` for an entry in another tenant returns 404 rather than 403, regardless of whether the entry exists. 403 leaks the existence of an entry the caller is not permitted to see; 404 does not. This applies to all read endpoints.
+
+### Draft visibility uses `GET /expertise/drafts`, not `?includeDrafts=true`
+
+*Clarification added 2026-05-19; closes #67. Implements decisions made in rebuild PR 4 (#60). Decision direction unchanged — this section makes an implicit choice explicit.*
+
+Rebuild PR 3 (#59) introduced a `?includeDrafts=true` query parameter on `/expertise`, `/expertise/search`, and `/expertise/search/semantic`, gated by `expertise.write.approve`. Rebuild PR 4 (#60) **removed** the parameter entirely and replaced it with a dedicated `GET /expertise/drafts` endpoint.
+
+Reasons:
+
+- **`?includeDrafts=true` silently widened the result set to include `Rejected` entries** (including any `RejectionReason` content) in addition to `Draft`. Approvers asking “show me drafts” had no way to filter out rejected entries, and the parameter name did not advertise the rejection-inclusion behaviour. A caller could exfiltrate sensitive rejection commentary by reading the unfiltered output.
+- **A dedicated endpoint makes the trust-boundary jump explicit.** `/expertise` returns canonical (Approved) entries; `/expertise/drafts` returns the review queue (Draft only). Two URLs, two purposes, no in-band mode-switching.
+- **The audit story is cleaner.** `/expertise/drafts` access can be logged as a distinct read action without straining the existing read-audit semantics with an “or-was-it-a-draft-read?” disjunction.
+- **`Rejected` entries are not exposed via any read endpoint.** They remain in the data store for audit purposes (visible via `/audit`) but are unreachable through the read API. Treat `Rejected` as a tombstone state, not a queryable category.
+
+The parameter is **removed**, not deprecated. No backward-compatibility window applies because it shipped only on the dev branch between PR 3 and PR 4 and never appeared in a tagged release.
+
+### Soft-delete on shared entries requires `expertise.write.approve`
+
+*Clarification added 2026-05-19; closes #67. Implements the decision made in rebuild PR 4 (#60). Decision direction unchanged.*
+
+The original Decision Outcome listed soft-delete on shared entries as an admin-tier action without specifying which scope satisfies it. PR 4 settled on **`expertise.write.approve`** (not `expertise.admin`) because soft-deleting a shared entry is the symmetric inverse of approving one into the shared keyspace, and the two operations belong at the same trust level.
+
+- **Symmetry argument.** Promoting a draft into `Tenant = 'shared'` is a `write.approve` action; demoting (soft-deleting) a shared entry should be the same.
+- **`expertise.admin` is reserved for audit-log read and operational operations** (`/audit` access, future bulk operations), not for the steady-state shared-keyspace lifecycle.
+- **Tenant-scoped soft-delete (non-shared entries) requires only `expertise.write.draft`** for the writer's own entry. The scope escalation applies specifically when the entry's `Tenant = 'shared'`.
 
 ### Consequences
 
