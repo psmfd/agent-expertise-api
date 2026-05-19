@@ -1,6 +1,6 @@
 # Idempotency-Key handling and replay semantics (C3)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-05-19
 - Companion: [`docs/security/integration-threat-model.md`](../docs/security/integration-threat-model.md) Part D C3
 - Tracking issue: [#188](https://github.com/TheSemicolon/agent-expertise-api/issues/188)

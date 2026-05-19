@@ -133,6 +133,7 @@ builder.Services.AddOutputCache(options =>
 builder.Services.AddOpenApi(options =>
 {
     options.AddDocumentTransformer<ExpertiseApi.OpenApi.BearerSecuritySchemeTransformer>();
+    options.AddDocumentTransformer<ExpertiseApi.OpenApi.IdempotencyKeyDocumentTransformer>();
 });
 
 // ProblemDetails sanitization (Part D C4). Always emit a traceId extension so
@@ -338,6 +339,33 @@ builder.Services.AddExpertiseAuth(builder.Configuration, builder.Environment);
 builder.Services.AddSingleton<ExpertiseApi.Hygiene.INonceProvider, ExpertiseApi.Hygiene.NonceProvider>();
 builder.Services.AddSingleton<ExpertiseApi.Hygiene.IResponseHygiene, ExpertiseApi.Hygiene.ResponseHygiene>();
 
+// Part D C3 — Idempotency-Key handling (ADR-010).
+//
+// Dedicated NpgsqlDataSource singleton — owns its own connection pool, sized
+// small (the idempotency path is low-volume vs the request workload). Kept
+// distinct from the EF Core DbContext's internal data source so the raw-SQL
+// store cannot accidentally enlist into an EF change-tracker scope and so a
+// DbContext misconfiguration does not regress the idempotency reservation
+// transaction. PgBouncer-safe: NpgsqlIdempotencyStore opens one connection +
+// one transaction per method call.
+builder.Services.AddSingleton<Npgsql.NpgsqlDataSource>(sp =>
+{
+    var cs = sp.GetRequiredService<IConfiguration>().GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is required for the idempotency store.");
+    var dsBuilder = new Npgsql.NpgsqlDataSourceBuilder(cs);
+    // Keep the pool narrow — three POSTs, one txn each, low qps.
+    return dsBuilder.Build();
+});
+builder.Services.Configure<ExpertiseApi.Services.Idempotency.IdempotencyOptions>(
+    builder.Configuration.GetSection("Idempotency"));
+builder.Services.AddSingleton<ExpertiseApi.Services.Idempotency.IIdempotencyStore,
+                              ExpertiseApi.Services.Idempotency.NpgsqlIdempotencyStore>();
+// Endpoint filter is resolved per-request from DI but the dependencies are
+// singletons; using AddSingleton here makes the architecture-test assertion
+// (no scoped state in the filter) trivially true.
+builder.Services.AddSingleton<ExpertiseApi.Endpoints.Filters.IdempotencyEndpointFilter>();
+builder.Services.AddHostedService<ExpertiseApi.Services.Idempotency.IdempotencyGcService>();
+
 var baseDir = AppContext.BaseDirectory;
 var modelPath = builder.Configuration["Onnx:ModelPath"] ?? Path.Combine(baseDir, "models", "model.onnx");
 var vocabPath = builder.Configuration["Onnx:VocabPath"] ?? Path.Combine(baseDir, "models", "vocab.txt");
@@ -472,6 +500,16 @@ if (app.Environment.IsDevelopment())
         .AllowAnonymous()
         .ExcludeFromDescription();
 }
+
+// Part D C3 — opt attributed POSTs into request-body buffering BEFORE
+// authentication / authorization so the body remains seekable by the time
+// the endpoint filter computes the request hash (model binding consumes
+// Request.Body otherwise). Must run after the framework's implicit
+// UseRouting() so HttpContext.GetEndpoint() returns the matched endpoint;
+// MapHealthEndpoints / MapExpertiseEndpoints etc. trigger UseRouting
+// internally if it has not been called yet — this UseMiddleware call sits
+// in the pipeline after that internal call.
+app.UseMiddleware<ExpertiseApi.Endpoints.Filters.IdempotencyRequestBufferingMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();

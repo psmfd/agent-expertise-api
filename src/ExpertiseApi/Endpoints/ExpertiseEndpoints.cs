@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
+using ExpertiseApi.Endpoints.Filters;
 using ExpertiseApi.Hygiene;
 using ExpertiseApi.Models;
 using ExpertiseApi.Services;
@@ -58,6 +59,7 @@ internal static class ExpertiseEndpoints
         group.MapPost("/", CreateEntry)
             .RequireAuthorization("WriteAccess")
             .RequireRateLimiting("expertise-write")
+            .RequireIdempotency()
             .Accepts<CreateExpertiseRequest>("application/json")
             .WithSummary("Create a new expertise entry (Draft by default)")
             .WithDescription("Creates an entry in Draft state in the caller's tenant. Optional `tenant: \"shared\"` requires " +
@@ -115,6 +117,7 @@ internal static class ExpertiseEndpoints
         group.MapPost("/{id:guid}/approve", ApproveEntry)
             .RequireAuthorization(AuthConstants.Policies.WriteApproveAccess)
             .RequireRateLimiting("expertise-write")
+            .RequireIdempotency()
             .Accepts<ApproveExpertiseRequest>("application/json")
             .WithSummary("Approve a draft entry (reviewer-only)")
             .WithDescription("Transitions the entry from Draft to Approved with the supplied `Visibility` " +
@@ -129,6 +132,7 @@ internal static class ExpertiseEndpoints
         group.MapPost("/{id:guid}/reject", RejectEntry)
             .RequireAuthorization(AuthConstants.Policies.WriteApproveAccess)
             .RequireRateLimiting("expertise-write")
+            .RequireIdempotency()
             .Accepts<RejectExpertiseRequest>("application/json")
             .WithSummary("Reject a draft entry (reviewer-only)")
             .WithDescription("Transitions the entry from Draft to Rejected. A non-empty `rejectionReason` (\u2264 2000 chars) is required.")
