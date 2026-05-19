@@ -72,6 +72,51 @@ builder.Services.AddOutputCache(options =>
         .Cache()
         .Expire(TimeSpan.FromMinutes(5))
         .SetVaryByHost(true));
+
+    // Issue #158 mitigation (2/2): bound the DoS amplification of
+    // /health/ready by capping concurrent probes to one underlying check
+    // execution per 2-second window. The endpoint is AllowAnonymous (k8s
+    // readinessProbe contract); without this cache an attacker can fan-in
+    // thousands of probes and multiply each by AddDbContextCheck's
+    // CanConnectAsync round-trip plus any other tagged check.
+    //
+    // Tenant-agnostic + request-header-agnostic cache key so a per-client
+    // header (User-Agent, X-Forwarded-For) cannot explode the cache into
+    // per-client entries. SetVaryByHost(false) is the explicit default;
+    // pinned here for documentation. SetVaryByQuery([]) drops the
+    // (defensive) default of varying by query so /health/ready?cb=<rand>
+    // cannot defeat the cache.
+    //
+    // CACHING SEMANTICS NOTE: OutputCachePolicyBuilder.Cache() stores only
+    // SUCCESSFUL (200) responses by default. 503 responses (DB outage,
+    // pending migrations) are NOT cached. Outage-path amplification is
+    // therefore bounded by OutputCache's per-key single-flight (default
+    // LockingPolicy.Enabled) — one in-flight check pipeline at a time per
+    // cache key, with subsequent requests sharing the result — NOT by the
+    // 2s window. Recovery is immediate (no cached 503 to expire).
+    //
+    // FUTURE-MAINTAINER GUARD: if /health/ready ever gains
+    // .RequireAuthorization() (replacing .AllowAnonymous() in
+    // HealthEndpoints.cs), the cache policy below MUST either be removed
+    // or extended with SetVaryByValue keyed on the principal. The current
+    // ASP.NET Core pipeline (UseAuthorization -> ... -> UseOutputCache)
+    // protects against unauthenticated cache serving today, but
+    // cross-principal sharing of the cached body would still be incorrect.
+    // See https://learn.microsoft.com/en-us/aspnet/core/performance/caching/output#authorization
+    //
+    // 2s window:
+    //   * shorter than the Helm readinessProbe period (10s default), so a
+    //     steady-state prober never sees a stale response in flight.
+    //   * longer than typical inter-probe arrival within a DoS burst (sub-ms),
+    //     reducing steady-state amplification to 1 DB round-trip per pod per 2s
+    //     regardless of incoming RPS — satisfies the issue's "≤ 10× baseline".
+    //   * tolerable recovery latency on a real outage: 200-cache window
+    //     applies pre-outage; the outage itself is not cached.
+    options.AddPolicy("health-ready", policy => policy
+        .Cache()
+        .Expire(TimeSpan.FromSeconds(2))
+        .SetVaryByHost(false)
+        .SetVaryByQuery(Array.Empty<string>()));
 });
 
 // AddOpenApi registers the document(s) consumed by both runtime MapOpenApi() and the
