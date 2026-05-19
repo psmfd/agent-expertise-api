@@ -254,7 +254,24 @@ See [CLAUDE.md](CLAUDE.md) for full build commands, curl examples, and developme
 
 A Helm chart is included at `helm/expertise-api/` for deploying to Kubernetes (k3s or any k8s cluster). The chart includes PostgreSQL and PgBouncer. Backup is handled out-of-chart by a sidecar deployed from the infrastructure repo.
 
-`image.tag` defaults to empty string and the deployment template falls back to `.Chart.AppVersion`, so a vanilla `helm install` always pulls the chart's appVersion-aligned tag. Override `image.tag` only when pinning to a maintenance/preview tag distinct from the chart's appVersion — the chart emits a `WARNING` in `NOTES.txt` when `image.tag` is set explicitly (image+chart-skew advisory per issue #216 / #153) and a second `WARNING` when it is set to the mutable `latest` tag.
+`image.tag` defaults to empty string and the deployment template falls back to `.Chart.AppVersion`, so a vanilla `helm install` always pulls the chart's appVersion-aligned tag. Override `image.tag` only when pinning to a maintenance/preview tag distinct from the chart's appVersion — the chart emits a `WARNING` in `NOTES.txt` when `image.tag` is set explicitly to a value other than the chart's appVersion (image+chart-skew advisory per issue #216 / #153) and a second `WARNING` when it is set to the mutable `latest` tag.
+
+#### Chart 0.3.0 breaking changes (PR #232)
+
+Chart `0.3.0` introduces three values-defaults changes that may affect operators upgrading from `0.2.0` or earlier:
+
+1. **`image.tag` default flipped from `"latest"` to `""`** (which then falls back to `.Chart.AppVersion`, currently `0.1.3`). Operators who relied on the implicit `:latest` rolling-pickup behaviour will see a pinned semver tag after `helm upgrade`. To restore the prior rolling behaviour: `--set image.tag=latest` (or pin to a desired version: `--set image.tag=v0.1.3`).
+2. **`image.pullPolicy` default flipped from `Always` to `IfNotPresent`.** With a pinned tag this saves registry round-trips per pod restart. If you want force-pull on every restart (only meaningful with a mutable tag): `--set image.pullPolicy=Always`.
+3. **`values.schema.json` now sets `additionalProperties: false` on the `api.probes` block.** Unknown probe-kind keys (anything beyond `liveness`, `readiness`, `startup`) are rejected at `helm install --dry-run` time. The `api` parent block remains permissive — sibling keys such as `api.resources` (already schema-defined) and any operator-side overlay keys not in the schema continue to render.
+
+Pinning a tag at install time:
+
+```bash
+helm upgrade --install expertise-api ./helm/expertise-api \
+  --set image.tag=v0.1.3 \
+  --namespace expertise-api \
+  --create-namespace
+```
 
 Probe paths are surfaced as values for forks that expose health on non-default routes:
 

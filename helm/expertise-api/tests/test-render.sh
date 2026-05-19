@@ -440,6 +440,38 @@ else
     err "schema-probe-path-leading-slash" "schema accepted invalid probe path: $(echo "$out_bad_path" | tail -2 | tr '\n' ' ')"
 fi
 
+# 44. Migrations Job inherits the same image-tag default-to-appVersion fallback
+#     as the API Deployment (issue #214 — prevents migration/runtime image skew).
+appver=$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}' "$CHART/Chart.yaml")
+out_jobimg=$(helm template test-release "$CHART" 2>&1)
+if echo "$out_jobimg" | awk '/kind: Job/,/^---/' | grep -qF "image: \"ghcr.io/thesemicolon/agent-expertise-api:${appver}\""; then
+    ok "migrations-image-tag-default-fallback" "migrations Job image falls back to chart appVersion ${appver}"
+else
+    err "migrations-image-tag-default-fallback" "migrations Job image did not fall back to chart appVersion ${appver}"
+fi
+
+# 45. The `api` parent block in values.schema.json must remain permissive — the
+#     PR-232 review surfaced that an over-broad `additionalProperties: false`
+#     at this level would silently reject operator-side overlay keys. Guard
+#     against accidental re-tightening by asserting an unknown sibling key
+#     under `api` is accepted at install-time (specifically: an unknown key
+#     that is NOT under `api.probes`, which is intentionally closed).
+out_apiextra=$(helm template test-release "$CHART" --set api.unknownOverlayKey=somevalue 2>&1 || true)
+if echo "$out_apiextra" | grep -qiE "additional properties.*not allowed|does not match"; then
+    err "schema-api-block-permissive" "schema unexpectedly rejected an unknown sibling key under api (api block has been over-tightened)"
+else
+    ok "schema-api-block-permissive" "api block remains permissive for operator overlay keys (api.probes still closed)"
+fi
+
+# 46. Schema accepts SemVer prerelease tags on image.tag (issue #214 — release
+#     workflow may pin rc/beta tags during release-candidate cycles).
+out_pretag=$(helm template test-release "$CHART" --set image.tag=0.1.4-rc.1 2>&1 || true)
+if echo "$out_pretag" | grep -qF "image: \"ghcr.io/thesemicolon/agent-expertise-api:0.1.4-rc.1\""; then
+    ok "schema-image-tag-prerelease" "schema accepts SemVer prerelease tag (0.1.4-rc.1)"
+else
+    err "schema-image-tag-prerelease" "prerelease tag rejected or rendered wrong: $(echo "$out_pretag" | tail -2 | tr '\n' ' ')"
+fi
+
 echo "=================================="
 if [ "$ERRORS" -eq 0 ]; then
     echo "PASS — 0 errors, $WARNINGS warning(s)"

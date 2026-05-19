@@ -1,4 +1,13 @@
 expertise-api {{ .Chart.AppVersion }} installed in namespace {{ .Release.Namespace | quote }}.
+{{- if not .Chart.AppVersion }}
+
+  ERROR: Chart.yaml is missing appVersion. The chart cannot fall back to a
+         default image tag without one. Either set image.tag explicitly in
+         values.yaml, or repair Chart.yaml's appVersion field. (Render aborted
+         downstream by Kubernetes — the Deployment will produce an invalid
+         image reference like "<repo>:" and the Pod will fail to schedule
+         with ErrImagePull / InvalidImageName.)
+{{- end }}
 
   Image:      {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
   Chart ver:  {{ .Chart.Version }}

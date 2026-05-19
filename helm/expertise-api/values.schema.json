@@ -177,8 +177,7 @@
           },
           "additionalProperties": false
         }
-      },
-      "additionalProperties": false
+      }
     },
     "postgres": {
       "type": "object",
