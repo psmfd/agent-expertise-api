@@ -1,10 +1,10 @@
 # Idempotency-Key handling and replay semantics (C3)
 
-- Status: accepted
+- Status: accepted (hard-require since 2026-05-19; see [Amendment 1](#amendment-1--hard-require-flip-2026-05-19) at the bottom of this file)
 - Date: 2026-05-19
 - Companion: [`docs/security/integration-threat-model.md`](../docs/security/integration-threat-model.md) Part D C3
 - Tracking issue: [#188](https://github.com/TheSemicolon/agent-expertise-api/issues/188)
-- Follow-ups: [#205](https://github.com/TheSemicolon/agent-expertise-api/issues/205) (skill caller), [#206](https://github.com/TheSemicolon/agent-expertise-api/issues/206) (pi extension caller)
+- Follow-ups: [#205](https://github.com/TheSemicolon/agent-expertise-api/issues/205) (skill caller, shipped in PR #211), [#206](https://github.com/TheSemicolon/agent-expertise-api/issues/206) (pi extension caller, shipped in PR #212)
 
 ## Context and Problem Statement
 
@@ -118,6 +118,7 @@ PgBouncer caveat: `FOR UPDATE` requires an explicit transaction held across stat
 **Placeholder release on non-cacheable status / exception (refined post-review, 2026-05-19):** because the placeholder is committed immediately, an exception unwind or a non-cacheable status (5xx, 429) must explicitly release the placeholder row or the next legitimate retry is locked out for the full TTL window (default 24h). The filter wires a fire-and-forget `IIdempotencyStore.ReleaseReservationAsync(tenant, key)` call on `Response.OnCompleted` for both paths. The release is scoped `WHERE status_code = 0` so a late-running release call cannot accidentally delete a finalised row. Release failure increments `expertise_idempotency_persist_failed_total`; the row then ages out via the GC sweep (worst-case lock-out window: `GcInterval`, default 1h).
 
 **TTL enforcement at lookup:** the `SELECT … FOR UPDATE` filters expired rows authoritatively (`created_at >= now() - @ttl`) and refreshes the placeholder in place on a TTL-expired hit. The background GC sweep is a footprint optimisation, not a correctness mechanism — a retry against an expired row always re-executes the handler.
+
 ### Response capture: option (a) `MemoryStream` swap inside the endpoint filter
 
 Endpoint filters return `object?` (the `IResult`) *before* it is executed against the response stream. This is the one place where the result can be intercepted, rendered once into a size-capped buffer, persisted, and re-emitted, without the stream-wrapping fragility of pipeline-level capture or the `Results.*` evolution risk of `IResultExecutor` interception.
@@ -166,3 +167,31 @@ If `POST /expertise/batch` later joins the idempotency surface, the cap may need
 ## Implementation notes (non-normative)
 
 The full implementation plan — file-change list, integration test surface, GC `BackgroundService` modeled on `MigrationStateRefresher`, OpenAPI operation transformer for the `Idempotency-Key` parameter and `Idempotency-Replay` response header — lives in the #188 PR body. This ADR captures only the decisions; the mechanics may evolve under maintenance without ADR amendment, provided the decisions above hold.
+
+## Amendment 1 — hard-require flip (2026-05-19)
+
+**Status:** applied.
+**Driver:** all three sides of the C3 contract are now in production code.
+
+- Server side shipped in PR #207 (closes #188).
+- Skill caller shipped in PR #211 (closes #205): `api_curl` / `api_curl_status` auto-inject an `Idempotency-Key` on detected POSTs and honour a pre-set `IDEMPOTENCY_KEY` env var for caller-controlled retry pinning; the env-var value is shape-validated against this ADR's contract before splicing into the curl invocation.
+- pi extension caller shipped in PR #212 (closes #206): `apiCall` invokes `applyIdempotencyKey(headers, method)` which mints `crypto.randomUUID()` on POSTs and preserves caller-supplied keys; caller-supplied keys are shape-validated symmetrically with the skill side.
+
+**Decision change.** The original "Enforcement strictness" decision (Option *(c)*, soft-require + flip later) is amended to its endpoint: `Idempotency:RequireKey` now defaults to `true`. POSTs to `/expertise`, `/expertise/{id}/approve`, and `/expertise/{id}/reject` without an `Idempotency-Key` header return `400 Bad Request` with a ProblemDetails body citing IETF `draft-ietf-httpapi-idempotency-key-header-06`.
+
+**Rationale for skipping the bake window.** The original plan called for ≥48h of normal traffic with `idempotency_requests_total{outcome="missing_key_passthrough"} == 0` as the flip gate. That gate exists to identify external callers stuck on pre-#211/#212 code. The current deployment has **no downstream consumers** — the API serves only the skill (#211) and pi extension (#212) callers from this repository, both of which now generate keys unconditionally. The metric-based gate is therefore trivially satisfied by construction; skipping the bake window in favour of an immediate flip prioritises security/reliability/consistency posture without changing the risk profile that the gate was designed to characterise.
+
+**Post-flip observability (inverse of the pre-flip gate).** Once `RequireKey=true` the `missing_key_passthrough` outcome can no longer increment — the absence signal is now `missing_key_rejected` (`IdempotencyEndpointFilter.cs:103`). Operational contract: any non-zero `expertise_idempotency_requests_total{outcome="missing_key_rejected"}` post-deploy is the post-hoc evidence of an unknown caller; the prescribed response is an immediate env-overlay rollback to `Idempotency:RequireKey=false` (the C3 row reverts to ⚠️ for the duration), followed by caller patching or explicit ADR amendment to extend hard-require to that caller. The threat-model C3 row also calls out this gate so the convention is discoverable from either document.
+
+**Test posture.** Two integration tests pin the toggle in both directions:
+
+- `Hard_require_rejects_missing_header_with_400` asserts the new default behaviour. The test still uses an explicit `UseSetting("Idempotency:RequireKey", "true")` so it survives a future default flip.
+- `Post_without_idempotency_key_under_soft_require_passes_through_unchanged` asserts that the operator-controlled rollback path (`RequireKey=false`) still works. The test now uses an explicit `UseSetting("Idempotency:RequireKey", "false")` plus the `X-Test-Skip-Auto-Idempotency-Key` marker header to bypass the suite's `AutoIdempotencyKeyStartupFilter` (a test-only `IStartupFilter` registered in `ApiFactory`/`JwtApiFactory` that auto-injects a fresh `Idempotency-Key` on every POST that arrives without one, mirroring what the production callers do client-side; implemented server-side as middleware rather than as a `DelegatingHandler` so that factories produced by `WithWebHostBuilder(…)` — which return the base `WebApplicationFactory<T>` and bypass any subclass HttpClient customisation — still pick up auto-injection).
+
+**Rollback.** Operators can revert to soft-require by setting `Idempotency:RequireKey=false` in an environment overlay; no code change required. The C3 row in the threat model would revert from ✅ to ⚠️ for the duration.
+
+**Consequences (delta).**
+
+- C3 row in Part D flips from ⚠️ to ✅; Part D summary line goes 7/8 → 8/8.
+- Any new caller added in future must generate `Idempotency-Key` headers on POST writes; the contract is now load-bearing rather than advisory.
+- The original "Bad, because soft-require means the C3 row is not 'fully enforced ✅' until … the flag-flip issue all ship" entry in the Consequences list is now retired by this amendment.

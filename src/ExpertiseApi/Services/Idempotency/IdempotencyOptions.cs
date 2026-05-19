@@ -5,24 +5,29 @@ namespace ExpertiseApi.Services.Idempotency;
 /// <c>Idempotency</c> section of <c>appsettings.json</c> in
 /// <see cref="Program"/>.
 /// <para>
-/// Soft-require defaults are intentional (ADR-010): existing consumers
-/// (skill caller <c>api_curl</c> in <c>.agents/skills/expertise-api/scripts/lib/common.sh</c>
-/// and pi extension <c>apiCall</c> in <c>.pi/extensions/expertise-api/index.ts</c>)
-/// ship today without the header. Once issues #205 and #206 land header
-/// generation in both callers, the operator flips <c>RequireKey</c> to <c>true</c>
-/// in environment overlay and POSTs without the header begin returning
-/// 400 ProblemDetails.
+/// Hard-require is the shipped default since 2026-05-19 (ADR-010
+/// Amendment 1): both in-repo callers — the skill caller
+/// (<c>api_curl</c> in <c>.agents/skills/expertise-api/scripts/lib/common.sh</c>,
+/// shipped in PR #211) and the pi extension caller
+/// (<c>apiCall</c> in <c>.pi/extensions/expertise-api/index.ts</c>,
+/// shipped in PR #212) — generate <c>Idempotency-Key</c> headers on
+/// every POST. Operators can roll back to soft-require by setting
+/// <c>Idempotency:RequireKey=false</c> in an environment overlay; the
+/// value is read per-request via <c>IOptionsMonitor</c> so the flip
+/// takes effect without redeploy.
 /// </para>
 /// </summary>
 internal sealed class IdempotencyOptions
 {
     /// <summary>
-    /// When <c>true</c>, POSTs attached via <see cref="ExpertiseApi.Endpoints.Filters.IdempotencyEndpointFilterExtensions.RequireIdempotency"/>
+    /// When <c>true</c> (the shipped default since 2026-05-19), POSTs
+    /// attached via <see cref="ExpertiseApi.Endpoints.Filters.IdempotencyEndpointFilterExtensions.RequireIdempotency"/>
     /// reject requests missing the <c>Idempotency-Key</c> header with 400
-    /// ProblemDetails. When <c>false</c> (default), missing-header requests
-    /// fall through to the handler unchanged. See ADR-010 § "Migration path".
+    /// ProblemDetails. When <c>false</c>, missing-header requests fall
+    /// through to the handler unchanged — the documented operator
+    /// rollback path. See ADR-010 § "Migration path" and Amendment 1.
     /// </summary>
-    public bool RequireKey { get; set; }
+    public bool RequireKey { get; set; } = true;
 
     /// <summary>
     /// Hard cap on stored response body bytes. Bodies exceeding the cap have

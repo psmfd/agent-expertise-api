@@ -7,15 +7,19 @@ namespace ExpertiseApi.OpenApi;
 /// <summary>
 /// Document transformer that advertises the <c>Idempotency-Key</c> header on
 /// every operation whose endpoint carries <see cref="RequireIdempotencyMetadata"/>
-/// (i.e. routes attached via <c>.RequireIdempotency()</c>). Header is described
-/// as optional today (matching the soft-require posture of
-/// <c>Idempotency:RequireKey=false</c>); when the operator flips to hard-require
-/// in environment overlay, update the <c>Required=true</c> below in the same
-/// PR per the per-PR doc-sync rule.
+/// (i.e. routes attached via <c>.RequireIdempotency()</c>). Header is
+/// declared <c>Required = true</c> matching the hard-require posture of
+/// <c>Idempotency:RequireKey=true</c> (the shipped default since
+/// 2026-05-19; see ADR-010 Amendment 1). If the operator rolls back to
+/// soft-require via environment overlay, this transformer remains
+/// conservative — the contract continues to advertise the header as
+/// required, which is the safe direction for callers (they will always
+/// send a key even when the server would accept absence).
 /// <para>
 /// Also documents the response-side <c>Idempotency-Replay: true</c> indicator
 /// in the description so client codegen / agents can branch on cached vs
-/// fresh responses.
+/// fresh responses, and the 400 ProblemDetails response shape returned
+/// when the header is missing or malformed.
 /// </para>
 /// </summary>
 internal sealed class IdempotencyKeyDocumentTransformer : IOpenApiDocumentTransformer
@@ -63,14 +67,14 @@ internal sealed class IdempotencyKeyDocumentTransformer : IOpenApiDocumentTransf
                 {
                     Name = "Idempotency-Key",
                     In = ParameterLocation.Header,
-                    Required = false,
+                    Required = true,
                     Description =
                         "Caller-supplied idempotency key per IETF draft-ietf-httpapi-idempotency-key-header-06. " +
-                        "1–255 ASCII printable characters, no whitespace. When supplied, a replay of the same " +
-                        "key + body within 24h returns the original response unchanged and the response carries " +
-                        "`Idempotency-Replay: true`. Same key with a different body returns 409. Optional today " +
-                        "(Idempotency:RequireKey=false); operators may flip to hard-require after consumers ship " +
-                        "header generation (see issues #205, #206).",
+                        "1–255 ASCII printable characters, no whitespace. Required since 2026-05-19 (ADR-010 " +
+                        "Amendment 1, threat-model Part D C3); absence returns 400 ProblemDetails. " +
+                        "A replay of the same key + body within 24h returns the original response unchanged " +
+                        "and the response carries `Idempotency-Replay: true`. Same key with a different body " +
+                        "returns 409.",
                     Schema = new OpenApiSchema
                     {
                         Type = JsonSchemaType.String,

@@ -77,9 +77,31 @@ public class IdempotencyTests : IAsyncLifetime
     public async Task Post_without_idempotency_key_under_soft_require_passes_through_unchanged()
     {
         // Baseline: confirms the filter does NOT alter behaviour when the
-        // header is absent and RequireKey=false (the shipped default).
-        using HttpClient client = WriterClient();
+        // header is absent and RequireKey=false (operator-controlled
+        // rollback path; the shipped default is RequireKey=true since the
+        // ADR-010 hard-require flip on 2026-05-19). This test pins the
+        // soft-require contract so the flag still toggles in both
+        // directions for ops.
+        //
+        // Two test-only overrides are required:
+        //   1. UseSetting("Idempotency:RequireKey", "false") — inverts the
+        //      production default for this factory.
+        //   2. X-Test-Skip-Auto-Idempotency-Key marker — prevents the
+        //      AutoIdempotencyKeyStartupFilter from injecting a key, which
+        //      would defeat the point of the test (we want to observe the
+        //      truly-absent-header path through the filter).
+        await using WebApplicationFactory<Program> softFactory = _factory.WithWebHostBuilder(b =>
+            b.UseSetting("Idempotency:RequireKey", "false"));
+
+        string token = JwtTokenMinter.Mint(
+            tenant: "test",
+            scopes: [AuthConstants.WriteDraftScope, AuthConstants.ReadScope],
+            groups: ["group-test"]);
+        using HttpClient client = softFactory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
         using HttpRequestMessage req = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
+        req.Headers.Add(AutoIdempotencyKeyStartupFilter.SkipMarkerHeader, "1");
         HttpResponseMessage response = await client.SendAsync(req);
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -225,10 +247,12 @@ public class IdempotencyTests : IAsyncLifetime
     [Fact]
     public async Task Hard_require_rejects_missing_header_with_400()
     {
-        // Flip the option for this test factory only — exercises the
-        // post-#205/#206 operator-flip path documented on
-        // IdempotencyOptions.RequireKey.
-        await using var requireFactory = _factory.WithWebHostBuilder(b =>
+        // RequireKey=true is the shipped default since 2026-05-19. The
+        // explicit UseSetting here is redundant with the default but kept
+        // to make the test self-contained — it documents the contract
+        // independently of appsettings.json and would still pass if a
+        // future maintainer flips the default back.
+        await using WebApplicationFactory<Program> requireFactory = _factory.WithWebHostBuilder(b =>
             b.UseSetting("Idempotency:RequireKey", "true"));
 
         string token = JwtTokenMinter.Mint(
@@ -239,6 +263,10 @@ public class IdempotencyTests : IAsyncLifetime
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         using HttpRequestMessage req = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
+        // Suppress the AutoIdempotencyKeyStartupFilter injection — the whole
+        // point of this test is to observe what the server does when no
+        // header arrives.
+        req.Headers.Add(AutoIdempotencyKeyStartupFilter.SkipMarkerHeader, "1");
         HttpResponseMessage response = await client.SendAsync(req);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
