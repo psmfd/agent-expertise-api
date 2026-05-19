@@ -254,6 +254,23 @@ See [CLAUDE.md](CLAUDE.md) for full build commands, curl examples, and developme
 
 A Helm chart is included at `helm/expertise-api/` for deploying to Kubernetes (k3s or any k8s cluster). The chart includes PostgreSQL and PgBouncer. Backup is handled out-of-chart by a sidecar deployed from the infrastructure repo.
 
+`image.tag` defaults to empty string and the deployment template falls back to `.Chart.AppVersion`, so a vanilla `helm install` always pulls the chart's appVersion-aligned tag. Override `image.tag` only when pinning to a maintenance/preview tag distinct from the chart's appVersion — the chart emits a `WARNING` in `NOTES.txt` when `image.tag` is set explicitly (image+chart-skew advisory per issue #216 / #153) and a second `WARNING` when it is set to the mutable `latest` tag.
+
+Probe paths are surfaced as values for forks that expose health on non-default routes:
+
+```yaml
+api:
+  probes:
+    liveness:
+      path: /healthz        # default: /health/live
+    readiness:
+      path: /readyz         # default: /health/ready
+    startup:
+      path: /readyz         # default: /health/ready
+```
+
+The `values.schema.json` validates probe paths start with `/` and rejects unknown probe keys at `helm install --dry-run` time.
+
 ```bash
 # Example deploy
 helm upgrade --install expertise-api ./helm/expertise-api \

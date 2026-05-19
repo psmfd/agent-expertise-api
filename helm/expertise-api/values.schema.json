@@ -11,6 +11,21 @@
       "pattern": "^[+-]?([0-9]+(\\.[0-9]+)?|\\.[0-9]+)([eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$",
       "description": "Kubernetes resource quantity matching the apimachinery resource.Quantity grammar: decimal-SI suffixes (n, u, m, k, M, G, T, P, E) or binary-SI suffixes (Ki, Mi, Gi, Ti, Pi, Ei) or scientific notation. Examples: 100m, 256Mi, 1.5, 1Ki, 1e3."
     },
+    "probeSpec": {
+      "type": "object",
+      "description": "Subset of corev1.Probe fields exposed via values; expand here as more knobs are needed.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/.*",
+          "description": "HTTP path used by httpGet. Must start with /."
+        },
+        "periodSeconds":    { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
     "k8sResources": {
       "type": "object",
       "properties": {
@@ -45,7 +60,10 @@
       "required": ["repository"],
       "properties": {
         "repository": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string", "minLength": 1 },
+        "tag": {
+          "type": "string",
+          "description": "Image tag. Empty string (default) falls back to .Chart.AppVersion in deployment.yaml. Override only when pinning to a tag distinct from the chart's appVersion."
+        },
         "pullPolicy": {
           "type": "string",
           "enum": ["Always", "IfNotPresent", "Never"]
@@ -148,8 +166,19 @@
       "properties": {
         "resources": {
           "$ref": "#/$defs/k8sResources"
+        },
+        "probes": {
+          "type": "object",
+          "description": "Liveness, readiness, and startup probe overrides. Defaults match the routes wired in Program.cs (/health/live for liveness; /health/ready for readiness and startup). Override when running a forked image that exposes health on different routes. See issue #216.",
+          "properties": {
+            "startup":   { "$ref": "#/$defs/probeSpec" },
+            "liveness":  { "$ref": "#/$defs/probeSpec" },
+            "readiness": { "$ref": "#/$defs/probeSpec" }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "postgres": {
       "type": "object",

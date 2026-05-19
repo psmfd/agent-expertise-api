@@ -1,5 +1,26 @@
 expertise-api {{ .Chart.AppVersion }} installed in namespace {{ .Release.Namespace | quote }}.
 
+  Image:      {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+  Chart ver:  {{ .Chart.Version }}
+  Probes:     liveness  {{ .Values.api.probes.liveness.path }}
+              readiness {{ .Values.api.probes.readiness.path }}
+              startup   {{ .Values.api.probes.startup.path }}
+{{- if and .Values.image.tag (ne .Values.image.tag .Chart.AppVersion) }}
+
+  WARNING: image.tag ({{ .Values.image.tag | quote }}) is set explicitly and does
+           NOT match the chart's appVersion ({{ .Chart.AppVersion | quote }}). The
+           image may expose health on routes that differ from the chart's defaults.
+           If probes report Unready after rollout, override `api.probes.*.path`
+           to match the image's actual health routes. See issue #216 / #153.
+{{- end }}
+{{- if eq .Values.image.tag "latest" }}
+
+  WARNING: image.tag is set to the mutable tag "latest". This defeats
+           reproducibility and the chart's signed-digest verification
+           contract (Part D C8). Pin to an immutable tag (e.g. the chart's
+           appVersion {{ .Chart.AppVersion | quote }}) before promoting beyond dev.
+{{- end }}
+
 ────────────────────────────────────────────────────────────────────────────────
 1. URL
 ────────────────────────────────────────────────────────────────────────────────

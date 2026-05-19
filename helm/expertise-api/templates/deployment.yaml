@@ -28,7 +28,7 @@ spec:
       {{- end }}
       containers:
         - name: api
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -102,22 +102,22 @@ spec:
               mountPath: /tmp
           startupProbe:
             httpGet:
-              path: /health/ready
+              path: {{ .Values.api.probes.startup.path | quote }}
               port: {{ .Values.service.targetPort }}
-            failureThreshold: 30
-            periodSeconds: 5
+            failureThreshold: {{ .Values.api.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.api.probes.startup.periodSeconds }}
           livenessProbe:
             httpGet:
-              path: /health/live
+              path: {{ .Values.api.probes.liveness.path | quote }}
               port: {{ .Values.service.targetPort }}
-            periodSeconds: 30
-            failureThreshold: 3
+            periodSeconds: {{ .Values.api.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.api.probes.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /health/ready
+              path: {{ .Values.api.probes.readiness.path | quote }}
               port: {{ .Values.service.targetPort }}
-            periodSeconds: 10
-            failureThreshold: 3
+            periodSeconds: {{ .Values.api.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.api.probes.readiness.failureThreshold }}
       volumes:
         - name: tmp
           emptyDir: {}
