@@ -78,9 +78,9 @@ public class IdempotencyTests : IAsyncLifetime
     {
         // Baseline: confirms the filter does NOT alter behaviour when the
         // header is absent and RequireKey=false (the shipped default).
-        using var client = WriterClient();
-        var req = new HttpRequestMessage(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
-        var response = await client.SendAsync(req);
+        using HttpClient client = WriterClient();
+        using HttpRequestMessage req = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
+        HttpResponseMessage response = await client.SendAsync(req);
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         response.Headers.Contains("Idempotency-Replay").Should().BeFalse();
@@ -92,28 +92,28 @@ public class IdempotencyTests : IAsyncLifetime
         // Core ADR-010 contract: identical resend → byte-equal response body
         // (including the hygiene-frozen nonce that the spike test exists to
         // pin down) + Idempotency-Replay: true header.
-        using var client = WriterClient();
-        var key = Guid.NewGuid().ToString("N");
-        var payload = MinimalCreatePayload();
+        using HttpClient client = WriterClient();
+        string key = Guid.NewGuid().ToString("N");
+        object payload = MinimalCreatePayload();
 
         async Task<HttpResponseMessage> SendAsync()
         {
-            var req = new HttpRequestMessage(HttpMethod.Post, "/expertise/") { Content = BodyOf(payload) };
+            using HttpRequestMessage req = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(payload) };
             req.Headers.Add("Idempotency-Key", key);
             return await client.SendAsync(req);
         }
 
-        var first = await SendAsync();
+        HttpResponseMessage first = await SendAsync();
         first.StatusCode.Should().Be(HttpStatusCode.Created);
-        var firstBody = await first.Content.ReadAsByteArrayAsync();
+        byte[] firstBody = await first.Content.ReadAsByteArrayAsync();
         first.Headers.Contains("Idempotency-Replay").Should().BeFalse();
 
         // Give the OnCompleted callback a beat to land.
         await Task.Delay(200);
 
-        var second = await SendAsync();
+        HttpResponseMessage second = await SendAsync();
         second.StatusCode.Should().Be(HttpStatusCode.Created);
-        var secondBody = await second.Content.ReadAsByteArrayAsync();
+        byte[] secondBody = await second.Content.ReadAsByteArrayAsync();
         second.Headers.GetValues("Idempotency-Replay").Should().ContainSingle().Which.Should().Be("true");
 
         // Byte-equality is the ADR-010 promise (and the spike's PATTERN_VALIDATED
@@ -129,31 +129,31 @@ public class IdempotencyTests : IAsyncLifetime
         // Spike consensus assertion: the captured bytes carry the per-response
         // hygiene nonce (ADR-008) frozen at original-request time. Re-execution
         // would mint a new nonce; replay does not.
-        using var client = WriterClient();
-        var key = Guid.NewGuid().ToString("N");
-        var payload = MinimalCreatePayload(title: "Nonce-freeze evidence");
+        using HttpClient client = WriterClient();
+        string key = Guid.NewGuid().ToString("N");
+        object payload = MinimalCreatePayload(title: "Nonce-freeze evidence");
 
         async Task<HttpResponseMessage> SendAsync()
         {
-            var req = new HttpRequestMessage(HttpMethod.Post, "/expertise/") { Content = BodyOf(payload) };
+            using HttpRequestMessage req = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(payload) };
             req.Headers.Add("Idempotency-Key", key);
             return await client.SendAsync(req);
         }
 
-        var first = await SendAsync();
-        var firstJson = await first.Content.ReadAsStringAsync();
+        HttpResponseMessage first = await SendAsync();
+        string firstJson = await first.Content.ReadAsStringAsync();
         firstJson.Should().Contain("_hygiene", "hygiene envelope is part of the response by ADR-008");
 
         await Task.Delay(200);
 
-        var second = await SendAsync();
-        var secondJson = await second.Content.ReadAsStringAsync();
+        HttpResponseMessage second = await SendAsync();
+        string secondJson = await second.Content.ReadAsStringAsync();
 
         // Extract the nonce from both responses; if the filter accidentally
         // re-executed, the two nonces would differ (they're minted from
         // RandomNumberGenerator on every request).
-        var firstNonce = ExtractNonce(firstJson);
-        var secondNonce = ExtractNonce(secondJson);
+        string firstNonce = ExtractNonce(firstJson);
+        string secondNonce = ExtractNonce(secondJson);
         secondNonce.Should().Be(firstNonce, "replay must preserve the original hygiene nonce");
 
         secondJson.Should().Be(firstJson, "full response body must byte-equal the original");
@@ -161,31 +161,31 @@ public class IdempotencyTests : IAsyncLifetime
 
     private static string ExtractNonce(string json)
     {
-        using var doc = JsonDocument.Parse(json);
+        using JsonDocument doc = JsonDocument.Parse(json);
         return doc.RootElement.GetProperty("_hygiene").GetProperty("nonce").GetString()!;
     }
 
     [Fact]
     public async Task Reuse_of_key_with_different_body_returns_409()
     {
-        using var client = WriterClient();
-        var key = Guid.NewGuid().ToString("N");
+        using HttpClient client = WriterClient();
+        string key = Guid.NewGuid().ToString("N");
 
-        var firstReq = new HttpRequestMessage(HttpMethod.Post, "/expertise/")
+        using HttpRequestMessage firstReq = new(HttpMethod.Post, "/expertise/")
         { Content = BodyOf(MinimalCreatePayload(title: "first")) };
         firstReq.Headers.Add("Idempotency-Key", key);
-        var first = await client.SendAsync(firstReq);
+        HttpResponseMessage first = await client.SendAsync(firstReq);
         first.StatusCode.Should().Be(HttpStatusCode.Created);
 
         await Task.Delay(200);
 
-        var secondReq = new HttpRequestMessage(HttpMethod.Post, "/expertise/")
+        using HttpRequestMessage secondReq = new(HttpMethod.Post, "/expertise/")
         { Content = BodyOf(MinimalCreatePayload(title: "second-different-body")) };
         secondReq.Headers.Add("Idempotency-Key", key);
-        var second = await client.SendAsync(secondReq);
+        HttpResponseMessage second = await client.SendAsync(secondReq);
 
         second.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        var problem = await second.Content.ReadAsStringAsync();
+        string problem = await second.Content.ReadAsStringAsync();
         problem.Should().Contain("Idempotency-Key reuse");
     }
 
@@ -194,11 +194,11 @@ public class IdempotencyTests : IAsyncLifetime
     [InlineData("key,with,comma-like-multi-value")]     // legitimate multi-value smell — caught at VCHAR loop (comma is VCHAR; intentionally passes)
     public async Task Invalid_idempotency_key_returns_400(string badKey)
     {
-        using var client = WriterClient();
-        var req = new HttpRequestMessage(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
+        using HttpClient client = WriterClient();
+        using HttpRequestMessage req = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
         req.Headers.TryAddWithoutValidation("Idempotency-Key", badKey);
 
-        var response = await client.SendAsync(req);
+        HttpResponseMessage response = await client.SendAsync(req);
         // "key,with,comma" is actually valid VCHAR per IETF §2.2; only "has space" should 400 here.
         // (Comprehensive charset coverage lives in IdempotencyKeyValidatorTests; this Theory
         //  just smoke-tests the HTTP-layer plumbing for one realistic invalid shape.)
@@ -215,10 +215,10 @@ public class IdempotencyTests : IAsyncLifetime
     [Fact]
     public async Task Overlong_idempotency_key_returns_400()
     {
-        using var client = WriterClient();
-        var req = new HttpRequestMessage(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
+        using HttpClient client = WriterClient();
+        using HttpRequestMessage req = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
         req.Headers.TryAddWithoutValidation("Idempotency-Key", new string('k', 256));
-        var response = await client.SendAsync(req);
+        HttpResponseMessage response = await client.SendAsync(req);
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
@@ -231,18 +231,18 @@ public class IdempotencyTests : IAsyncLifetime
         await using var requireFactory = _factory.WithWebHostBuilder(b =>
             b.UseSetting("Idempotency:RequireKey", "true"));
 
-        var token = JwtTokenMinter.Mint(
+        string token = JwtTokenMinter.Mint(
             tenant: "test",
             scopes: [AuthConstants.WriteDraftScope, AuthConstants.ReadScope],
             groups: ["group-test"]);
-        using var client = requireFactory.CreateClient();
+        using HttpClient client = requireFactory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        var req = new HttpRequestMessage(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
-        var response = await client.SendAsync(req);
+        using HttpRequestMessage req = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
+        HttpResponseMessage response = await client.SendAsync(req);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        var body = await response.Content.ReadAsStringAsync();
+        string body = await response.Content.ReadAsStringAsync();
         body.Should().Contain("Idempotency-Key required");
     }
 
@@ -251,25 +251,25 @@ public class IdempotencyTests : IAsyncLifetime
     {
         // Two writers with the same Idempotency-Key but distinct tenants must
         // each succeed independently — partition key is (tenant, key).
-        var keyShared = Guid.NewGuid().ToString("N");
+        string keyShared = Guid.NewGuid().ToString("N");
 
-        var tokenA = JwtTokenMinter.Mint("test", [AuthConstants.WriteDraftScope, AuthConstants.ReadScope], groups: ["group-test"]);
-        var tokenB = JwtTokenMinter.Mint("other-team", [AuthConstants.WriteDraftScope, AuthConstants.ReadScope], groups: ["group-other"]);
+        string tokenA = JwtTokenMinter.Mint("test", [AuthConstants.WriteDraftScope, AuthConstants.ReadScope], groups: ["group-test"]);
+        string tokenB = JwtTokenMinter.Mint("other-team", [AuthConstants.WriteDraftScope, AuthConstants.ReadScope], groups: ["group-other"]);
 
-        using var clientA = _factory.CreateClient();
+        using HttpClient clientA = _factory.CreateClient();
         clientA.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tokenA);
 
-        using var clientB = _factory.CreateClient();
+        using HttpClient clientB = _factory.CreateClient();
         clientB.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tokenB);
 
-        var reqA = new HttpRequestMessage(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
+        using HttpRequestMessage reqA = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
         reqA.Headers.Add("Idempotency-Key", keyShared);
-        var respA = await clientA.SendAsync(reqA);
+        HttpResponseMessage respA = await clientA.SendAsync(reqA);
         respA.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        var reqB = new HttpRequestMessage(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
+        using HttpRequestMessage reqB = new(HttpMethod.Post, "/expertise/") { Content = BodyOf(MinimalCreatePayload()) };
         reqB.Headers.Add("Idempotency-Key", keyShared);
-        var respB = await clientB.SendAsync(reqB);
+        HttpResponseMessage respB = await clientB.SendAsync(reqB);
 
         respB.StatusCode.Should().Be(HttpStatusCode.Created);
         respB.Headers.Contains("Idempotency-Replay").Should().BeFalse("tenant B has never used this key");

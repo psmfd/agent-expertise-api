@@ -7,6 +7,8 @@ using ExpertiseApi.Services.Idempotency;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
+using Npgsql;
 using Prometheus;
 
 namespace ExpertiseApi.Endpoints.Filters;
@@ -254,10 +256,16 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
                     {
                         await _store.ReleaseReservationAsync(tenant, keyValue!, CancellationToken.None).ConfigureAwait(false);
                     }
-#pragma warning disable CA1031 // fire-and-forget metric/log
-                    catch (Exception ex)
-#pragma warning restore CA1031
+                    catch (Exception ex) when (ex is NpgsqlException
+                                                  or TimeoutException
+                                                  or OperationCanceledException
+                                                  or IOException
+                                                  or InvalidOperationException)
                     {
+                        // Fire-and-forget on Response.OnCompleted: the request has already
+                        // returned; we cannot surface this exception. Critical faults
+                        // (OOM/SO/AV) propagate. The placeholder row will age out via the
+                        // GC sweep on next cadence (default 1h) if release failed.
                         PersistFailedCounter.Inc();
                         _logger.LogWarning(ex, "Idempotency placeholder release failed after handler exception; GC sweep will reap on next cadence");
                     }
@@ -313,10 +321,16 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
                         headersCapture,
                         CancellationToken.None).ConfigureAwait(false);
                 }
-#pragma warning disable CA1031 // Top-level fire-and-forget handler — every exception class converts to the same metric increment; rethrow would crash the request-completion callback.
-                catch (Exception ex)
-#pragma warning restore CA1031
+                catch (Exception ex) when (ex is NpgsqlException
+                                              or TimeoutException
+                                              or OperationCanceledException
+                                              or IOException
+                                              or InvalidOperationException)
                 {
+                    // Top-level fire-and-forget handler — every exception class
+                    // converts to the same metric increment; rethrow would crash
+                    // the request-completion callback. Critical faults
+                    // (OOM/SO/AV) propagate.
                     PersistFailedCounter.Inc();
                     _logger.LogWarning(
                         ex,
@@ -344,10 +358,14 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
                 {
                     await _store.ReleaseReservationAsync(tenantCapture, keyCapture, CancellationToken.None).ConfigureAwait(false);
                 }
-#pragma warning disable CA1031 // fire-and-forget metric/log
-                catch (Exception ex)
-#pragma warning restore CA1031
+                catch (Exception ex) when (ex is NpgsqlException
+                                              or TimeoutException
+                                              or OperationCanceledException
+                                              or IOException
+                                              or InvalidOperationException)
                 {
+                    // Fire-and-forget on non-cacheable path — see ADR-010 placeholder-
+                    // release contract. Critical faults (OOM/SO/AV) propagate.
                     PersistFailedCounter.Inc();
                     _logger.LogWarning(ex, "Idempotency placeholder release failed on non-cacheable status {Status}; GC sweep will reap on next cadence", capturedStatus);
                 }
@@ -368,11 +386,13 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
 
         if (payload.Headers is not null)
         {
-            foreach (var (k, v) in payload.Headers)
+            foreach ((string k, string v) in payload.Headers)
             {
                 // Do not clobber framework-managed headers (Content-Length is
                 // recomputed from the body write; Date / Server are owned by
-                // Kestrel).
+                // Kestrel). Guard-clause + continue avoids the
+                // cs/linq/missed-opportunity-to-use-where finding without
+                // forcing an allocation-bearing Where wrapper.
                 if (string.Equals(k, "Content-Length", StringComparison.OrdinalIgnoreCase))
                     continue;
                 http.Response.Headers[k] = v;
@@ -394,12 +414,15 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
         // ones and let Kestrel re-derive framework headers.
         string[] replayList = ["Location", "Cache-Control", "ETag", "Vary"];
         Dictionary<string, string>? dict = null;
-        foreach (var name in replayList)
+        foreach (string name in replayList)
         {
-            if (headers.TryGetValue(name, out var values) && values.Count > 0)
-            {
-                (dict ??= new Dictionary<string, string>(StringComparer.Ordinal))[name] = values.ToString();
-            }
+            // Guard-clause inversion: cs/linq/missed-opportunity-to-use-where
+            // flags the foreach+if shape. Hoisting to a Where would force
+            // two header lookups per name (ContainsKey + indexer); the
+            // TryGetValue path is single-lookup.
+            if (!headers.TryGetValue(name, out StringValues values) || values.Count == 0)
+                continue;
+            (dict ??= new Dictionary<string, string>(StringComparer.Ordinal))[name] = values.ToString();
         }
         return dict;
     }

@@ -47,14 +47,11 @@ internal static class IdempotencyKeyValidator
 
         // IETF §2.2 charset: VCHAR (printable ASCII 0x21–0x7E). Reject anything
         // outside that range — control chars, DEL (0x7F), and non-ASCII alike.
-        // The loop is hot-path; SearchValues<char>.Create over the full
-        // disallowed range would inflate the table footprint without
-        // measurable speedup at length ≤ 255.
-        foreach (var c in key)
-        {
-            if (c < 0x21 || c > 0x7E)
-                return new(false, "Idempotency-Key must contain only ASCII printable characters (0x21–0x7E).");
-        }
+        // `string.Any` is allocation-free over the char enumerator; rewriting
+        // the previous foreach+if as a Where-style predicate satisfies
+        // cs/linq/missed-opportunity-to-use-where without changing semantics.
+        if (key.Any(c => c < 0x21 || c > 0x7E))
+            return new(false, "Idempotency-Key must contain only ASCII printable characters (0x21–0x7E).");
 
         return new(true, null);
     }
