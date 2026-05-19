@@ -1,0 +1,16 @@
+{
+  "name": "@theseimcolon/pi-extension-expertise-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "pi extension exposing the agent-expertise-api as typed tools (search, create, approve, reject, etc.) for use inside the pi coding agent.",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.75.3",
+    "typebox": "^1.1.38",
+    "typescript": "^5.7.0"
+  }
+}

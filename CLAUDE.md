@@ -150,6 +150,8 @@ An action-oriented skill ships in-tree at [`.agents/skills/expertise-api/`](.age
 { "skills": [".agents/skills/expertise-api"] }
 ```
 
+pi users additionally get the in-tree extension at [`.pi/extensions/expertise-api/`](.pi/extensions/expertise-api/README.md) which registers eight typed tools (`expertise_search`, `expertise_search_semantic`, `expertise_get`, `expertise_create`, `expertise_update`, `expertise_approve`, `expertise_reject`, `expertise_delete`). The LLM calls them via `fetch()` so the bearer token does not appear in `ps`/`/proc`. Symlink `.pi/extensions/expertise-api/` into `~/.pi/agent/extensions/` to enable globally.
+
 Codex CLI: add the path to `skills = [...]` in `~/.codex/config.toml`.
 
 The legacy skill at `.claude/skills/expertise-api-design/SKILL.md` is now a shim that redirects to the new path. The design reference (data model, scopes, approval state machine, audit-log shape, authentication modes) moved to [`.agents/skills/expertise-api/references/DESIGN.md`](.agents/skills/expertise-api/references/DESIGN.md) and is loaded on demand only.

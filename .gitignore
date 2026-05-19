@@ -65,3 +65,6 @@ src/ExpertiseApi/Models/tokenizer*.json
 ## Part D C8: build-time OpenAPI document emission (Microsoft.Extensions.ApiDescription.Server)
 ## Output of _GenerateOpenApiDocuments MSBuild target; published as a GitHub Release asset via release.yml.
 src/ExpertiseApi/artifacts/
+
+## pi extension node_modules
+.pi/extensions/*/node_modules/
