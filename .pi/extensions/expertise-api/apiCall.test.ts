@@ -16,7 +16,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyIdempotencyKey } from "./index.js";
+import { applyIdempotencyKey, isValidIdempotencyKey } from "./index.js";
 
 const UUID_V4_PATTERN: RegExp =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -74,4 +74,58 @@ test("applyIdempotencyKey: two POSTs produce different keys (proves we mint, not
 	const k2: string | null = h2.get("Idempotency-Key");
 	assert.ok(k1 !== null && k2 !== null);
 	assert.notEqual(k1, k2, "expected two independent POSTs to mint distinct keys");
+});
+
+test("applyIdempotencyKey: caller-supplied header with lowercase key still triggers override path", () => {
+	// Fetch Headers is case-insensitive; the override check uses
+	// headers.get("Idempotency-Key") which normalises and finds the
+	// lowercase entry. This locks in the contract against future
+	// refactors that might switch to a plain object lookup.
+	const headers: Headers = new Headers({ "idempotency-key": "caller-pinned-lowercase" });
+	applyIdempotencyKey(headers, "POST");
+	assert.equal(headers.get("Idempotency-Key"), "caller-pinned-lowercase");
+});
+
+test("applyIdempotencyKey: rejects caller-supplied key with leading whitespace (validator vs undici)", () => {
+	// Note: Headers.set() itself rejects values containing CRLF or NUL
+	// at the platform level (undici enforces RFC 7230). The validator
+	// covers the cases undici does not: length, whitespace, non-ASCII.
+	const headers: Headers = new Headers();
+	headers.set("Idempotency-Key", "has internal space");
+	assert.throws(() => applyIdempotencyKey(headers, "POST"), /shape invalid/);
+});
+
+test("applyIdempotencyKey: rejects caller-supplied empty-string key", () => {
+	const headers: Headers = new Headers();
+	headers.set("Idempotency-Key", "");
+	assert.throws(() => applyIdempotencyKey(headers, "POST"), /shape invalid/);
+});
+
+test("applyIdempotencyKey: rejects caller-supplied oversized (>255) key", () => {
+	const headers: Headers = new Headers();
+	headers.set("Idempotency-Key", "x".repeat(256));
+	assert.throws(() => applyIdempotencyKey(headers, "POST"), /shape invalid/);
+});
+
+test("applyIdempotencyKey: accepts caller-supplied key at the 255-char boundary", () => {
+	const headers: Headers = new Headers();
+	const longKey: string = "x".repeat(255);
+	headers.set("Idempotency-Key", longKey);
+	applyIdempotencyKey(headers, "POST");
+	assert.equal(headers.get("Idempotency-Key"), longKey);
+});
+
+test("isValidIdempotencyKey: shape matrix", () => {
+	assert.equal(isValidIdempotencyKey("550e8400-e29b-41d4-a716-446655440000"), true);
+	assert.equal(isValidIdempotencyKey("a"), true);
+	assert.equal(isValidIdempotencyKey("x".repeat(255)), true);
+	assert.equal(isValidIdempotencyKey(""), false);
+	assert.equal(isValidIdempotencyKey("x".repeat(256)), false);
+	assert.equal(isValidIdempotencyKey("has space"), false);
+	assert.equal(isValidIdempotencyKey("has\ttab"), false);
+	assert.equal(isValidIdempotencyKey("has\nnewline"), false);
+	assert.equal(isValidIdempotencyKey("has\rcr"), false);
+	assert.equal(isValidIdempotencyKey("\x7f"), false); // DEL
+	assert.equal(isValidIdempotencyKey("\x00"), false); // NUL
+	assert.equal(isValidIdempotencyKey("caf\u00e9"), false); // non-ASCII
 });

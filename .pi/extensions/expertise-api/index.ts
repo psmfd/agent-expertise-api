@@ -76,6 +76,23 @@ interface ApiCallResult {
 }
 
 /**
+ * Idempotency-Key shape validator. Mirrors the server-side
+ * IdempotencyKeyValidator (IETF draft-ietf-httpapi-idempotency-key-
+ * header-06 §2.2 / ADR-010): 1–255 chars, printable ASCII (0x21–0x7E),
+ * no whitespace, no control characters. Returns true if the key is
+ * shape-valid; false otherwise.
+ *
+ * Defense-in-depth for the `init.headers['Idempotency-Key']` override
+ * path: no current call site supplies caller-controlled keys, but if a
+ * future tool handler does, a CRLF-bearing or oversized value should
+ * fail fast client-side rather than reach the server (which would 400).
+ */
+const IDEMPOTENCY_KEY_PATTERN: RegExp = /^[\x21-\x7E]{1,255}$/;
+export function isValidIdempotencyKey(key: string): boolean {
+	return IDEMPOTENCY_KEY_PATTERN.test(key);
+}
+
+/**
  * Inject an Idempotency-Key header on POST writes per ADR-010 (issue #206).
  *
  * Scoped to POST to match the server-side IdempotencyEndpointFilter
@@ -83,7 +100,10 @@ interface ApiCallResult {
  * /expertise/{id}/reject). A caller-supplied 'Idempotency-Key' is
  * preserved verbatim so tool handlers that own a retry loop can pin one
  * key across attempts and hit the server-side replay cache instead of
- * double-writing.
+ * double-writing. Caller-supplied keys are shape-validated; an invalid
+ * value throws synchronously (apiCall wraps the call site so this
+ * surfaces as a typed error to the tool result, not an unhandled
+ * rejection).
  *
  * Exported (vs inlined into apiCall) so unit tests can assert the
  * contract without mocking fetch.
@@ -93,9 +113,19 @@ export function applyIdempotencyKey(
 	method: string | undefined,
 ): void {
 	const upper: string = (method ?? "GET").toUpperCase();
-	if (upper === "POST" && !headers.has("Idempotency-Key")) {
-		headers.set("Idempotency-Key", crypto.randomUUID());
+	if (upper !== "POST") {
+		return;
 	}
+	const existing: string | null = headers.get("Idempotency-Key");
+	if (existing !== null) {
+		if (!isValidIdempotencyKey(existing)) {
+			throw new Error(
+				"Idempotency-Key shape invalid: must be 1-255 printable ASCII characters (0x21-0x7E), no whitespace or control characters.",
+			);
+		}
+		return;
+	}
+	headers.set("Idempotency-Key", crypto.randomUUID());
 }
 
 function getBaseUrl(): string {
