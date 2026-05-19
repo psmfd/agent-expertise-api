@@ -76,7 +76,8 @@ internal static class TestHelpers
         string source = "test",
         string tenant = TestTenant,
         string authorPrincipal = "test-principal",
-        ReviewState reviewState = ReviewState.Approved)
+        ReviewState reviewState = ReviewState.Approved,
+        Visibility visibility = Visibility.Private)
     {
         return new ExpertiseEntry
         {
@@ -90,7 +91,8 @@ internal static class TestHelpers
             Embedding = CreateTestVector(),
             Tenant = tenant,
             AuthorPrincipal = authorPrincipal,
-            ReviewState = reviewState
+            ReviewState = reviewState,
+            Visibility = visibility
         };
     }
 

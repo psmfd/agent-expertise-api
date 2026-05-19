@@ -298,6 +298,136 @@ public class ApprovalWorkflowTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Patch_VisibilityByDraftCaller_Returns403()
+    {
+        // Issue #66 / ADR-003 clarification: changing Visibility (Private <-> Shared)
+        // requires expertise.write.approve even for the entry's original writer.
+        var draft = await SeedDraft();
+        // Sanity check: seeded entries default to Private.
+        draft.Visibility.Should().Be(Visibility.Private);
+
+        using var writer = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+        var response = await writer.PatchAsJsonAsync(
+            $"/expertise/{draft.Id}",
+            new { visibility = "Shared" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        // Atomicity: no fields should have been applied. Reload and verify Visibility unchanged.
+        using var verifyScope = _factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        var reloaded = await db.ExpertiseEntries.AsNoTracking().FirstAsync(e => e.Id == draft.Id);
+        reloaded.Visibility.Should().Be(Visibility.Private);
+    }
+
+    [Fact]
+    public async Task Patch_VisibilityByApproveCaller_Succeeds()
+    {
+        var draft = await SeedDraft();
+        draft.Visibility.Should().Be(Visibility.Private);
+
+        using var approver = ClientWithScopes(
+            AuthConstants.ReadScope, AuthConstants.WriteDraftScope, AuthConstants.WriteApproveScope);
+        var response = await approver.PatchAsJsonAsync(
+            $"/expertise/{draft.Id}",
+            new { visibility = "Shared" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        var reloaded = await db.ExpertiseEntries.AsNoTracking().FirstAsync(e => e.Id == draft.Id);
+        reloaded.Visibility.Should().Be(Visibility.Shared);
+    }
+
+    [Fact]
+    public async Task Patch_NonVisibilityFieldsByDraftCaller_DoesNotEscalate()
+    {
+        // Regression guard: a PATCH that does NOT change Visibility must not require write.approve.
+        // The scope escalation is value-based (entry.Visibility differs from snapshot), not
+        // request-presence-based, so an absent visibility field is the common case.
+        var draft = await SeedDraft(title: "original title");
+
+        using var writer = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+        var response = await writer.PatchAsJsonAsync(
+            $"/expertise/{draft.Id}",
+            new { title = "revised title" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        var reloaded = await db.ExpertiseEntries.AsNoTracking().FirstAsync(e => e.Id == draft.Id);
+        reloaded.Title.Should().Be("revised title");
+        reloaded.Visibility.Should().Be(Visibility.Private);
+    }
+
+    [Fact]
+    public async Task Patch_NoOpVisibilityByDraftCaller_DoesNotEscalate()
+    {
+        // Value-based gating: supplying Visibility=Private on an entry that is already
+        // Private is a no-op and must NOT require write.approve. Approval-tooling that
+        // submits the full entry state on every save (Visibility included) would otherwise
+        // be forced to hold write.approve just to edit titles.
+        var draft = await SeedDraft();
+        draft.Visibility.Should().Be(Visibility.Private);
+
+        using var writer = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+        var response = await writer.PatchAsJsonAsync(
+            $"/expertise/{draft.Id}",
+            new { visibility = "Private", title = "updated" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var verifyScope = _factory.Services.CreateScope();
+        var db = verifyScope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        var reloaded = await db.ExpertiseEntries.AsNoTracking().FirstAsync(e => e.Id == draft.Id);
+        reloaded.Visibility.Should().Be(Visibility.Private);
+        reloaded.Title.Should().Be("updated");
+    }
+
+    [Fact]
+    public async Task Patch_VisibilityShared_to_Private_ByDraftCaller_Returns403()
+    {
+        // Symmetric case: demoting a Shared entry to Private is also a Visibility change
+        // and must require write.approve. Seed an Approved+Shared entry so the inverse
+        // direction is exercised AND the gate-before-state-regression ordering invariant
+        // is locked in (a 403 must not leave behind Approved->Draft demotion side effects).
+        ExpertiseEntry seeded;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+            seeded = TestHelpers.SeedEntry(
+                tenant: "shared",
+                title: "shared-entry",
+                reviewState: ReviewState.Approved,
+                visibility: Visibility.Shared);
+            seeded.ReviewedBy = "reviewer-original";
+            seeded.ReviewedAt = DateTime.UtcNow.AddMinutes(-5);
+            db.ExpertiseEntries.Add(seeded);
+            await db.SaveChangesAsync();
+        }
+
+        using var writer = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+        var response = await writer.PatchAsJsonAsync(
+            $"/expertise/{seeded.Id}",
+            new { visibility = "Private" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        // Ordering invariant: visibility gate fires before the ADR-003 state-regression
+        // block, so a denied request must NOT have demoted the entry to Draft or cleared
+        // ReviewedBy / ReviewedAt as a side effect.
+        using var verifyScope = _factory.Services.CreateScope();
+        var db2 = verifyScope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        var reloaded = await db2.ExpertiseEntries.AsNoTracking().FirstAsync(e => e.Id == seeded.Id);
+        reloaded.Visibility.Should().Be(Visibility.Shared);
+        reloaded.ReviewState.Should().Be(ReviewState.Approved);
+        reloaded.ReviewedBy.Should().Be("reviewer-original");
+        reloaded.ReviewedAt.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task Delete_SharedEntryByApproveCaller_Succeeds()
     {
         ExpertiseEntry seeded;
