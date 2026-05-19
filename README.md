@@ -368,6 +368,16 @@ plist (`ExitTimeOut=45`) add a 15s OS-level margin on top — stop the service
 and the .NET host has 30s to drain, after which systemd/launchd will fire
 SIGKILL at the 45s mark.
 
+**Systemd watchdog timer** (#217): `WatchdogSec=` is intentionally
+*disabled* in the shipped unit template. `Microsoft.Extensions.Hosting.Systemd`
+emits `READY=1`/`STOPPING=1` only — it does not periodically ping
+`WATCHDOG=1`. Enabling `WatchdogSec=` without a hosted service that pings
+the watchdog on a `WatchdogSec/2` cadence produces a silent SIGABRT loop
+under any load that delays the runtime by ~half the interval. To re-enable,
+implement a `WATCHDOG=1` notifier hosted service (via Tmds.Systemd or
+libsystemd P/Invoke) and uncomment `WatchdogSec=30` in
+`scripts/service-templates/expertise-api.service.tmpl`.
+
 **Schema migrations on install/upgrade** (#144): both install scripts run
 `scripts/migrate.{sh,ps1}` between publish and service start. The migrate
 step invokes the bundled `ExpertiseApi migrate` verb, which applies any
