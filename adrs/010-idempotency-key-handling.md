@@ -1,6 +1,6 @@
 # Idempotency-Key handling and replay semantics (C3)
 
-- Status: accepted (hard-require since 2026-05-19; see [Amendment 1](#amendment-1--hard-require-flip-2026-05-19) at the bottom of this file)
+- Status: accepted (hard-require since 2026-05-19; see [Amendment 1](#amendment-1--hard-require-flip-2026-05-19) and [Amendment 2](#amendment-2--warning-code-reconciliation-2026-05-19) at the bottom of this file)
 - Date: 2026-05-19
 - Companion: [`docs/security/integration-threat-model.md`](../docs/security/integration-threat-model.md) Part D C3
 - Tracking issue: [#188](https://github.com/TheSemicolon/agent-expertise-api/issues/188)
@@ -147,7 +147,7 @@ Transient-class statuses (5xx, 429) are explicitly excluded because the operatio
 
 ### Response body size cap: option (a) 64 KiB hard cap
 
-The three target endpoints return a single `ExpertiseEntryResponse` (~1–2 KiB observed); 64 KiB is roughly 30× headroom. On overflow the store records `(status_code, response_body_hash)` only; on replay the server returns the cached status code with no body, plus `Idempotency-Replay: true` and a `Warning: 299 - "Idempotent response truncated; original body not replayable"` header. This is documented behaviour, not a silent degradation.
+The three target endpoints return a single `ExpertiseEntryResponse` (~1–2 KiB observed); 64 KiB is roughly 30× headroom. On overflow the store records `(status_code, response_body_hash)` only; on replay the server returns the cached status code with no body, plus `Idempotency-Replay: true` and a `Warning: 199 - "Idempotent response truncated; original body not replayable"` header. This is documented behaviour, not a silent degradation. See [Amendment 2](#amendment-2--warning-code-reconciliation-2026-05-19) for the rationale behind code `199` vs the originally-documented `299`.
 
 If `POST /expertise/batch` later joins the idempotency surface, the cap may need revisiting — amend this ADR rather than silently raising the constant.
 
@@ -195,3 +195,16 @@ The full implementation plan — file-change list, integration test surface, GC 
 - C3 row in Part D flips from ⚠️ to ✅; Part D summary line goes 7/8 → 8/8.
 - Any new caller added in future must generate `Idempotency-Key` headers on POST writes; the contract is now load-bearing rather than advisory.
 - The original "Bad, because soft-require means the C3 row is not 'fully enforced ✅' until … the flag-flip issue all ship" entry in the Consequences list is now retired by this amendment.
+
+## Amendment 2 — Warning code reconciliation (2026-05-19)
+
+**Status:** applied (docs aligned to code).
+**Driver:** drift between ADR text (`Warning: 299`) and the implementation constant (`IdempotencyEndpointFilter.BodyOmittedWarning = "199 - ..."`).
+
+**Decision.** The truncation marker uses HTTP `Warning` code **`199`** ("Miscellaneous warning"), not `299` ("Miscellaneous persistent warning") as the original ADR text described. RFC 7234 §5.5 distinguishes the two by cache-lifetime semantics: `2xx` warnings persist after a response is validated and reused; `1xx` warnings are stripped on revalidation. Each idempotent-replay response is a fresh server-generated response (the replay outcome is not cached by intermediaries — `Cache-Control: no-store` applies), so the persistence semantics of `299` add no value and the simpler `199` is appropriate.
+
+**Why align docs to code, not the reverse.** The `199` value has been in shipped code since PR #207 and any client filtering on the `Warning` header would already be configured against it. Changing the wire value to `299` would be a silent contract change for those clients. The ADR text was prospective; the implementation choice supersedes.
+
+**Pin.** `IdempotencyEndpointFilter.BodyOmittedWarning` is exposed as `internal const` and pinned by a unit assertion (`Tests/Unit/IdempotencyWarningCodeTests.cs`). Future drift breaks a build, not a wire contract.
+
+**No behavioural change.** Truncation continues to fire only when the cached body exceeds the 64 KiB cap; observed traffic does not exercise this path under normal load.

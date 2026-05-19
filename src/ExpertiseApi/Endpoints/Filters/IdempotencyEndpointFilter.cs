@@ -60,7 +60,7 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
 {
     private const string HeaderName = "Idempotency-Key";
     private const string ReplayHeaderName = "Idempotency-Replay";
-    private const string BodyOmittedWarning = "199 - \"Idempotent response truncated; original body not replayable\"";
+    internal const string BodyOmittedWarning = "199 - \"Idempotent response truncated; original body not replayable\"";
 
     private static readonly Counter PersistFailedCounter = Metrics.CreateCounter(
         "expertise_idempotency_persist_failed_total",
