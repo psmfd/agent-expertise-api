@@ -197,3 +197,137 @@ jobs:
       - name: Tear down container
         if: always()
         run: docker rm -f apictl-test || true
+
+  openapi-diff:
+    name: OpenAPI breaking-change check
+    # PR-only: a push to dev has no base to diff against (semantically the spec
+    # IS dev at that point). Required-check status, if/when promoted in branch
+    # protection, applies only to PRs into main/dev.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Label gate is read via the github.event.pull_request.labels payload
+      # (no API call needed), but pull-requests: read keeps the principle of
+      # least-surprise if a future refactor moves to gh CLI for label query.
+      pull-requests: read
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: head
+
+      - name: Checkout base ref (${{ github.event.pull_request.base.ref }})
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Pin to the actual base SHA at PR creation time, not the moving
+          # branch tip. Diff semantics match what the merge-base would resolve
+          # to had we used `actions/checkout@... { ref: refs/heads/${base} }`.
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        with:
+          global-json-file: head/global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.nuget/packages
+          # Distinct from build-and-test cache (different working trees, both
+          # csproj hashes contribute). restore-keys fall back to build-and-test
+          # cache to avoid cold restore on first run.
+          key: nuget-${{ runner.os }}-oasdiff-${{ hashFiles('head/**/*.csproj', 'base/**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-oasdiff-
+            nuget-${{ runner.os }}-
+
+      - name: Build PR head spec
+        working-directory: head
+        run: dotnet build ExpertiseApi.slnx --configuration Release --disable-build-servers
+
+      - name: Build base ref spec (tolerate missing / failure)
+        id: base-build
+        working-directory: base
+        # Tolerate two edge cases without failing the gate:
+        #   1. base ref pre-dates the API project (introductory PR after
+        #      reorg) — no diff possible, treat as non-breaking.
+        #   2. base build fails (SDK drift, transient infra) — we cannot
+        #      diff, but failing the gate would block unrelated PRs on
+        #      base-branch breakage. Surface as a Warning instead.
+        # set -uo pipefail (no -e) so we can capture rc explicitly.
+        run: |
+          set -uo pipefail
+          if [ ! -f src/ExpertiseApi/ExpertiseApi.csproj ]; then
+            echo "::notice::base ref has no API project; skipping diff"
+            echo "buildable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          dotnet build ExpertiseApi.slnx --configuration Release --disable-build-servers
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::base ref build failed (rc=$rc); cannot diff openapi spec — treating as non-breaking"
+            echo "buildable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "buildable=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install oasdiff (SHA-pinned binary release)
+        run: |
+          set -euo pipefail
+          ver=v1.15.3
+          # SHA-256 from upstream release page checksums.txt
+          # https://github.com/oasdiff/oasdiff/releases/tag/v1.15.3
+          expected_sha=a8b2f765dd976792f6fb14a5b9854fe94d73aa3b777161d45535f9002b7a4575
+          url="https://github.com/oasdiff/oasdiff/releases/download/${ver}/oasdiff_${ver#v}_linux_amd64.tar.gz"
+          curl -fsSL -o oasdiff.tgz "$url"
+          echo "${expected_sha}  oasdiff.tgz" | sha256sum -c -
+          tar -xzf oasdiff.tgz oasdiff
+          sudo mv oasdiff /usr/local/bin/oasdiff
+          oasdiff --version
+
+      - name: oasdiff breaking-change scan
+        id: diff
+        if: steps.base-build.outputs.buildable == 'true'
+        # Capture exit code without aborting the step; the next step is the
+        # policy gate (label override vs hard fail).
+        run: |
+          set -uo pipefail
+          base=base/src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
+          head=head/src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
+          if [ ! -f "$base" ]; then
+            echo "::notice::base spec absent (feature-introducing PR); treating as non-breaking"
+            echo "breaking=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # --format githubactions annotates the PR diff with breaking findings.
+          # oasdiff exits non-zero iff breaking changes are present.
+          oasdiff breaking "$base" "$head" --format githubactions
+          rc=$?
+          if [ $rc -eq 0 ]; then
+            echo "breaking=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "breaking=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Enforce gate or honor breaking-change-approved label
+        if: steps.base-build.outputs.buildable == 'true'
+        env:
+          BREAKING: ${{ steps.diff.outputs.breaking }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if [ "${BREAKING:-false}" != "true" ]; then
+            echo "no breaking OpenAPI changes"
+            exit 0
+          fi
+          if printf '%s' "$LABELS" | jq -e 'any(. == "breaking-change-approved")' >/dev/null; then
+            echo "::warning::Breaking OpenAPI changes detected; bypassing gate via 'breaking-change-approved' label (auto-removed on merge)"
+            exit 0
+          fi
+          echo "::error::Breaking OpenAPI changes detected. To merge anyway, apply the 'breaking-change-approved' label to this PR."
+          exit 1

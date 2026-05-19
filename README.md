@@ -457,6 +457,26 @@ bash helm/expertise-api/tests/test-render.sh
 
 New features and bug fixes should include tests. See [CLAUDE.md](CLAUDE.md) for test project structure and filtering commands.
 
+## Contributing
+
+### OpenAPI breaking-change gate
+
+The `OpenAPI breaking-change check` CI job (defined in `.github/workflows/ci.yml`) runs on every PR. It builds the OpenAPI spec on both the PR head and the base ref, then runs [oasdiff](https://github.com/oasdiff/oasdiff) `breaking` between them. If breaking changes are detected, the check fails and blocks merge.
+
+A breaking change is, for example: removing a path, removing a response code, renaming a property, narrowing a type, or tightening a required-field set. oasdiff's exact rule set is documented at <https://github.com/oasdiff/oasdiff/blob/main/BREAKING-CHANGES.md>.
+
+#### Bypassing the gate
+
+If the breaking change is intentional and accepted (e.g. removing a deprecated endpoint after the announced sunset window), apply the `breaking-change-approved` label to the PR. The check then passes with a warning annotation. The label is **auto-removed on merge** (by `openapi-label-cleanup.yml`) so it cannot silently carry over to subsequent PRs cut from the merge commit.
+
+Adding the label is an explicit human decision recorded on the PR. Anyone with `pull-requests: write` can apply it; reviewers should treat its presence the same way they would treat a `!` in a Conventional Commit subject.
+
+#### Tolerated edge cases (surface as warnings, not failures)
+
+- PR base ref pre-dates the API project (introductory PRs after a reorg).
+- Base build fails (SDK drift, transient infrastructure). Failing the gate on base-branch breakage would block unrelated PRs.
+- Base spec file is absent (feature-introducing PR that adds the spec for the first time).
+
 ## Documentation
 
 | File | Purpose |
