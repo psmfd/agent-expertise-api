@@ -52,7 +52,7 @@ flowchart LR
 | GET | `/audit` | Cross-tenant audit log (cursor-paginated, requires `expertise.admin`). Supports actor-class filter: `?actorClass=human\|agent\|service` (Part D C6) |
 | GET | `/audit/{id}/raw` | Fetch a single audit row by id without response-hygiene transform (admin-only forensic escape hatch). |
 | GET | `/health/live` | Liveness — 200 while the process responds; no dependency checks. Map this to k8s `livenessProbe` and `systemd WatchdogSec=`. No auth. |
-| GET | `/health/ready` | Readiness — 200 only when DB, ONNX model, and pending-migration checks are all healthy; 503 otherwise. Map this to k8s `readinessProbe` and load-balancer health checks. No auth. |
+| GET | `/health/ready` | Readiness — 200 only when DB, ONNX model, and pending-migration checks are all healthy; 503 otherwise. Map this to k8s `readinessProbe` and load-balancer health checks. No auth. Response is cached for 2s (OutputCache policy `health-ready`) and the pending-migration signal is read from a singleton snapshot refreshed every 5 min by `MigrationStateRefresher` — per-probe DB cost is `AddDbContextCheck`'s `CanConnectAsync`, asymptotically bounded at 1 per pod per 2s regardless of incoming RPS (issue #158). |
 | GET | `/health` | Back-compat alias for `/health/ready`. No auth. |
 | GET | `/metrics` | Prometheus scrape endpoint (no auth required) |
 | GET | `/openapi/v1.json` | OpenAPI 3.x document for this deployment (anonymous, all environments). Also attached as a release asset — see ["OpenAPI discovery"](#openapi-discovery) below |

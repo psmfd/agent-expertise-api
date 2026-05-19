@@ -81,14 +81,23 @@ internal static class HealthEndpoints
             .AllowAnonymous()
             .DisableRateLimiting();
 
+        // OutputCache (policy "health-ready", 2s) caps the underlying
+        // health-check execution rate to one per 2-second window. Issue #158:
+        // /health/ready is AllowAnonymous and runs AddDbContextCheck's
+        // CanConnectAsync per probe — an unauthenticated DoS amplifier without
+        // the cache. /health/live is intentionally NOT cached: its Predicate
+        // matches no checks (response is a const string), so caching adds
+        // overhead with no benefit.
         app.MapHealthChecks("/health/ready", readyOptions)
             .WithTags("Health")
             .AllowAnonymous()
-            .DisableRateLimiting();
+            .DisableRateLimiting()
+            .CacheOutput("health-ready");
 
         app.MapHealthChecks("/health", readyOptions)
             .WithTags("Health")
             .AllowAnonymous()
-            .DisableRateLimiting();
+            .DisableRateLimiting()
+            .CacheOutput("health-ready");
     }
 }

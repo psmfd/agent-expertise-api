@@ -116,4 +116,68 @@ public class HealthEndpointTests
             CancellationToken cancellationToken = default)
             => Task.FromResult(HealthCheckResult.Degraded("stub: always degraded for routing assertion"));
     }
+
+    [Fact]
+    public async Task HealthReady_OutputCache_CollapsesConcurrentProbes()
+    {
+        // Issue #158: /health/ready is AllowAnonymous and previously ran the
+        // underlying checks per probe — an unauthenticated DoS amplifier. The
+        // "health-ready" OutputCache policy (Expire 2s) caps execution to one
+        // per 2s window. This test proves the cache is wired in front of the
+        // health-check pipeline by:
+        //   (1) replacing the production registrations with a single counter
+        //       check tagged "ready".
+        //   (2) firing N concurrent /health/ready probes within the 2s cache
+        //       window, then asserting the counter incremented exactly once.
+        // Without CacheOutput on the endpoint this assertion fails with
+        // Count == N — the regression guard.
+        var counter = new CountingHealthCheck();
+        using var outerFactory = new ApiFactory(UnreachableConnectionString);
+        using var factory = outerFactory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.Configure<HealthCheckServiceOptions>(options =>
+                    options.Registrations.Clear());
+                services.AddHealthChecks().AddCheck(
+                    "counter-stub",
+                    counter,
+                    failureStatus: HealthStatus.Unhealthy,
+                    tags: ["ready"]);
+            });
+        });
+
+        using var client = factory.CreateClient();
+
+        const int probeCount = 20;
+        var probes = Enumerable.Range(0, probeCount)
+            .Select(_ => client.GetAsync(new Uri("/health/ready", UriKind.Relative)))
+            .ToArray();
+        var responses = await Task.WhenAll(probes);
+
+        foreach (var response in responses)
+        {
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+        // OutputCache lock semantics collapse concurrent misses to a single
+        // executor invocation; tolerate a small slack ( == 2 ) for the race
+        // where a probe arrives in the narrow window between the producer
+        // returning and the cache entry being published. Anything beyond 2
+        // would indicate the cache is not in front of the pipeline at all,
+        // which is the regression this test guards against.
+        counter.Count.Should().BeInRange(1, 2);
+    }
+
+    private sealed class CountingHealthCheck : IHealthCheck
+    {
+        private int _count;
+        public int Count => Volatile.Read(ref _count);
+        public Task<HealthCheckResult> CheckHealthAsync(
+            HealthCheckContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _count);
+            return Task.FromResult(HealthCheckResult.Healthy("counted"));
+        }
+    }
 }
