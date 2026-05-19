@@ -75,6 +75,29 @@ interface ApiCallResult {
 	rawText?: string;
 }
 
+/**
+ * Inject an Idempotency-Key header on POST writes per ADR-010 (issue #206).
+ *
+ * Scoped to POST to match the server-side IdempotencyEndpointFilter
+ * (attached only to /expertise, /expertise/{id}/approve, and
+ * /expertise/{id}/reject). A caller-supplied 'Idempotency-Key' is
+ * preserved verbatim so tool handlers that own a retry loop can pin one
+ * key across attempts and hit the server-side replay cache instead of
+ * double-writing.
+ *
+ * Exported (vs inlined into apiCall) so unit tests can assert the
+ * contract without mocking fetch.
+ */
+export function applyIdempotencyKey(
+	headers: Headers,
+	method: string | undefined,
+): void {
+	const upper: string = (method ?? "GET").toUpperCase();
+	if (upper === "POST" && !headers.has("Idempotency-Key")) {
+		headers.set("Idempotency-Key", crypto.randomUUID());
+	}
+}
+
 function getBaseUrl(): string {
 	const raw = process.env.EXPERTISE_API_BASE_URL;
 	if (!raw || raw.trim() === "") {
@@ -120,17 +143,25 @@ async function apiCall(
 	init: RequestInit = {},
 	signal?: AbortSignal,
 ): Promise<ApiCallResult> {
-	const base = getBaseUrl();
-	const token = getToken();
-	const url = `${base}${pathAndQuery}`;
-	const headers = new Headers(init.headers ?? {});
+	const base: string = getBaseUrl();
+	const token: string = getToken();
+	const url: string = `${base}${pathAndQuery}`;
+	const headers: Headers = new Headers(init.headers ?? {});
 	headers.set("Authorization", `Bearer ${token}`);
 	headers.set("Accept", "application/json");
 	if (init.body !== undefined && !headers.has("Content-Type")) {
 		headers.set("Content-Type", "application/json");
 	}
 
-	const response = await fetch(url, { ...init, headers, signal });
+	// Idempotency-Key on POST writes (ADR-010, issue #206). Scoped to POST
+	// to match the server-side IdempotencyEndpointFilter, which is
+	// attached only to /expertise, /expertise/{id}/approve, and
+	// /expertise/{id}/reject. Caller-supplied header (via init.headers)
+	// is preserved so tool handlers that own a retry loop can pin one key
+	// across attempts and benefit from server-side replay.
+	applyIdempotencyKey(headers, init.method);
+
+	const response: Response = await fetch(url, { ...init, headers, signal });
 	const rawText = await response.text();
 	let body: unknown = rawText;
 	const ct = response.headers.get("Content-Type") ?? "";
