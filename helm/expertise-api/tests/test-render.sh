@@ -431,7 +431,10 @@ fi
 
 # 43. Schema rejects probe paths without a leading / (issue #216).
 out_bad_path=$(helm template test-release "$CHART" --set api.probes.liveness.path=health/live 2>&1 || true)
-if echo "$out_bad_path" | grep -qE "'health/live' does not match pattern"; then
+# Match both helm 3.13+ ("'health/live' does not match pattern '^/.*'") and
+# older helm renderings ("api.probes.liveness.path: Does not match pattern '^/.*'")
+# which differ only in casing of "does" and the value-quoting prefix.
+if echo "$out_bad_path" | grep -qiE "does not match pattern '\^/"; then
     ok "schema-probe-path-leading-slash" "schema rejects probe path without leading /"
 else
     err "schema-probe-path-leading-slash" "schema accepted invalid probe path: $(echo "$out_bad_path" | tail -2 | tr '\n' ' ')"
