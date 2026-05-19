@@ -492,6 +492,7 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | Integration threat model (MCP alternatives, M1–M16, eight required server-side controls) | [docs/security/integration-threat-model.md](docs/security/integration-threat-model.md) |
 | Why this project does not expose MCP as a first-party channel | [ADR-007](adrs/007-avoid-mcp-as-llm-integration-channel.md) |
 | Scanning stack (CodeQL, Trivy, Hadolint, OSV-Scanner) | [ADR-004](adrs/004-security-scanning-stack.md) |
+| Idempotency-Key handling and replay semantics (Part D C3) | [ADR-010](adrs/010-idempotency-key-handling.md) |
 
 ## License
 
