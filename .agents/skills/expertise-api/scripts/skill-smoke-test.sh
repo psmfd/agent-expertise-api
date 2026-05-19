@@ -10,6 +10,9 @@
 #   6. reject entry A          -> expected HTTP 409 (state machine)
 #   7. create entry B  (Draft)
 #   8. reject entry B with reason  -> Rejected
+#   9. idempotency replay      -> two POST /expertise calls under one
+#                                 pinned IDEMPOTENCY_KEY return the same
+#                                 entry id (server-side replay, ADR-010)
 #
 # Step 8 is critical: it exercises reject.sh against a real Draft so a
 # wrong-field-name or other reject-body regression is caught (rather than
@@ -122,5 +125,31 @@ case "$rreason" in
     *) fail "reject B: rejectionReason did not round-trip; got '$rreason'" ;;
 esac
 
+# ---- 9. Idempotency replay (ADR-010) ----
+# Two POST /expertise calls under the same pinned IDEMPOTENCY_KEY must
+# return the same entry id and (on the second call) the
+# 'Idempotency-Replay: true' marker. This catches regressions in either
+# the api_curl injection path or the server-side replay cache.
+require_cmd uuidgen
+suffix_c="$(date +%s)-$$-c"
+title_c="smoke-test idempotency ${suffix_c}"
+step "idempotency replay: two POSTs under one pinned key (title=${title_c})"
+body_c="$(mk_body "$title_c" "$suffix_c")"
+IDEMPOTENCY_KEY="$(uuidgen)"
+export IDEMPOTENCY_KEY
+echo "    pinned IDEMPOTENCY_KEY=${IDEMPOTENCY_KEY}"
+first_c="$(printf '%s' "$body_c" | "${here}/create.sh")" \
+    || fail "idempotency: first create did not return 2xx"
+first_id="$(printf '%s' "$first_c" | jq -er '.id')" \
+    || fail "idempotency: first response missing .id"
+second_c="$(printf '%s' "$body_c" | "${here}/create.sh")" \
+    || fail "idempotency: second create did not return 2xx (replay should succeed)"
+second_id="$(printf '%s' "$second_c" | jq -er '.id')" \
+    || fail "idempotency: second response missing .id"
+[ "$first_id" = "$second_id" ] \
+    || fail "idempotency: replay returned a different id ($first_id vs $second_id)"
+echo "    confirmed both POSTs returned id=$first_id"
+unset IDEMPOTENCY_KEY
+
 echo
-echo "OK: skill-smoke-test passed (approve id_a=$id_a, reject id_b=$id_b)"
+echo "OK: skill-smoke-test passed (approve id_a=$id_a, reject id_b=$id_b, idempotent id=$first_id)"

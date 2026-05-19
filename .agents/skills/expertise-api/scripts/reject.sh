@@ -4,6 +4,11 @@
 # Reject a draft entry: POST /expertise/{id}/reject.
 # Requires the caller's token to carry `expertise.write.approve`.
 # Reason is mandatory (server requires 1-2000 chars).
+#
+# Idempotency: api_curl auto-injects an Idempotency-Key header on POST.
+# Wrap-and-retry callers should pre-generate a key (`uuidgen`) and
+# export IDEMPOTENCY_KEY so every retry of *this* invocation hits the
+# server-side replay cache (ADR-010) and returns the original response.
 
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"

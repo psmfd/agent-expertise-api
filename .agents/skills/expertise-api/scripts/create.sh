@@ -3,6 +3,11 @@
 #
 # Create a draft expertise entry: POST /expertise.
 # Reads JSON body from --file or stdin.
+#
+# Idempotency: api_curl auto-injects an Idempotency-Key header on POST.
+# Wrap-and-retry callers should pre-generate a key (`uuidgen`) and
+# export IDEMPOTENCY_KEY so every retry of *this* invocation hits the
+# server-side replay cache (ADR-010) instead of double-creating.
 
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"

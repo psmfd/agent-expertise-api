@@ -14,6 +14,14 @@
 #                        body to stderr along with the status line and exits 1.
 #   - urlencode STR      RFC 3986 percent-encoding for query-string values.
 #   - require_cmd CMD    Fail loudly if a required CLI is missing.
+#
+# Idempotency contract (ADR-010, issue #205):
+#   api_curl / api_curl_status inject an Idempotency-Key header on any
+#   request whose curl args specify '-X POST' (or '--request POST').
+#   Default key is `uuidgen`; callers can pre-set IDEMPOTENCY_KEY in the
+#   environment to pin a key across a retry loop or to drive an
+#   intentional server-side replay. The header is scoped to POST to
+#   match the server-side filter (server records only writes).
 
 set -euo pipefail
 
@@ -79,9 +87,60 @@ urlencode() {
     printf '%s' "$out"
 }
 
+# _args_have_post_method ARGS...
+# Returns 0 (true) if the curl arg list specifies an HTTP POST via either
+# '-X POST' or '--request POST' (separate-arg form). Returns 1 otherwise.
+#
+# The skill's three POST scripts (create.sh, approve.sh, reject.sh) and
+# the smoke-test reject-after-approve negative path all use the literal
+# '-X POST' separate-arg form, which this helper matches. The joined
+# forms '-XPOST' / '--request=POST' are not produced by any current
+# caller; if a future caller uses them, extend the detector below.
+_args_have_post_method() {
+    local prev="" arg
+    for arg in "$@"; do
+        case "$prev" in
+            -X|--request)
+                if [ "$arg" = "POST" ]; then
+                    return 0
+                fi
+                ;;
+        esac
+        prev="$arg"
+    done
+    return 1
+}
+
+# _idempotency_header_args ARGS...
+# If ARGS specify an HTTP POST, prints two lines suitable for splicing
+# into curl args (one element per line, read into an array via a
+# `while IFS= read` loop): a literal '-H' followed by the
+# 'Idempotency-Key: <key>' value. Honours a pre-set IDEMPOTENCY_KEY env
+# var so callers that own a retry loop (or that need to drive the
+# server-side replay path explicitly) can pin the key for all attempts.
+# Emits nothing when ARGS are not a POST.
+#
+# Server contract (ADR-010): /expertise, /expertise/{id}/approve and
+# /expertise/{id}/reject record (tenant, key) for the configured TTL.
+# Sending the header on non-write paths is harmless but wasted, so we
+# scope injection to POST to match the server-side filter exactly.
+_idempotency_header_args() {
+    if ! _args_have_post_method "$@"; then
+        return 0
+    fi
+    require_cmd uuidgen
+    local key="${IDEMPOTENCY_KEY:-$(uuidgen)}"
+    printf -- '-H\n'
+    printf 'Idempotency-Key: %s\n' "$key"
+}
+
 # api_curl PATH [curl-args...]
 # - PATH starts with '/' (e.g. /expertise/search?q=foo)
 # - Bearer token + Accept: application/json injected.
+# - On POST (detected via '-X POST' / '--request POST'), an
+#   Idempotency-Key header is injected automatically (uuidgen) unless
+#   the caller has pre-set IDEMPOTENCY_KEY in the environment. See
+#   _idempotency_header_args above for the retry-pinning contract.
 # - Captures body to a temp file and status code separately so we can
 #   surface non-2xx responses with the body verbatim.
 api_curl() {
@@ -92,11 +151,17 @@ api_curl() {
     body_file="$(mktemp -t expertise-api.XXXXXX)"
     _API_CURL_TMP_FILES+=("$body_file")
 
+    local idem_args=()
+    while IFS= read -r line; do
+        idem_args+=("$line")
+    done < <(_idempotency_header_args "$@")
+
     status="$(curl -sS \
         -o "$body_file" \
         -w '%{http_code}' \
         -H "Authorization: Bearer ${EXPERTISE_API_TOKEN}" \
         -H 'Accept: application/json' \
+        "${idem_args[@]}" \
         "$@" \
         "$url")"
 
@@ -127,11 +192,17 @@ api_curl_status() {
     body_file="$(mktemp -t expertise-api.XXXXXX)"
     _API_CURL_TMP_FILES+=("$body_file")
 
+    local idem_args=()
+    while IFS= read -r line; do
+        idem_args+=("$line")
+    done < <(_idempotency_header_args "$@")
+
     status="$(curl -sS \
         -o "$body_file" \
         -w '%{http_code}' \
         -H "Authorization: Bearer ${EXPERTISE_API_TOKEN}" \
         -H 'Accept: application/json' \
+        "${idem_args[@]}" \
         "$@" \
         "$url")"
 
