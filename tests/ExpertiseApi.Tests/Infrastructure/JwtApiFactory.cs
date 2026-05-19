@@ -35,6 +35,14 @@ public class JwtApiFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Development");
         builder.UseSetting("Auth:Mode", "Oidc");
 
+        // Override DefaultConnection so any DI consumer that reads from
+        // IConfiguration (e.g. the singleton NpgsqlDataSource backing
+        // IIdempotencyStore per ADR-010) sees the testcontainer connection
+        // string. The DbContext is also explicitly re-registered below — we
+        // do both because the two consumers acquire the value through
+        // different paths.
+        builder.UseSetting("ConnectionStrings:DefaultConnection", _connectionString);
+
         // Configure a single test issuer mirroring Authentik-style config
         // (TenantSource = Groups, ScopeClaim = scope).
         builder.UseSetting("Auth:Oidc:Issuers:0:Name", JwtTokenMinter.TestSchemeName);
