@@ -43,7 +43,7 @@ flowchart LR
 | GET | `/expertise/drafts` | List Draft + Rejected entries in caller's tenant (requires `expertise.write.approve`) |
 | POST | `/expertise` | Create entry (generates embedding, writes audit row) |
 | POST | `/expertise/batch` | Create up to 100 entries (generates embeddings, deduplicates) |
-| PATCH | `/expertise/{id}` | Update entry. Approved entries regress to Draft if caller lacks `write.approve` |
+| PATCH | `/expertise/{id}` | Update entry. Approved entries regress to Draft if caller lacks `write.approve`. Changing `visibility` requires `write.approve`. |
 | DELETE | `/expertise/{id}` | Soft delete (sets DeprecatedAt). Shared entries require `expertise.write.approve` |
 | POST | `/expertise/{id}/approve` | Transition Draft → Approved (requires `expertise.write.approve`) |
 | POST | `/expertise/{id}/reject` | Transition Draft → Rejected with required reason (requires `expertise.write.approve`) |

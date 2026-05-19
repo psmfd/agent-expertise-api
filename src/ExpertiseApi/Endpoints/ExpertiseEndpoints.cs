@@ -76,6 +76,8 @@ internal static class ExpertiseEndpoints
             .Accepts<UpdateExpertiseRequest>("application/json")
             .WithSummary("Partially update an entry")
             .WithDescription("Only the supplied fields are modified. If `title` or `body` change the embedding is regenerated. " +
+                             "Changing `visibility` (Private <-> Shared) is a publish/unpublish action and requires `expertise.write.approve` " +
+                             "even for the entry's original writer; a no-op (supplying the current value) does not require the elevated scope. " +
                              "Returns 409 (ConcurrentConflict) when the entry was modified by another request between read and write.")
             .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
@@ -251,6 +253,7 @@ internal static class ExpertiseEndpoints
             if (request.Severity is not null) entry.Severity = request.Severity.Value;
             if (request.Source is not null) entry.Source = request.Source;
             if (request.SourceVersion is not null) entry.SourceVersion = request.SourceVersion;
+            if (request.Visibility is not null) entry.Visibility = request.Visibility.Value;
 
             if (needsReembed)
             {
@@ -263,6 +266,10 @@ internal static class ExpertiseEndpoints
         {
             WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(updated!, hygiene)),
             WriteOutcome.NotFound => Results.NotFound(),
+            WriteOutcome.InsufficientScope => Results.Problem(
+                title: "Insufficient scope",
+                detail: "Changing Visibility requires expertise.write.approve.",
+                statusCode: StatusCodes.Status403Forbidden),
             WriteOutcome.ConcurrentConflict => Results.Problem(
                 title: "Concurrent modification",
                 detail: "The entry was modified by another request. Reload and retry.",
@@ -597,7 +604,14 @@ internal record UpdateExpertiseRequest(
     Severity? Severity = null,
     string? Source = null,
     List<string>? Tags = null,
-    string? SourceVersion = null);
+    string? SourceVersion = null,
+    /// <summary>
+    /// Optional Visibility change (Private &lt;-&gt; Shared). When this field is supplied
+    /// and the value differs from the entry's current Visibility, the caller must hold
+    /// <c>expertise.write.approve</c>. A no-op (Visibility supplied matches current)
+    /// does not require the elevated scope.
+    /// </summary>
+    Visibility? Visibility = null);
 
 internal record ApproveExpertiseRequest(Visibility? Visibility = null);
 

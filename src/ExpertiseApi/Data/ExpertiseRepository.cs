@@ -180,8 +180,29 @@ internal class ExpertiseRepository(
             return (WriteOutcome.NotFound, null);
 
         var beforeHash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var beforeVisibility = entry.Visibility;
 
         await applyUpdates(entry);
+
+        // ADR-003 scope escalation: changing Visibility (Private <-> Shared) is the
+        // symmetric inverse of /approve's Visibility selection and must require the
+        // same scope (expertise.write.approve). Verified value-based (post-mutation
+        // compared against pre-mutation snapshot) so a no-op PATCH that includes the
+        // current Visibility value does not escalate. See issue #66.
+        //
+        // Interaction with the state-regression block below: this check fires BEFORE
+        // the regression block, so a denied request never reaches the Approved->Draft
+        // demotion path. A draft-only caller PATCHing an Approved+Shared entry with
+        // Visibility=Shared (no-op) plus a title change DOES regress to Draft+Shared;
+        // the Shared flag on a Draft entry is schema-permitted but semantically dormant
+        // (Draft entries are invisible to cross-tenant reads under ApplyApprovedReviewFilter)
+        // and the next /approve unconditionally overwrites Visibility from the request body.
+        if (entry.Visibility != beforeVisibility
+            && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
+        {
+            return (WriteOutcome.InsufficientScope, null);
+        }
+
         entry.UpdatedAt = DateTime.UtcNow;
         entry.IntegrityHash = IntegrityHashService.Compute(entry);
 
