@@ -142,6 +142,8 @@ A backwards-compat shim is retained at `.claude/skills/expertise-api-design/` (t
 }
 ```
 
+pi users get a richer integration: the in-tree extension at [`.pi/extensions/expertise-api/`](.pi/extensions/expertise-api/README.md) registers eight typed tools (`expertise_search`, `expertise_search_semantic`, `expertise_get`, `expertise_create`, `expertise_update`, `expertise_approve`, `expertise_reject`, `expertise_delete`) that the LLM can call directly via `fetch()` — no shelling to `curl`, and the bearer token stays out of `/proc/<pid>/cmdline`. The skill remains useful for ad-hoc terminal use and for harnesses without pi.
+
 Env contract for all three harnesses:
 
 ```sh

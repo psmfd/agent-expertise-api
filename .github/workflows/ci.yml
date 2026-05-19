@@ -92,6 +92,23 @@ jobs:
           path: test-results/*.trx
           retention-days: 14
 
+  pi-extension-typecheck:
+    name: pi extension typecheck (expertise-api)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 20
+      - name: Install deps
+        working-directory: .pi/extensions/expertise-api
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: .pi/extensions/expertise-api
+        run: npm run typecheck
+
   helm-lint:
     name: Helm lint + render tests
     runs-on: ubuntu-latest
