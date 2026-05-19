@@ -51,7 +51,7 @@ flowchart LR
 | GET | `/expertise/search/semantic?q=` | Semantic vector search (pgvector, Approved only) |
 | GET | `/audit` | Cross-tenant audit log (cursor-paginated, requires `expertise.admin`). Supports actor-class filter: `?actorClass=human\|agent\|service` (Part D C6) |
 | GET | `/audit/{id}/raw` | Fetch a single audit row by id without response-hygiene transform (admin-only forensic escape hatch). |
-| GET | `/health/live` | Liveness — 200 while the process responds; no dependency checks. Map this to k8s `livenessProbe` and `systemd WatchdogSec=`. No auth. |
+| GET | `/health/live` | Liveness — 200 while the process responds; no dependency checks. Map this to k8s `livenessProbe`. (Not used by systemd `WatchdogSec=`, which consumes `sd_notify(WATCHDOG=1)` datagrams rather than HTTP probes — the directive is intentionally disabled in the shipped unit template; see the watchdog note in the Native OS service section per #217.) No auth. |
 | GET | `/health/ready` | Readiness — 200 only when DB, ONNX model, and pending-migration checks are all healthy; 503 otherwise. Map this to k8s `readinessProbe` and load-balancer health checks. No auth. Response is cached for 2s (OutputCache policy `health-ready`) and the pending-migration signal is read from a singleton snapshot refreshed every 5 min by `MigrationStateRefresher` — per-probe DB cost is `AddDbContextCheck`'s `CanConnectAsync`, asymptotically bounded at 1 per pod per 2s regardless of incoming RPS (issue #158). |
 | GET | `/health` | Back-compat alias for `/health/ready`. No auth. |
 | GET | `/metrics` | Prometheus scrape endpoint (no auth required) |
@@ -367,6 +367,29 @@ escalates to SIGKILL. The systemd unit (`TimeoutStopSec=45`) and the launchd
 plist (`ExitTimeOut=45`) add a 15s OS-level margin on top — stop the service
 and the .NET host has 30s to drain, after which systemd/launchd will fire
 SIGKILL at the 45s mark.
+
+**Systemd watchdog timer** (#217): `WatchdogSec=` is intentionally
+*disabled* in the shipped unit template. `Microsoft.Extensions.Hosting.Systemd`
+emits `READY=1`/`STOPPING=1` only — it does not periodically ping
+`WATCHDOG=1`. Enabling `WatchdogSec=` without a hosted service that pings
+the watchdog on a `WatchdogSec/2` cadence produces a silent SIGABRT loop
+under any load that delays the runtime by ~half the interval. To re-enable,
+implement a `WATCHDOG=1` notifier hosted service (via Tmds.Systemd or
+libsystemd P/Invoke) and uncomment `WatchdogSec=30` in
+`scripts/service-templates/expertise-api.service.tmpl`.
+
+*Verifying the directive is safely disabled* (smoke recipe for operators
+who re-enable it): induce ≥30 s of GC pressure with
+`stress-ng --vm 2 --vm-bytes 1G --timeout 60s` against the host running
+the unit, then check `journalctl -u expertise-api --since '2 minutes ago'`
+for `Watchdog timeout` or `WATCHDOG=trigger` lines. With the shipped
+(disabled) configuration none should appear; with `WatchdogSec=30`
+uncommented and no notifier service, expect a SIGABRT/restart entry
+within ~30 s of the stress run. The structural side of this regression
+— that `expertise-apictl restart` does not race the watchdog while the
+service is transitioning — is covered by the `apictl restart race
+regression` CI jobs in `.github/workflows/ci.yml` (Debian 13 + macOS
+matrix), which remain in place and are unaffected by this change.
 
 **Schema migrations on install/upgrade** (#144): both install scripts run
 `scripts/migrate.{sh,ps1}` between publish and service start. The migrate

@@ -329,8 +329,10 @@ jobs:
             exit 0
           fi
           if printf '%s' "$LABELS" | jq -e 'any(. == "breaking-change-approved")' >/dev/null; then
-            echo "::warning::Breaking OpenAPI changes detected; bypassing gate via 'breaking-change-approved' label (auto-removed on merge)"
+            echo "::warning::Breaking OpenAPI changes detected; bypassing gate via" \
+                 "'breaking-change-approved' label (auto-removed on merge)"
             exit 0
           fi
-          echo "::error::Breaking OpenAPI changes detected. To merge anyway, apply the 'breaking-change-approved' label to this PR."
+          echo "::error::Breaking OpenAPI changes detected. To merge anyway," \
+               "apply the 'breaking-change-approved' label to this PR."
           exit 1
