@@ -111,36 +111,60 @@ _args_have_post_method() {
     return 1
 }
 
-# _idempotency_header_args ARGS...
-# If ARGS specify an HTTP POST, prints two lines suitable for splicing
-# into curl args (one element per line, read into an array via a
-# `while IFS= read` loop): a literal '-H' followed by the
-# 'Idempotency-Key: <key>' value. Honours a pre-set IDEMPOTENCY_KEY env
-# var so callers that own a retry loop (or that need to drive the
-# server-side replay path explicitly) can pin the key for all attempts.
-# Emits nothing when ARGS are not a POST.
-#
-# Server contract (ADR-010): /expertise, /expertise/{id}/approve and
-# /expertise/{id}/reject record (tenant, key) for the configured TTL.
-# Sending the header on non-write paths is harmless but wasted, so we
-# scope injection to POST to match the server-side filter exactly.
-_idempotency_header_args() {
-    if ! _args_have_post_method "$@"; then
+# _validate_idempotency_key KEY
+# Mirror of the server-side IdempotencyKeyValidator (IETF draft-ietf-
+# httpapi-idempotency-key-header-06 §2.2 + ADR-010): 1–255 characters,
+# printable ASCII only (0x21–0x7E), no whitespace, no control chars.
+# This client-side guard exists primarily to defuse the
+# argv/header-injection vector when a caller pre-sets IDEMPOTENCY_KEY:
+# a newline in the value would split into extra '-H' header lines (and
+# under the previous process-substitution build, into stray curl flags
+# entirely — e.g. '-o /tmp/pwn'). Validating before splicing keeps the
+# client and server contracts identical and fails loudly rather than
+# silently constructing a malformed curl invocation.
+_validate_idempotency_key() {
+    local key="$1"
+    local len=${#key}
+    if [ "$len" -lt 1 ] || [ "$len" -gt 255 ]; then
+        echo "error: IDEMPOTENCY_KEY length must be 1-255 characters (got $len)" >&2
+        exit 2
+    fi
+    # Reject any char outside printable ASCII (0x21-0x7E): rules out
+    # whitespace (incl. \t \r \n), control chars, DEL, and non-ASCII.
+    case "$key" in
+        *[!\!-\~]*)
+            echo "error: IDEMPOTENCY_KEY must contain only printable ASCII (0x21-0x7E); no whitespace or control characters" >&2
+            exit 2
+            ;;
+    esac
+}
+
+# _resolve_idempotency_key
+# Echo the Idempotency-Key value to use for a POST call. Honours a
+# pre-set IDEMPOTENCY_KEY env var (validated for shape) so callers that
+# own a retry loop can pin one key across attempts; otherwise mints a
+# fresh one via uuidgen. Designed to be called from a normal
+# command-substitution context (NOT process substitution) so that an
+# `exit 2` from require_cmd / _validate_idempotency_key propagates to
+# the caller process and the request fails loudly rather than silently
+# emitting an unkeyed POST.
+_resolve_idempotency_key() {
+    if [ -n "${IDEMPOTENCY_KEY:-}" ]; then
+        _validate_idempotency_key "$IDEMPOTENCY_KEY"
+        printf '%s' "$IDEMPOTENCY_KEY"
         return 0
     fi
     require_cmd uuidgen
-    local key="${IDEMPOTENCY_KEY:-$(uuidgen)}"
-    printf -- '-H\n'
-    printf 'Idempotency-Key: %s\n' "$key"
+    uuidgen
 }
 
 # api_curl PATH [curl-args...]
 # - PATH starts with '/' (e.g. /expertise/search?q=foo)
 # - Bearer token + Accept: application/json injected.
 # - On POST (detected via '-X POST' / '--request POST'), an
-#   Idempotency-Key header is injected automatically (uuidgen) unless
-#   the caller has pre-set IDEMPOTENCY_KEY in the environment. See
-#   _idempotency_header_args above for the retry-pinning contract.
+#   Idempotency-Key header is injected automatically. Default value is
+#   `uuidgen`; pre-set IDEMPOTENCY_KEY in the environment to pin a key
+#   across an outer retry loop (server-side replay per ADR-010).
 # - Captures body to a temp file and status code separately so we can
 #   surface non-2xx responses with the body verbatim.
 api_curl() {
@@ -152,16 +176,24 @@ api_curl() {
     _API_CURL_TMP_FILES+=("$body_file")
 
     local idem_args=()
-    while IFS= read -r line; do
-        idem_args+=("$line")
-    done < <(_idempotency_header_args "$@")
+    if _args_have_post_method "$@"; then
+        local _idem_key
+        _idem_key="$(_resolve_idempotency_key)"
+        idem_args=(-H "Idempotency-Key: ${_idem_key}")
+    fi
 
+    # ${idem_args[@]+"${idem_args[@]}"} expands to nothing when the
+    # array is empty, which is safe under `set -u` on bash 3.2 (macOS
+    # system bash) as well as bash 4.4+. The plain "${idem_args[@]}"
+    # form raises 'unbound variable' on bash < 4.4 when the array is
+    # empty, which would break every non-POST request on a developer
+    # workstation running /bin/bash.
     status="$(curl -sS \
         -o "$body_file" \
         -w '%{http_code}' \
         -H "Authorization: Bearer ${EXPERTISE_API_TOKEN}" \
         -H 'Accept: application/json' \
-        "${idem_args[@]}" \
+        ${idem_args[@]+"${idem_args[@]}"} \
         "$@" \
         "$url")"
 
@@ -193,16 +225,18 @@ api_curl_status() {
     _API_CURL_TMP_FILES+=("$body_file")
 
     local idem_args=()
-    while IFS= read -r line; do
-        idem_args+=("$line")
-    done < <(_idempotency_header_args "$@")
+    if _args_have_post_method "$@"; then
+        local _idem_key
+        _idem_key="$(_resolve_idempotency_key)"
+        idem_args=(-H "Idempotency-Key: ${_idem_key}")
+    fi
 
     status="$(curl -sS \
         -o "$body_file" \
         -w '%{http_code}' \
         -H "Authorization: Bearer ${EXPERTISE_API_TOKEN}" \
         -H 'Accept: application/json' \
-        "${idem_args[@]}" \
+        ${idem_args[@]+"${idem_args[@]}"} \
         "$@" \
         "$url")"
 
