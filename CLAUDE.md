@@ -204,8 +204,8 @@ Four scopes drive the four authorization policies. The hierarchy is `admin ⊇ a
 | Scope | Policy | Required for |
 | --- | --- | --- |
 | `expertise.read` | `ReadAccess` | All `GET` endpoints |
-| `expertise.write.draft` | `WriteAccess` | `POST`, `PATCH`, `DELETE` (drafts in caller's own tenant) |
-| `expertise.write.approve` | `WriteApproveAccess` | `/approve`, `/reject` |
+| `expertise.write.draft` | `WriteAccess` | `POST`, `PATCH`, `DELETE` (drafts in caller's own tenant; **changing `Visibility` via PATCH escalates to `expertise.write.approve`** — see ADR-003) |
+| `expertise.write.approve` | `WriteApproveAccess` | `/approve`, `/reject`, `PATCH` when `Visibility` changes, soft-delete on `shared` |
 | `expertise.admin` | `AdminAccess` | `/audit`, cross-tenant ops |
 
 The legacy `expertise.write` scope is normalized to `expertise.write.draft` during one transition cycle.
@@ -383,7 +383,7 @@ The `ExpertiseEntry` entity carries the original content fields (`Domain`, `Tags
 | Field | Type | Notes |
 | --- | --- | --- |
 | `Tenant` | `string`, required, indexed | Owning team. `shared` is a first-class tenant value. Migration backfills `legacy` for pre-rebuild rows; column-level default dropped post-backfill. |
-| `Visibility` | `enum { Private, Shared }` | Stored as string. Defaults to `Private`. Setting `Shared` requires `expertise.write.approve`. |
+| `Visibility` | `enum { Private, Shared }` | Stored as string. Defaults to `Private`. Setting `Shared` on create requires `expertise.write.approve`. Changing `Visibility` via PATCH (either direction) requires `expertise.write.approve`; no-op (PATCH supplies the current value) does not escalate. |
 | `AuthorPrincipal` | `string`, required | OIDC `sub` of the writer. Server-set. Migration backfills `pre-rebuild`. |
 | `AuthorAgent` | `string?` | Agent name when written via an agent. Distinct from `AuthorPrincipal`. |
 | `IntegrityHash` | `string?` | SHA-256 hex over canonical JSON of `{tenant, title, body, entryType, severity}`. Backfilled by the `rehash` CLI. |

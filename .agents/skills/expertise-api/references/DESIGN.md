@@ -107,7 +107,7 @@ Single-row `EmbeddingMetadata` table tracks model name, dimensions, and `LastRee
 | GET | `/expertise/{id}` | `expertise.read` | Single entry | |
 | POST | `/expertise` | `expertise.write.draft` | Create entry (generates embedding) | |
 | POST | `/expertise/batch` | `expertise.write.draft` | Create up to 100 entries (generates embeddings, deduplicates) | Max 100 entries per batch |
-| PATCH | `/expertise/{id}` | `expertise.write.draft` | Update entry (regenerates embedding if title/body changed) | |
+| PATCH | `/expertise/{id}` | `expertise.write.draft` | Update entry (regenerates embedding if title/body changed). Changing `visibility` requires `expertise.write.approve`. | |
 | DELETE | `/expertise/{id}` | `expertise.write.draft` | Soft delete (sets DeprecatedAt). Shared entries require `expertise.write.approve`. | |
 | GET | `/expertise/drafts` | `expertise.write.approve` | List Draft + Rejected entries in caller's tenant | |
 | POST | `/expertise/{id}/approve` | `expertise.write.approve` | Transition Draft → Approved | |
@@ -199,7 +199,7 @@ PATCH state regression (ADR-003): a `write.draft`-only caller editing an `Approv
 
 Dedup queries (exact-match and semantic) exclude `Rejected` entries — otherwise a Rejected entry would permanently block resubmission of identical content. Drafts and Approved entries still dedup as before.
 
-Soft-deleting a `Tenant = "shared"` entry requires `expertise.write.approve` (returns 403 otherwise — 404 would mislead since the caller can read the entry).
+Soft-deleting a `Tenant = "shared"` entry requires `expertise.write.approve` (returns 403 otherwise — 404 would mislead since the caller can read the entry). Changing `Visibility` on PATCH (Private ↔ Shared, either direction) is the symmetric inverse of `/approve`'s Visibility selection and also requires `expertise.write.approve`; the check is value-based, so a no-op PATCH that supplies the current Visibility does not escalate.
 
 ### Audit log
 
