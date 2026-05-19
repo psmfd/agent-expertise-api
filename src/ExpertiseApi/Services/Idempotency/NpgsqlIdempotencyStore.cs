@@ -33,6 +33,7 @@ internal sealed class NpgsqlIdempotencyStore : IIdempotencyStore
         string tenant,
         string key,
         string requestHash,
+        TimeSpan ttl,
         CancellationToken ct)
     {
         await using var conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
@@ -66,9 +67,15 @@ internal sealed class NpgsqlIdempotencyStore : IIdempotencyStore
         // we read the finalized state. Placeholder rows (status_code = 0)
         // surface as "in-flight, no payload"; the filter treats that as
         // 409 (concurrent request with same key still executing).
+        //
+        // TTL is enforced HERE rather than relying on the GC sweep: an
+        // expired row is treated as not-present so the caller's retry
+        // re-executes the handler. The DELETE inside this transaction also
+        // clears the row so the subsequent INSERT (next retry) succeeds.
+        var cutoff = DateTime.UtcNow - ttl;
         await using (var selectCmd = new NpgsqlCommand(
             @"SELECT request_hash, status_code, response_body_hash, response_body,
-                     response_headers, response_content_type
+                     response_headers, response_content_type, created_at
               FROM idempotency_records
               WHERE tenant = @tenant AND key = @key
               FOR UPDATE;",
@@ -88,20 +95,7 @@ internal sealed class NpgsqlIdempotencyStore : IIdempotencyStore
             }
 
             var existingHash = reader.GetString(0);
-            if (!string.Equals(existingHash, requestHash, StringComparison.Ordinal))
-            {
-                await tx.RollbackAsync(ct).ConfigureAwait(false);
-                return (IdempotencyLookupOutcome.HitMismatch, null);
-            }
-
             var statusCode = reader.GetInt32(1);
-            if (statusCode == 0)
-            {
-                // Placeholder — concurrent in-flight request with same key+hash.
-                await tx.RollbackAsync(ct).ConfigureAwait(false);
-                return (IdempotencyLookupOutcome.HitMatch, null);
-            }
-
             var bodyHash = reader.GetString(2);
             byte[]? body = await reader.IsDBNullAsync(3, ct).ConfigureAwait(false)
                 ? null
@@ -115,6 +109,50 @@ internal sealed class NpgsqlIdempotencyStore : IIdempotencyStore
             string? contentType = await reader.IsDBNullAsync(5, ct).ConfigureAwait(false)
                 ? null
                 : reader.GetString(5);
+            var createdAt = await reader.GetFieldValueAsync<DateTime>(6, ct).ConfigureAwait(false);
+
+            // Close the reader before issuing another command on the same
+            // connection — Npgsql does not support MARS.
+            await reader.DisposeAsync().ConfigureAwait(false);
+
+            if (createdAt < cutoff)
+            {
+                // Expired — reap and let the caller retry. Replace the row
+                // with a fresh placeholder bearing the *new* request_hash so
+                // the current attempt is treated as Reserved.
+                await using (var refreshCmd = new NpgsqlCommand(
+                    @"UPDATE idempotency_records
+                      SET request_hash = @hash,
+                          status_code = 0,
+                          response_body_hash = '',
+                          response_body = NULL,
+                          response_headers = NULL,
+                          response_content_type = NULL,
+                          created_at = now()
+                      WHERE tenant = @tenant AND key = @key;",
+                    conn, tx))
+                {
+                    refreshCmd.Parameters.AddWithValue("tenant", tenant);
+                    refreshCmd.Parameters.AddWithValue("key", key);
+                    refreshCmd.Parameters.AddWithValue("hash", requestHash);
+                    await refreshCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+                await tx.CommitAsync(ct).ConfigureAwait(false);
+                return (IdempotencyLookupOutcome.Reserved, null);
+            }
+
+            if (!string.Equals(existingHash, requestHash, StringComparison.Ordinal))
+            {
+                await tx.RollbackAsync(ct).ConfigureAwait(false);
+                return (IdempotencyLookupOutcome.HitMismatch, null);
+            }
+
+            if (statusCode == 0)
+            {
+                // Placeholder — concurrent in-flight request with same key+hash.
+                await tx.RollbackAsync(ct).ConfigureAwait(false);
+                return (IdempotencyLookupOutcome.HitMatch, null);
+            }
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
             return (
@@ -126,6 +164,23 @@ internal sealed class NpgsqlIdempotencyStore : IIdempotencyStore
                     Body: body,
                     BodyOmittedDueToSize: body is null && !string.IsNullOrEmpty(bodyHash)));
         }
+    }
+
+    /// <inheritdoc />
+    public async Task ReleaseReservationAsync(string tenant, string key, CancellationToken ct)
+    {
+        // Scope by status_code = 0 so an already-finalized row is never
+        // accidentally deleted by a late-running release call (defence in
+        // depth against the OnCompleted hook landing in an order that
+        // overlaps with an exception-path release).
+        await using var conn = await _dataSource.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using var cmd = new NpgsqlCommand(
+            @"DELETE FROM idempotency_records
+              WHERE tenant = @tenant AND key = @key AND status_code = 0;",
+            conn);
+        cmd.Parameters.AddWithValue("tenant", tenant);
+        cmd.Parameters.AddWithValue("key", key);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />

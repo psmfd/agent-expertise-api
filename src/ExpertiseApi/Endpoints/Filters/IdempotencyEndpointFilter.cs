@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -57,7 +58,7 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
 {
     private const string HeaderName = "Idempotency-Key";
     private const string ReplayHeaderName = "Idempotency-Replay";
-    private const string BodyOmittedWarning = "199 - \"response body not cached due to size\"";
+    private const string BodyOmittedWarning = "199 - \"Idempotent response truncated; original body not replayable\"";
 
     private static readonly Counter PersistFailedCounter = Metrics.CreateCounter(
         "expertise_idempotency_persist_failed_total",
@@ -126,8 +127,24 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
         // .RequireAuthorization). Shared-tenant requests carry a null Tenant on
         // the context until BuildEntry rewrites it; the hash includes whatever
         // the auth pipeline established, which is the correct boundary.
+        //
+        // DEFENSIVE: assert Tenant is not null. Today the three target POSTs
+        // sit behind RequireAuthorization which sets Tenant; a future
+        // refactor that admits anonymous or partial-auth callers would
+        // otherwise collapse the partition key into ("", key) for every
+        // such request, concentrating idempotency contention into one slot.
         var tenantContext = http.RequireTenantContext();
-        var tenant = tenantContext.Tenant ?? string.Empty;
+        if (string.IsNullOrEmpty(tenantContext.Tenant))
+        {
+            // Conservative: refuse rather than store under empty-tenant.
+            // This branch should be unreachable under the current route map.
+            RequestsCounter.WithLabels("missing_tenant").Inc();
+            return Results.Problem(
+                title: "Idempotency-Key requires a tenant",
+                detail: "This endpoint emitted an Idempotency-Key but the authenticated principal has no resolved tenant.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+        var tenant = tenantContext.Tenant;
         var sub = tenantContext.Principal.FindFirst("sub")?.Value
                   ?? tenantContext.Principal.FindFirstValue(ClaimTypes.NameIdentifier)
                   ?? string.Empty;
@@ -161,7 +178,7 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
 
         // Lookup / reserve.
         var (outcome, payload) = await _store.TryReserveAsync(
-            tenant, keyValue!, requestHash, http.RequestAborted).ConfigureAwait(false);
+            tenant, keyValue!, requestHash, opts.Ttl, http.RequestAborted).ConfigureAwait(false);
 
         switch (outcome)
         {
@@ -194,11 +211,15 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
         }
 
         // Reserved branch: run the handler with response-stream capture.
+        // `handlerThrew` tracks unhandled-exception unwind so the finally
+        // block can release the placeholder row (otherwise it would block
+        // legitimate retries for the full TTL window).
         var origBodyFeature = http.Features.Get<IHttpResponseBodyFeature>();
         await using var buffer = new MemoryStream();
         var bufferFeature = new StreamResponseBodyFeature(buffer);
         http.Features.Set<IHttpResponseBodyFeature>(bufferFeature);
 
+        var handlerThrew = false;
         try
         {
             var handlerResult = await next(context).ConfigureAwait(false);
@@ -207,6 +228,11 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
                 await r.ExecuteAsync(http).ConfigureAwait(false);
             }
         }
+        catch
+        {
+            handlerThrew = true;
+            throw;
+        }
         finally
         {
             // ADR-010 amendment: restore even on exception so UseExceptionHandler
@@ -214,6 +240,29 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
             // buffer. The next retry will re-execute the handler.
             if (origBodyFeature is not null)
                 http.Features.Set<IHttpResponseBodyFeature>(origBodyFeature);
+
+            if (handlerThrew)
+            {
+                // Fire-and-forget placeholder release. Cannot await inside
+                // finally on the exception path (we are rethrowing), so use
+                // OnCompleted; this still runs before the framework completes
+                // the response. CancellationToken.None: the request was
+                // cancelled but the release operation must complete.
+                http.Response.OnCompleted(async () =>
+                {
+                    try
+                    {
+                        await _store.ReleaseReservationAsync(tenant, keyValue!, CancellationToken.None).ConfigureAwait(false);
+                    }
+#pragma warning disable CA1031 // fire-and-forget metric/log
+                    catch (Exception ex)
+#pragma warning restore CA1031
+                    {
+                        PersistFailedCounter.Inc();
+                        _logger.LogWarning(ex, "Idempotency placeholder release failed after handler exception; GC sweep will reap on next cadence");
+                    }
+                });
+            }
         }
 
         // Capture status code + content type + selected headers before the body
@@ -228,21 +277,19 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
         var bodyTruncated = bodyArr.Length > opts.MaxBodyBytes;
 
         // Replay-able cache only for the configured status classes. For
-        // non-cacheable statuses (5xx, 429) we leave the placeholder row in
-        // place; the GC sweep will reap it. Functionally identical to "row
-        // never existed" from the next retry's perspective once the
-        // placeholder ages out — and the in-flight concurrent retry will
-        // currently see the placeholder and 409 (acceptable; transient).
+        // non-cacheable statuses (5xx, 429) we explicitly release the
+        // placeholder row so the caller's retry can re-execute. Without this,
+        // a transient 5xx would lock the (tenant, key) slot for the full TTL
+        // (default 24h) and every retry would receive 409 inflight-conflict
+        // — the exact failure mode idempotency keys are supposed to solve.
         if (shouldCache)
         {
-            // Write the captured bytes (possibly trimmed) back to the real body
-            // synchronously so the client sees them.
-            var responseBytes = bodyTruncated
-                ? bodyArr.AsSpan(0, opts.MaxBodyBytes).ToArray()
-                : bodyArr;
+            // Write the captured bytes (no truncation on the wire — the cap
+            // applies only to what we persist; the live caller always receives
+            // the full handler-emitted body).
             await http.Response.Body.WriteAsync(bodyArr.AsMemory(0, bodyArr.Length), http.RequestAborted).ConfigureAwait(false);
 
-            var bodyForStore = bodyTruncated ? null : responseBytes;
+            var bodyForStore = bodyTruncated ? null : bodyArr;
             var bodyHash = ComputeSha256Hex(bodyArr);
 
             // Fire-and-forget persistence on response completion. Failure mode:
@@ -283,8 +330,28 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
         }
         else
         {
-            // Non-cacheable status: write bytes to wire, do not persist.
+            // Non-cacheable status: write bytes to wire, release the
+            // placeholder so the next retry can re-execute. Fire-and-forget;
+            // a failure here means the slot stays held for at most the GC
+            // cadence (1h) — still vastly better than the 24h TTL window.
             await http.Response.Body.WriteAsync(bodyArr.AsMemory(0, bodyArr.Length), http.RequestAborted).ConfigureAwait(false);
+
+            var tenantCapture = tenant;
+            var keyCapture = keyValue!;
+            http.Response.OnCompleted(async () =>
+            {
+                try
+                {
+                    await _store.ReleaseReservationAsync(tenantCapture, keyCapture, CancellationToken.None).ConfigureAwait(false);
+                }
+#pragma warning disable CA1031 // fire-and-forget metric/log
+                catch (Exception ex)
+#pragma warning restore CA1031
+                {
+                    PersistFailedCounter.Inc();
+                    _logger.LogWarning(ex, "Idempotency placeholder release failed on non-cacheable status {Status}; GC sweep will reap on next cadence", capturedStatus);
+                }
+            });
             RequestsCounter.WithLabels($"executed_no_cache_{capturedStatus}").Inc();
         }
 
@@ -355,6 +422,10 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
         // SHA-256 over a length-prefixed concatenation. Length prefixes prevent
         // boundary ambiguity (e.g. "GET/foo" vs "GE" + "T/foo"); each field is
         // delimited by its UTF-8 byte length followed by the bytes.
+        //
+        // Endianness: explicit little-endian via BinaryPrimitives so the
+        // hash is identical across heterogeneous-arch deployments (mixed
+        // amd64/arm64 fleets reading each other's stored hashes).
         using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         Mix(hasher, method);
@@ -362,7 +433,7 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
         Mix(hasher, tenant);
         Mix(hasher, sub);
         Span<byte> lenBuf = stackalloc byte[4];
-        BitConverter.TryWriteBytes(lenBuf, bodyBytes.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(lenBuf, bodyBytes.Length);
         hasher.AppendData(lenBuf);
         hasher.AppendData(bodyBytes);
 
@@ -372,7 +443,7 @@ internal sealed class IdempotencyEndpointFilter : IEndpointFilter
         {
             Span<byte> lb = stackalloc byte[4];
             var bytes = Encoding.UTF8.GetBytes(s);
-            BitConverter.TryWriteBytes(lb, bytes.Length);
+            BinaryPrimitives.WriteInt32LittleEndian(lb, bytes.Length);
             h.AppendData(lb);
             h.AppendData(bytes);
         }

@@ -63,11 +63,19 @@ internal interface IIdempotencyStore
     /// <paramref name="payload"/>; the filter responds 409 Conflict
     /// (concurrent in-flight request with same key).
     /// </para>
+    /// <para>
+    /// Rows older than <paramref name="ttl"/> are treated as not-present
+    /// (TTL check is authoritative; the background GC sweep is a footprint
+    /// optimisation, not a correctness mechanism). This means a retry whose
+    /// original request expired silently re-executes the handler with a
+    /// fresh placeholder — the desired behaviour.
+    /// </para>
     /// </summary>
     Task<(IdempotencyLookupOutcome Outcome, IdempotencyReplayPayload? Payload)> TryReserveAsync(
         string tenant,
         string key,
         string requestHash,
+        TimeSpan ttl,
         CancellationToken ct);
 
     /// <summary>
@@ -87,6 +95,18 @@ internal interface IIdempotencyStore
         string? contentType,
         IReadOnlyDictionary<string, string>? headers,
         CancellationToken ct);
+
+    /// <summary>
+    /// Delete a placeholder reservation that will never be persisted (the
+    /// handler emitted a non-cacheable status — 5xx or 429 — or threw an
+    /// unhandled exception, in which case <see cref="PersistAsync"/> is not
+    /// invoked). Frees the <c>(tenant, key)</c> slot immediately so the
+    /// caller's retry can re-execute rather than receiving 409 for up to the
+    /// full TTL window. Safe to call on an already-finalized row (it is a
+    /// targeted DELETE that scopes by <c>status_code = 0</c>, so finalised
+    /// rows are untouched).
+    /// </summary>
+    Task ReleaseReservationAsync(string tenant, string key, CancellationToken ct);
 
     /// <summary>
     /// Delete rows older than <paramref name="olderThan"/>. Returns the row

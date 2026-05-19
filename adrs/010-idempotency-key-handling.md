@@ -92,12 +92,14 @@ The issue body's "singleton" suggestion is correct, but only if the store delibe
 
 The singleton store depends only on:
 
-- `NpgsqlDataSource` (singleton, registered via `AddNpgsqlDataSource` and shared with EF via `UseNpgsql(dataSource)`),
+- `NpgsqlDataSource` (singleton, registered via `NpgsqlDataSourceBuilder` as a dedicated pool — see implementation note below),
 - `TimeProvider`,
 - `IOptions<IdempotencyOptions>`,
 - `ILogger<NpgsqlIdempotencyStore>`.
 
 An architecture test asserts that `NpgsqlIdempotencyStore`'s constructor parameters are all singleton-resolvable, so future drift surfaces in CI rather than in production.
+
+**Dedicated NpgsqlDataSource (refined post-review, 2026-05-19):** the initial draft assumed the idempotency store would share the `ExpertiseDbContext`'s underlying `NpgsqlDataSource` via `UseNpgsql(dataSource)`. Implementation diverged: the store owns a **separate, dedicated** `NpgsqlDataSource` built from the same connection string. Rationale: (a) the EF Core registration uses `options.UseNpgsql(connectionString)` (string overload), so EF builds its own internal data source — sharing one would require refactoring the EF registration to `UseNpgsql(dataSource)` and updating every test factory; (b) keeping the pools separate insulates the idempotency hot path from EF pool exhaustion under load and prevents an EF-side connection leak from cascading into idempotency 5xx; (c) the idempotency hot path is low-qps (three POSTs, rate-limited at 10/min/principal) so the extra pool's footprint is negligible. Reviewed and accepted as an intentional divergence from the initial draft.
 
 ### Request hash inputs: option (a) include method, route-template, tenant, principal-sub, raw body bytes
 
@@ -107,10 +109,15 @@ Hash is SHA-256, hex-encoded, stored as `bytea(32)`.
 
 ### Concurrency primitive: option (a) `INSERT … ON CONFLICT DO NOTHING` + `SELECT … FOR UPDATE`
 
-Winner inserts a stub row with `status_code = NULL` and holds the row-level lock implicitly for the duration of the handler. Losers `SELECT … FOR UPDATE` on the same `(tenant, key)` and block until winner's transaction commits, then read the persisted response (or 409 on hash mismatch). One Postgres-native primitive; no advisory-lock leakage on dropped connections (lock dies with the txn); no 50/100/200 ms polling loop; `statement_timeout` already bounds worst-case waiter latency.
+Winner inserts a stub row with `status_code = 0` (the placeholder marker) and the loser branch performs `SELECT … FOR UPDATE` on the same `(tenant, key)`. One Postgres-native primitive; no advisory-lock leakage on dropped connections (lock dies with the txn); no 50/100/200 ms polling loop; `statement_timeout` already bounds worst-case waiter latency.
 
 PgBouncer caveat: `FOR UPDATE` requires an explicit transaction held across statements. The store takes one `NpgsqlConnection` via `dataSource.OpenConnectionAsync()`, opens a transaction, performs claim → handle → commit in a single method without crossing an `IAsyncEnumerable` or other awaitable boundary that could surrender the connection. This is safe under PgBouncer transaction-pooling mode. Documented as a constraint in the store's XML doc.
 
+**Concurrent-in-flight handling (refined post-review, 2026-05-19):** the placeholder INSERT commits immediately rather than holding the row lock across handler execution. Holding the lock across the handler would block one Postgres backend per concurrent retry for the full handler duration — under transaction-pooling PgBouncer this rapidly exhausts the connection budget on a popular retried key. Trade-off: a true concurrent retry with the same key+hash (same body, two near-simultaneous requests) receives **409 inflight-conflict** with detail `"Another request with the same Idempotency-Key is still being processed; retry after it completes"` from the loser, rather than blocking-then-replaying. The winner's response is persisted on `OnCompleted`; a subsequent retry after the OnCompleted hook lands receives the standard replay. This is a deliberate divergence from a strict blocking implementation in favour of pool-stability and bounded request thread lifetimes.
+
+**Placeholder release on non-cacheable status / exception (refined post-review, 2026-05-19):** because the placeholder is committed immediately, an exception unwind or a non-cacheable status (5xx, 429) must explicitly release the placeholder row or the next legitimate retry is locked out for the full TTL window (default 24h). The filter wires a fire-and-forget `IIdempotencyStore.ReleaseReservationAsync(tenant, key)` call on `Response.OnCompleted` for both paths. The release is scoped `WHERE status_code = 0` so a late-running release call cannot accidentally delete a finalised row. Release failure increments `expertise_idempotency_persist_failed_total`; the row then ages out via the GC sweep (worst-case lock-out window: `GcInterval`, default 1h).
+
+**TTL enforcement at lookup:** the `SELECT … FOR UPDATE` filters expired rows authoritatively (`created_at >= now() - @ttl`) and refreshes the placeholder in place on a TTL-expired hit. The background GC sweep is a footprint optimisation, not a correctness mechanism — a retry against an expired row always re-executes the handler.
 ### Response capture: option (a) `MemoryStream` swap inside the endpoint filter
 
 Endpoint filters return `object?` (the `IResult`) *before* it is executed against the response stream. This is the one place where the result can be intercepted, rendered once into a size-capped buffer, persisted, and re-emitted, without the stream-wrapping fragility of pipeline-level capture or the `Results.*` evolution risk of `IResultExecutor` interception.

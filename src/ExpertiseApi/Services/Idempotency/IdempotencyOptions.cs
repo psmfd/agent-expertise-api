@@ -34,10 +34,12 @@ internal sealed class IdempotencyOptions
     public int MaxBodyBytes { get; set; } = 64 * 1024;
 
     /// <summary>
-    /// Replay window. Records older than this are eligible for the GC sweep
-    /// and are treated as "not found" on lookup (the sweep is best-effort;
-    /// the TTL check is authoritative). Default 24 hours, matching the IETF
-    /// draft's recommended minimum.
+    /// Replay window. Records older than this are treated as not-present at
+    /// lookup time (the lookup query enforces the TTL authoritatively; the
+    /// background GC sweep is a footprint optimisation, not a correctness
+    /// mechanism). A retry whose original request expired silently
+    /// re-executes the handler with a fresh placeholder. Default 24 hours,
+    /// matching the IETF draft's recommended minimum.
     /// </summary>
     public TimeSpan Ttl { get; set; } = TimeSpan.FromHours(24);
 
