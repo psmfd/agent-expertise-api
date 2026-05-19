@@ -13,7 +13,7 @@ namespace ExpertiseApi.Tests.Unit;
 public class IdempotencyWarningCodeTests
 {
     [Fact]
-    public void BodyOmittedWarning_pins_to_RFC7234_code_199_with_expected_text()
+    public void BodyOmittedWarning_pins_to_RFC9111_code_199_with_expected_text()
     {
         const string Expected = "199 - \"Idempotent response truncated; original body not replayable\"";
 

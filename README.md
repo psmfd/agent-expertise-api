@@ -36,7 +36,7 @@ flowchart LR
 
 ## API Surface
 
-The three POST writes (`/expertise`, `/expertise/{id}/approve`, `/expertise/{id}/reject`) **require** an `Idempotency-Key` header per [ADR-010](adrs/010-idempotency-key-handling.md) (hard-required since 2026-05-19). Requests without one return `400 Bad Request`. The shipped skill and pi extension generate the header automatically; ad-hoc `curl` callers must supply it (`-H "Idempotency-Key: $(uuidgen)"`). `POST /expertise/batch` is intentionally out of scope.
+The three POST writes (`/expertise`, `/expertise/{id}/approve`, `/expertise/{id}/reject`) **require** an `Idempotency-Key` header per [ADR-010 Amendment 1](adrs/010-idempotency-key-handling.md#amendment-1--hard-require-flip-2026-05-19) (hard-required since 2026-05-19; operator rollback path: `Idempotency:RequireKey=false` overlay, documented in the amendment). Requests without one return `400 Bad Request`. The shipped skill and pi extension generate the header automatically; ad-hoc `curl` callers must supply it (`-H "Idempotency-Key: $(uuidgen)"`). `POST /expertise/batch` is intentionally out of scope.
 
 | Method | Endpoint | Idempotency-Key | Purpose |
 |--------|----------|-----------------|---------|
@@ -780,7 +780,7 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | File | Purpose |
 |------|---------|
 | [CLAUDE.md](CLAUDE.md) | Full build/run commands, local dev guide |
-| [.claude/skills/expertise-api-design/SKILL.md](.claude/skills/expertise-api-design/SKILL.md) | Authoritative design reference (data model, API, architecture) |
+| [.agents/skills/expertise-api/references/DESIGN.md](.agents/skills/expertise-api/references/DESIGN.md) | Authoritative design reference (data model, API, architecture) |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | Copilot agent instructions |
 
 ## Security
