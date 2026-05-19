@@ -89,10 +89,10 @@ internal static class JwtTenantContextEvents
                 .Select(c => c.Value)
                 .Where(v => !string.IsNullOrWhiteSpace(v));
 
-            foreach (var value in values)
+            foreach (var scope in values.SelectMany(v =>
+                v.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)))
             {
-                foreach (var scope in value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    yield return scope;
+                yield return scope;
             }
         }
     }

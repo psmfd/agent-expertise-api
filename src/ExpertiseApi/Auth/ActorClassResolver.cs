@@ -114,11 +114,8 @@ internal static class ActorClassResolver
         if (string.IsNullOrWhiteSpace(ua) || patterns.Count == 0)
             return false;
 
-        foreach (var pattern in patterns)
+        foreach (var pattern in patterns.Where(p => !string.IsNullOrWhiteSpace(p)))
         {
-            if (string.IsNullOrWhiteSpace(pattern))
-                continue;
-
             if (pattern.EndsWith('*'))
             {
                 var prefix = pattern[..^1];
