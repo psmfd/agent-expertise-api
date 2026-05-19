@@ -1,0 +1,43 @@
+name: OpenAPI breaking-change label cleanup
+
+# Auto-remove the `breaking-change-approved` override label on PR merge so it
+# cannot carry over into subsequent feature branches cut from the merge commit.
+# Companion to the openapi-diff job in ci.yml (#174).
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  # Workflow-level baseline is read-only; the cleanup job below scopes
+  # `pull-requests: write` to itself. Matches release.yml's per-job
+  # permissions convention so a future job added to this file does not
+  # silently inherit label-write.
+  contents: read
+
+jobs:
+  cleanup:
+    name: Remove breaking-change-approved label
+    runs-on: ubuntu-latest
+    permissions:
+      # gh pr edit --remove-label requires write on pull-requests.
+      pull-requests: write
+      contents: read
+    # Only on actual merge — closed-without-merge keeps the label as a record
+    # of the decision that led to the close. Filter on the label too so we
+    # do not spawn jobs for PRs that never had the label.
+    if: |
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'breaking-change-approved')
+    timeout-minutes: 2
+    steps:
+      - name: Remove label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" \
+            --repo "$REPO" \
+            --remove-label breaking-change-approved
