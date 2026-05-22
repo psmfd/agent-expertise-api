@@ -2,7 +2,7 @@
 
 Persistent TODO for the multi-PR effort that gets the native-service install path (Archetype A2) ready for pi-agent integration. Updated at the end of every working session.
 
-**Last updated:** 2026-05-22 (PRs A+B merged; PR C scope-split into C1/C2/C3 + ADR follow-up)
+**Last updated:** 2026-05-22 (PRs A+B+C1 merged; ADR-011 in flight as docs PR)
 **Driver issue:** [#230 readiness sweep](https://github.com/TheSemicolon/agent-expertise-api/issues/230)
 **Goal:** make `scripts/install.sh` safe, upgrade-aware, and capable of bootstrapping host dependencies on macOS (primary) and Linux, so the pi-agent integration session has a turn-key target.
 
@@ -21,10 +21,10 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
 | 1 | Update #223 description to add upgrade-safety ACs | #223 | ☑ updated 2026-05-22 | Closed by PR B (#244). |
 | A | PR A — uninstall hardening | #222 | ☑ merged as `411bcad` (#243) | `eval` removal, `--prefix` guard, `--allow-system-prefix` escape, 49-assertion smoke test. |
 | B | PR B — install atomicity + upgrade safety + CRLF | #223 | ☑ merged as `44fd668` (#244) | Atomic stage-then-swap, migrate-against-staged, version marker, CRLF detector, shared `scripts/lib/prefix-validation.sh`. 93/93 tests pass. |
-| **C1** | **PR C1 — macOS Homebrew bootstrap + shared library** | **#241** | **◐ in flight** | `bootstrap-common.sh` + `bootstrap-macos.sh`. ‘Install the SDK’ short-term default per #245. |
-| C2 | PR C2 — Debian/Ubuntu bootstrap | #246 | ☐ blocked-by-C1 | Microsoft feed + GPG pinning; WSL warn-and-refuse for Postgres. |
-| C3 | PR C3 — RHEL/Fedora bootstrap | #247 | ☐ blocked-by-C1 | Microsoft feed + PGDG repo; RHEL AppStream native `dotnet` module preferred where present. |
-| ADR | ADR for deployment artifact format | #245 | ☐ blocked-by-C1 | SDK-on-host vs pre-publish+cosign tarball. Resolves latent preflight bug. |
+| **C1** | PR C1 — macOS Homebrew bootstrap + shared library | #241 | ☑ merged as `afaba45` (#248) | `bootstrap-common.sh` + `bootstrap-macos.sh`. ‘Install the SDK’ short-term default per #245; ADR-011 records the long-term migration. 139/139 tests pass. |
+| C2 | PR C2 — Debian/Ubuntu bootstrap | #246 | ☐ unblocked, scope updated by ADR-011 | Under ADR-011 Option B: bootstrap surface reduces from ‘Microsoft feed + GPG pinning’ to ‘cosign + bsdtar’. WSL warn-and-refuse for Postgres unchanged. |
+| C3 | PR C3 — RHEL/Fedora bootstrap | #247 | ☐ unblocked, scope updated by ADR-011 | Same scope contraction as C2 under ADR-011 Option B. |
+| ADR | ADR for deployment artifact format | #245 | ◐ in flight (this PR) | `adrs/011-deployment-artifact-format.md`. Endorses Option B (CI publishes a portable cosign-signed tarball; install.sh cosign-verifies + bsdtar-extracts) with Option A retained as `--from-source`. Implementation tracked separately. |
 | T | Upgrade-roundtrip test | (landed w/ B) | ☑ in PR B | `tests/install/test-upgrade-roundtrip.sh` (39 assertions). Extend in C1 for `--install-deps` paths. |
 
 Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
