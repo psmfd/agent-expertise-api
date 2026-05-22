@@ -279,6 +279,127 @@ jobs:
             "$out_dir/openapi.json.pem" \
             --repo "${{ github.repository }}"
 
+      # ---- Portable publish tarball + cosign-signed manifest (ADR-011) -----
+      # D2 of #249. Emits the artifacts that Archetype A2 installs will
+      # consume once D3 ships the install.sh `--from-release` path.
+      #
+      # Shape: one portable RID-agnostic tarball (no apphost, dotnet runs
+      # the dll directly via the existing wrapper fallback in install.sh),
+      # plus a JSON manifest describing it, plus cosign keyless sign-blob
+      # over the MANIFEST (not the tarball — manifest covers tarball by
+      # SHA + cross-RID integrity + version-monotonicity in one signature).
+      #
+      # ONNX native binaries for all five RIDs ship in the same tarball
+      # because csproj declares <RuntimeIdentifiers>linux-x64;linux-arm64;
+      # osx-arm64;osx-x64;win-x64</RuntimeIdentifiers> (PR D1 / #251).
+      # Without that property the portable publish would crash at startup
+      # on every host whose RID differs from the runner's.
+      #
+      # The deterministic-tarball flags (--sort, --owner/group=0,
+      # --numeric-owner, --mtime from commit timestamp, gzip -n) make the
+      # tarball SHA reproducible from source for a given commit — useful
+      # for forensic verification but NOT load-bearing for cosign trust
+      # (trust comes from the signature, not the SHA).
+      - name: Publish portable tarball + signed manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.release.outputs.new-release-version }}
+          NEW_VERSION: ${{ needs.release.outputs.new-release-version }}
+          GIT_SHA: ${{ github.sha }}
+        # Ordered after every other artifact step so a failure here cannot
+        # leave the release with image+chart+openapi signed but a partial
+        # tarball artifact. Tarball upload is the last contents:write step
+        # in the job other than the dispatch (which is metadata-only).
+        run: |
+          set -euo pipefail
+
+          # Reproducibility belt-and-suspenders. tar's sort/owner/mtime flags
+          # already pin most non-determinism; pinning umask + locale + TZ
+          # makes the contract robust to GitHub Actions runner image bumps.
+          # (dotnet publish honors Deterministic=true + ContinuousIntegrationBuild=true
+          # below — SOURCE_DATE_EPOCH below is consumed only by `tar`.)
+          umask 022
+          export LC_ALL=C TZ=UTC
+
+          # Portable RID-agnostic publish. NO --runtime. UseAppHost=false
+          # keeps the tarball cross-platform; install.sh runs the dll via
+          # `dotnet ExpertiseApi.dll` through its existing wrapper.
+          # Deterministic + ContinuousIntegrationBuild + DebugType=embedded
+          # produce stable bytes from a given source rev.
+          out_pub=dist/publish
+          mkdir -p "$out_pub"
+          dotnet publish src/ExpertiseApi/ExpertiseApi.csproj \
+            --configuration Release \
+            --no-self-contained \
+            -p:UseAppHost=false \
+            -p:Deterministic=true \
+            -p:ContinuousIntegrationBuild=true \
+            -p:DebugType=embedded \
+            --output "$out_pub"
+
+          # Sanity: ONNX runtimes/ subtree must contain the five RIDs we
+          # declared, AND each native dir must be non-empty. Directory
+          # existence alone is insufficient — a csproj that lists an RID
+          # but produces an empty native dir would crash at runtime on
+          # that host. If this fails, the csproj property was reverted or
+          # the bge-micro-v2 model dir lacks its native sidecar.
+          for rid in linux-x64 linux-arm64 osx-arm64 osx-x64 win-x64; do
+            native_dir="$out_pub/runtimes/$rid/native"
+            if [ ! -d "$native_dir" ] || [ -z "$(ls -A "$native_dir" 2>/dev/null)" ]; then
+              printf >&2 'ERROR: portable publish missing or empty: %s\n' "$native_dir"
+              printf >&2 '  the csproj <RuntimeIdentifiers> property may have been removed (ADR-011 / PR D1)\n'
+              exit 1
+            fi
+          done
+
+          # Deterministic tarball. Mtime from the release commit lets two
+          # CI runs of the same commit produce byte-identical archives.
+          # SOURCE_DATE_EPOCH is consumed by `tar --mtime="@${SOURCE_DATE_EPOCH}"`
+          # only — .NET determinism is driven by the Deterministic +
+          # ContinuousIntegrationBuild MSBuild properties already set above.
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct HEAD)
+          export SOURCE_DATE_EPOCH
+          tarball="dist/expertise-api-${NEW_VERSION}-portable.tar.gz"
+          tar --sort=name \
+              --owner=0 --group=0 --numeric-owner \
+              --mtime="@${SOURCE_DATE_EPOCH}" \
+              --format=ustar \
+              -C "$out_pub" -cf - . \
+            | gzip -n -9 > "$tarball"
+          sha256sum "$tarball" | awk '{print $1}' > "${tarball}.sha256"
+
+          # Manifest — requiredRuntime.minVersion sourced from the just-
+          # generated runtimeconfig.json, never hand-set (ADR-011 sub-
+          # decision "Signing scope"). The generator is unit-tested by
+          # tests/install/test-generate-manifest.sh.
+          manifest="dist/expertise-api-${NEW_VERSION}.manifest.json"
+          bash scripts/build/generate-manifest.sh \
+            --publish-dir "$out_pub" \
+            --app-version "$NEW_VERSION" \
+            --git-sha "$GIT_SHA" \
+            --tarball "$tarball" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --openapi-sha-file dist/openapi/openapi.json.sha256 \
+            --output "$manifest"
+
+          # cosign sign-blob over the manifest. Signature binds bytes; the
+          # manifest's tarballSha256 transitively binds the tarball.
+          # Same Fulcio/Rekor keyless OIDC ceremony as image/chart/openapi.
+          cosign sign-blob --yes \
+            --output-signature "${manifest}.sig" \
+            --output-certificate "${manifest}.pem" \
+            "$manifest"
+
+          # Upload tarball, sha256 sidecar, manifest, sig, cert. Pinned
+          # to the immutable release tag created earlier in the job.
+          gh release upload "$TAG" \
+            "$tarball" \
+            "${tarball}.sha256" \
+            "$manifest" \
+            "${manifest}.sig" \
+            "${manifest}.pem" \
+            --repo "${{ github.repository }}"
+
       - name: Dispatch deploy to infra repo
         uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
         with:

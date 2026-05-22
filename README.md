@@ -319,7 +319,7 @@ The chart version equals the application version (e.g. `0.4.2` chart serves the 
 
 ### Supply-chain verification (cosign keyless OIDC)
 
-The image, the chart artifact, and the `openapi.json` release asset are all signed via Sigstore keyless OIDC (the workflow's GitHub Actions OIDC token, no long-lived keys). Verify before installing or consuming:
+The image, the chart artifact, the `openapi.json` release asset, and the Archetype A2 release tarball + manifest are all signed via Sigstore keyless OIDC (the workflow's GitHub Actions OIDC token, no long-lived keys). Verify before installing or consuming:
 
 ```bash
 # Verify image
@@ -339,6 +339,26 @@ cosign verify-blob \
   --signature openapi.json.sig \
   --certificate openapi.json.pem \
   openapi.json
+
+# Verify the Archetype A2 release tarball via its signed manifest (ADR-011).
+# Download expertise-api-vX.Y.Z-portable.tar.gz, expertise-api-vX.Y.Z.manifest.json,
+# .manifest.json.sig, .manifest.json.pem from the release page.
+# The leading `set -euo pipefail` is load-bearing — without it an operator
+# copy-pasting this block would see cosign verify-blob fail with non-zero
+# exit, the shell would continue, and the SHA cross-check below would run
+# against an unverified manifest and could match attacker-coordinated bytes.
+set -euo pipefail
+cosign verify-blob \
+  --certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature expertise-api-vX.Y.Z.manifest.json.sig \
+  --certificate expertise-api-vX.Y.Z.manifest.json.pem \
+  expertise-api-vX.Y.Z.manifest.json
+
+# Manifest's artifacts.tarball.sha256 transitively binds the tarball.
+expected=$(jq -r .artifacts.tarball.sha256 expertise-api-vX.Y.Z.manifest.json)
+actual=$(sha256sum expertise-api-vX.Y.Z-portable.tar.gz | awk '{print $1}')
+[ "$expected" = "$actual" ] || { echo 'TARBALL TAMPERED' >&2; exit 1; }
 ```
 
 All three recipes use `--certificate-identity` (exact match) rather than `--certificate-identity-regexp`. Cosign evaluates `--certificate-identity-regexp` with Go's `regexp.MatchString`, which is **unanchored** — a pattern ending `release.yml@refs/heads/main` substring-matches a malicious `release.yml@refs/heads/main-evil` cert SAN. Exact match removes that bypass surface; there is exactly one legitimate signing identity for this repo and exact match expresses it precisely. If [#138](https://github.com/TheSemicolon/agent-expertise-api/issues/138) introduces maintenance release branches, all three recipes broaden together — with right-anchored regexps (`...@refs/heads/(main|release/.*)$`) or repeated `--certificate-identity` flags, not unanchored patterns.
