@@ -21,6 +21,29 @@
     -->
     <OpenApiGenerateDocuments>true</OpenApiGenerateDocuments>
     <OpenApiDocumentsDirectory>$(MSBuildProjectDirectory)/artifacts/openapi</OpenApiDocumentsDirectory>
+
+    <!--
+      Portable RID-agnostic publish precondition for Archetype A2 (ADR-011).
+
+      `dotnet publish` without `--runtime` produces a single portable output (a
+      DLL invoked as `dotnet ExpertiseApi.dll`, no apphost). NuGet only copies
+      per-RID native binaries from `runtimes/<rid>/native/` into the published
+      output for RIDs declared in <RuntimeIdentifiers>. Microsoft.SemanticKernel
+      .Connectors.Onnx pulls Microsoft.ML.OnnxRuntime which ships native binaries
+      per platform; without an explicit list the portable tarball would crash at
+      startup on every host whose RID is not the publish host's.
+
+      List covers the platforms `scripts/install.sh` / `install.ps1` support.
+      Adding or removing a platform here MUST be paired with the matching change
+      in `.github/workflows/release.yml` test matrix and the install-script
+      preflight RID detection.
+
+      <RollForward>LatestMinor</RollForward> lets a 10.0.0 tarball survive a host
+      that has only 10.1.x of `Microsoft.AspNetCore.App` installed. Default policy
+      is `Minor` which suffices, but explicit is auditable and matches the ADR.
+    -->
+    <RuntimeIdentifiers>linux-x64;linux-arm64;osx-arm64;osx-x64;win-x64</RuntimeIdentifiers>
+    <RollForward>LatestMinor</RollForward>
   </PropertyGroup>
 
   <ItemGroup>
