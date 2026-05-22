@@ -132,8 +132,12 @@ while [[ $# -gt 0 ]]; do
     --allow-system-prefix) ALLOW_SYSTEM_PREFIX=1; shift ;;
     --install-deps)      INSTALL_DEPS=1; shift ;;
     --upgrade-deps)      UPGRADE_DEPS=1; shift ;;
-    --from-release)              INSTALL_MODE="release"; shift ;;
-    --from-source)               INSTALL_MODE="source"; shift ;;
+    --from-release)              
+      if [[ "${INSTALL_MODE}" == "source" ]]; then err "--from-release and --from-source are mutually exclusive"; fi
+      INSTALL_MODE="release"; shift ;;
+    --from-source)               
+      if [[ "${INSTALL_MODE}" == "release" ]]; then err "--from-release and --from-source are mutually exclusive"; fi
+      INSTALL_MODE="source"; shift ;;
     --i-accept-unverified-source) ACCEPT_UNVERIFIED_SOURCE=1; shift ;;
     --version)                   REQUESTED_VERSION="${2:?--version needs vX.Y.Z or latest}"; shift 2 ;;
     --allow-downgrade)           ALLOW_DOWNGRADE=1; shift ;;
@@ -165,6 +169,14 @@ fi
 # D3 (#249) — install-mode validation. Silent default in D3 = source (= "")
 # for back-compat. After the D4 flip gate clears, the default becomes
 # release and --from-source will require --i-accept-unverified-source.
+#
+# D3 pre-PR (shell-expert LOW): the arg-parse loop currently lets
+# `--from-release --from-source` (or vice versa) silently take the LAST
+# value of INSTALL_MODE. Refuse the conflict so the operator's intent is
+# never resolved silently.
+if [[ "${INSTALL_MODE}" == "release" ]] && [[ "${ACCEPT_UNVERIFIED_SOURCE}" == "1" ]]; then
+  err "--i-accept-unverified-source is meaningful only with --from-source (release mode is cosign-verified)"
+fi
 if [[ "${INSTALL_MODE}" == "release" ]]; then
   if [[ -z "${REQUESTED_VERSION}" ]]; then
     REQUESTED_VERSION="latest"   # first-install policy enforced in rc_publish_from_release
@@ -308,6 +320,17 @@ cleanup() {
       if [[ -d "${STAGE_DIR}" && ! -L "${STAGE_DIR}" ]]; then
         rm -rf -- "${STAGE_DIR}" 2>/dev/null || true
         warn "removed staged tree: ${STAGE_DIR}"
+      fi
+      # D3 pre-PR (shell + security MED): also mop up the release-mode
+      # quarantine sibling and the download stash so a refused install
+      # does not leave libarchive-extracted bytes under ${PREFIX}.
+      if [[ -d "${STAGE_DIR}.unpack" && ! -L "${STAGE_DIR}.unpack" ]]; then
+        rm -rf -- "${STAGE_DIR}.unpack" 2>/dev/null || true
+        warn "removed quarantine tree: ${STAGE_DIR}.unpack"
+      fi
+      if [[ -d "${PREFIX}/.release-download" && ! -L "${PREFIX}/.release-download" ]]; then
+        rm -rf -- "${PREFIX}/.release-download" 2>/dev/null || true
+        warn "removed release download stash: ${PREFIX}/.release-download"
       fi
       ;;
     swapped)

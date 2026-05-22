@@ -34,6 +34,16 @@
 
 set -euo pipefail
 
+# D3 pre-PR (shell-expert LOW): guard against double-source. `readonly`
+# variables at file scope would abort the second source under set -e. The
+# sourcing path via release-consumer.sh's rc_source_verify_release has its
+# own RC_VERIFY_RELEASE_SOURCED guard; this is for direct re-sources from
+# operator shells or test harnesses.
+if [ "${VERIFY_RELEASE_SOURCED:-0}" = "1" ] && [ "${SOURCE_ONLY:-0}" = "1" ]; then
+  return 0
+fi
+VERIFY_RELEASE_SOURCED=1
+
 # ---------------------------------------------------------------------------
 # Trust-root constants — EXACT match, never regexp.
 #
@@ -77,10 +87,12 @@ vr_require_cosign() {
     Linux:  https://docs.sigstore.dev/cosign/system_config/installation/
   scripts/install.sh --install-deps will fold cosign in via D4 (#249)." 2
   fi
-  # cosign version --json is reliable on 2.x; fall back to plain text.
+  # cosign 2.0–2.1 emit `"GitVersion"` (CapitalCase, no json tag); 2.2+
+  # added the lowercase `"gitVersion"` tag. Case-insensitive match accepts
+  # both shapes (D3 pre-PR shell-expert MED).
   local v
   v=$(cosign version --json 2>/dev/null \
-        | grep -o '"gitVersion":"[^"]*"' \
+        | grep -oiE '"gitVersion"[[:space:]]*:[[:space:]]*"v?[0-9.]+"' \
         | head -1 \
         | sed 's/.*"v\{0,1\}\([0-9.]\{1,\}\).*/\1/' || true)
   if [ -z "$v" ]; then

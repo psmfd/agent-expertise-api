@@ -388,6 +388,72 @@ chmod +x '${SCRATCH}/case20-bin/cosign'
 assert "case 20: --from-release --version latest on first install refused" \
   bash -c "printf '%s' '$out' | grep -q REFUSED && printf '%s' '$out' | grep -q 'first --from-release install'"
 
+echo "--- new D3 pre-PR fold-in cases ---"
+
+# ---------------------------------------------------------------------------
+# Case 21 (post-fold): rc_inspect_staged_tree refuses path with embedded
+# newline. Touches the HIGH shell-expert finding fix: `find -print | awk`
+# was bypassable by newline-bearing filenames; we now use -print0.
+# ---------------------------------------------------------------------------
+mkdir -p "${SCRATCH}/case21/tree"
+if touch "${SCRATCH}/case21/tree/"$'evil\nname' 2>/dev/null; then
+  out=$(bash -c "$(make_harness "( rc_inspect_staged_tree '${SCRATCH}/case21/tree' ) || echo INSPECTOR_REFUSED")" 2>&1)
+  assert "case 21: inspector refuses newline-bearing filename" \
+    bash -c "printf '%s' '$out' | grep -q INSPECTOR_REFUSED && printf '%s' '$out' | grep -q 'embedded newline'"
+else
+  printf 'SKIP: case 21 (FS refuses to create newline-bearing filename)\n'
+fi
+
+# ---------------------------------------------------------------------------
+# Case 22 (post-fold): clean tree passes inspector (regression guard for
+# the rewritten implementation — ensures we didn't break the happy path).
+# ---------------------------------------------------------------------------
+mkdir -p "${SCRATCH}/case22/tree/sub"
+echo ok > "${SCRATCH}/case22/tree/sub/file"
+out=$(bash -c "$(make_harness "rc_inspect_staged_tree '${SCRATCH}/case22/tree' && echo CLEAN")" 2>&1)
+assert "case 22: clean tree (no traversal) passes inspector" \
+  bash -c "printf '%s' '$out' | grep -q CLEAN"
+
+# ---------------------------------------------------------------------------
+# Case 23 (post-fold): rc_enforce_downgrade_defense refuses prerelease
+# appVersion in --from-release. Touches the MED shell-expert finding
+# fix: sort -V is not SemVer §11-aware. Tactical fix in D3 is to refuse
+# the prerelease input class entirely (#257 tracks full comparator).
+# ---------------------------------------------------------------------------
+mkdir -p "${SCRATCH}/case23/prefix"
+cat > "${SCRATCH}/case23/prefix/.install-version-semver" <<EOF
+appVersion=1.0.0
+manifestSha256=aaaa
+EOF
+out=$(PREFIX="${SCRATCH}/case23/prefix" bash -c "
+SCRIPT_DIR='${SCRIPT_DIR}/scripts'
+log() { :; }; warn() { :; }; err() { printf '[stub ERR] %s\n' \"\$1\" >&2; exit 1; }
+PREFIX='${SCRATCH}/case23/prefix'; ALLOW_DOWNGRADE=0; ACCEPT_REPUBLISHED_VERSION=0
+. '${LIB_RC}'
+( rc_enforce_downgrade_defense 2.0.0-rc.1 cafef00d ) && echo NO_REFUSE || echo REFUSED
+" 2>&1)
+assert "case 23: prerelease appVersion refused for --from-release" \
+  bash -c "printf '%s' '$out' | grep -q REFUSED && printf '%s' '$out' | grep -q 'refuses prerelease'"
+
+# ---------------------------------------------------------------------------
+# Case 24 (post-fold): argparse refuses --from-release and --from-source
+# on the same CLI. Touches the LOW shell-expert finding fix.
+# ---------------------------------------------------------------------------
+out=$(bash "${SCRIPT_DIR}/scripts/install.sh" --from-release --from-source 2>&1 || true)
+assert "case 24: --from-release + --from-source rejected as mutually exclusive" \
+  bash -c "printf '%s' '$out' | grep -q 'mutually exclusive'"
+out=$(bash "${SCRIPT_DIR}/scripts/install.sh" --from-source --from-release 2>&1 || true)
+assert "case 24b: --from-source then --from-release rejected (reverse order)" \
+  bash -c "printf '%s' '$out' | grep -q 'mutually exclusive'"
+
+# ---------------------------------------------------------------------------
+# Case 25 (post-fold): verify-release.sh re-source guard. Touches the LOW
+# shell-expert finding fix: readonly trips set -e on the second source.
+# ---------------------------------------------------------------------------
+out=$(bash -c "set -e; SOURCE_ONLY=1 . '${LIB_VR}'; SOURCE_ONLY=1 . '${LIB_VR}'; echo DOUBLE_SOURCE_OK" 2>&1)
+assert "case 25: verify-release.sh tolerates double-source under set -e" \
+  bash -c "printf '%s' '$out' | grep -q DOUBLE_SOURCE_OK"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

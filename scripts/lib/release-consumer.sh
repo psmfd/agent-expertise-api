@@ -51,13 +51,17 @@ rc_curl_https() {
 
   # Detect curl flag availability once. --fail-with-body and
   # --retry-all-errors are 7.71+ / 7.76+; Ubuntu 20.04 ships 7.68 which
-  # lacks both. Fall back cleanly.
+  # lacks both. Use `curl --help` (universal across 7.x) and grep for the
+  # flag name. D3 pre-PR (shell-expert LOW): `curl --help all` is 7.73+
+  # and itself errors on older binaries — the feature-detect worked by
+  # accident before this fix.
   local fail_flag="--fail"
   local retry_all_flag=""
-  if curl --help all 2>/dev/null | grep -q -- '--fail-with-body'; then
+  local curl_help; curl_help=$(curl --help 2>&1 || true)
+  if printf '%s' "$curl_help" | grep -q -- '--fail-with-body'; then
     fail_flag="--fail-with-body"
   fi
-  if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+  if printf '%s' "$curl_help" | grep -q -- '--retry-all-errors'; then
     retry_all_flag="--retry-all-errors"
   fi
 
@@ -95,7 +99,10 @@ rc_resolve_version() {
   command -v jq >/dev/null 2>&1 || err "jq required to resolve --version latest"
   log "resolving --version latest via GitHub Releases API"
   local api_url="https://api.github.com/repos/${RELEASE_REPO}/releases/latest"
-  local tmp; tmp=$(mktemp -t expertise-api-release.XXXXXX)
+  # D3 pre-PR (shell-expert LOW): use the unambiguous `mktemp TEMPLATE`
+  # form instead of `mktemp -t prefix` (BSD treats -t as prefix-only,
+  # GNU treats it as template-requires-XXX — different filename shapes).
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/expertise-api-release.XXXXXX")
   # Pass GH_TOKEN/GITHUB_TOKEN through when set (60/h → 5000/h limit lift)
   # but never require it; the repo is public.
   local auth_header=()
@@ -104,7 +111,10 @@ rc_resolve_version() {
   elif [ -n "${GITHUB_TOKEN:-}" ]; then
     auth_header=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
   fi
-  if ! curl --proto '=https' --tlsv1.2 --fail --location \
+  # D3 pre-PR (security-review LOW): pin --max-redirs for parity with
+  # rc_curl_https — defense-in-depth against a misbehaving proxy or a
+  # future GitHub redirect-chain change.
+  if ! curl --proto '=https' --tlsv1.2 --fail --location --max-redirs 5 \
        --connect-timeout 10 --max-time 30 --silent --show-error \
        -H 'Accept: application/vnd.github+json' \
        "${auth_header[@]}" \
@@ -141,14 +151,14 @@ rc_crosscheck_release_api() {
   command -v jq >/dev/null 2>&1 || err "jq required for release-api cross-check"
   local api_url="https://api.github.com/repos/${RELEASE_REPO}/releases/tags/v${version}"
   log "release-api cross-check: ${api_url}"
-  local tmp; tmp=$(mktemp -t expertise-api-crosscheck.XXXXXX)
+  local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/expertise-api-crosscheck.XXXXXX")
   local auth_header=()
   if [ -n "${GH_TOKEN:-}" ]; then
     auth_header=(-H "Authorization: Bearer ${GH_TOKEN}")
   elif [ -n "${GITHUB_TOKEN:-}" ]; then
     auth_header=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
   fi
-  if ! curl --proto '=https' --tlsv1.2 --fail --location \
+  if ! curl --proto '=https' --tlsv1.2 --fail --location --max-redirs 5 \
        --connect-timeout 10 --max-time 30 --silent --show-error \
        -H 'Accept: application/vnd.github+json' \
        "${auth_header[@]}" \
@@ -246,13 +256,18 @@ rc_enforce_downgrade_defense() {
   fi
 
   # Validate both shapes before sort -V (sort -V silently misorders garbage).
-  local semver_re='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'
-  if ! printf '%s' "$prior_ver" | grep -qE "$semver_re"; then
-    warn "prior version '${prior_ver}' is not parseable semver; skipping downgrade compare"
+  # D3 pre-PR (shell-expert MED): refuse prerelease appVersion entirely for
+  # --from-release. sort -V is not SemVer §11-aware at the release/prerelease
+  # boundary (it puts 1.0.0 < 1.0.0-rc1 lexicographically, whereas §11 says
+  # 1.0.0-rc1 < 1.0.0). Tactical fix in D3: refuse the prerelease input class
+  # entirely. Full §11-aware comparator tracked by #257.
+  local semver_release_re='^[0-9]+\.[0-9]+\.[0-9]+$'
+  if ! printf '%s' "$prior_ver" | grep -qE "$semver_release_re"; then
+    warn "prior version '${prior_ver}' is not a release-shape semver (contains prerelease/build metadata); skipping downgrade compare"
     return 0
   fi
-  if ! printf '%s' "$incoming_ver" | grep -qE "$semver_re"; then
-    err "incoming manifest appVersion '${incoming_ver}' is not parseable semver"
+  if ! printf '%s' "$incoming_ver" | grep -qE "$semver_release_re"; then
+    err "--from-release refuses prerelease/build-metadata appVersion '${incoming_ver}'. Release-channel tarballs must carry X.Y.Z. Use --from-source for prerelease builds. (Full SemVer §11 comparator tracked by #257.)"
   fi
 
   local lowest
@@ -339,58 +354,117 @@ rc_select_tar() {
 
 # ---------------------------------------------------------------------------
 # rc_inspect_staged_tree — refuse symlinks, special files, setuid/setgid,
-# case-folding-collision pairs, over-long paths, traversal-shaped names.
-# Walks once; reports every violation before erroring (operator-friendly).
+# case-folding-collision pairs, over-long paths, traversal-shaped names,
+# and newline-bearing names. Walks the tree once with `find -print0` so
+# filenames containing whitespace, newlines, or non-ASCII bytes are not
+# silently mis-attributed; reports every violation class before erroring.
+#
+# D3 pre-PR (shell-expert HIGH): the previous implementation used `find
+# -print | awk` and `LC_ALL=C tolower()`, both of which were bypassable
+# against a hostile tarball — the threat model this function defends.
+# `find -print` splits on `\n` which legal filenames may contain; and
+# `LC_ALL=C tolower()` only lowercases A–Z, missing Unicode case folds
+# (Café/café, Ω/ω) on APFS/HFS+/NTFS — exactly the case-insensitive
+# filesystems this check targets.
 #
 # Args: root_path
 # ---------------------------------------------------------------------------
 rc_inspect_staged_tree() {
   local root=$1
   local violations=0
-  local out
+  local tmp_paths; tmp_paths=$(mktemp "${TMPDIR:-/tmp}/rc-inspect-paths.XXXXXX")
+  local tmp_bad; tmp_bad=$(mktemp "${TMPDIR:-/tmp}/rc-inspect-bad.XXXXXX")
+
+  # 0. Pre-pass: enumerate ALL paths NUL-delimited. macOS BSD awk does not
+  # honor RS="\0" (gawk does, but we cannot assume gawk), so all NUL-record
+  # scans below use bash `read -d ''` loops which are portable across
+  # BSD/GNU.
+  find "$root" -print0 > "$tmp_paths" 2>/dev/null || true
+
+  # 0a. Reject newline-bearing names up front. Count raw \n bytes in the
+  # NUL-delimited stream: each one is a filename character (find's record
+  # separator is NUL, not \n).
+  local newline_count
+  newline_count=$(LC_ALL=C tr -cd '\n' < "$tmp_paths" | wc -c | tr -d ' ')
+  if [ "$newline_count" -gt 0 ]; then
+    warn "tarball contains ${newline_count} path(s) with embedded newline characters (refused; would break safety checks)"
+    violations=$((violations + 1))
+  fi
 
   # 1. Symlinks / block / char / fifo / socket — refused.
-  out=$(find "$root" \( -type l -o -type b -o -type c -o -type p -o -type s \) -print 2>/dev/null || true)
-  if [ -n "$out" ]; then
+  find "$root" \( -type l -o -type b -o -type c -o -type p -o -type s \) -print0 \
+    >"$tmp_bad" 2>/dev/null || true
+  if [ -s "$tmp_bad" ]; then
     warn "tarball contains symlinks or special files (refused):"
-    printf '%s\n' "$out" | sed 's|^|  |' >&2
+    local _p
+    while IFS= read -r -d '' _p; do printf '  %s\n' "$_p" >&2; done < "$tmp_bad"
     violations=$((violations + 1))
   fi
 
   # 2. Setuid / setgid bits — refused (no service binary needs these).
-  out=$(find "$root" -type f \( -perm -4000 -o -perm -2000 \) -print 2>/dev/null || true)
-  if [ -n "$out" ]; then
+  find "$root" -type f \( -perm -4000 -o -perm -2000 \) -print0 \
+    >"$tmp_bad" 2>/dev/null || true
+  if [ -s "$tmp_bad" ]; then
     warn "tarball contains setuid/setgid files (refused):"
-    printf '%s\n' "$out" | sed 's|^|  |' >&2
+    while IFS= read -r -d '' _p; do printf '  %s\n' "$_p" >&2; done < "$tmp_bad"
     violations=$((violations + 1))
   fi
 
-  # 3. Traversal-shaped names (belt-and-suspenders; bsdtar should already
-  # have rejected during extraction).
-  out=$(find "$root" \( -name '..' -o -name '.*..' \) -print 2>/dev/null || true)
-  if [ -n "$out" ]; then
-    warn "tarball contains traversal-shaped paths (refused):"
-    printf '%s\n' "$out" | sed 's|^|  |' >&2
+  # 3. Traversal-shaped components anywhere in the path. The previous
+  # `-name '..'` was dead code (find matches basename and neither bsdtar
+  # nor GNU tar materialize a literal `..` basename). Walk the NUL list
+  # with bash glob match for `..` components.
+  : > "$tmp_bad"
+  while IFS= read -r -d '' _p; do
+    case "$_p" in
+      */../*|*/..|../*|..) printf '%s\n' "$_p" >> "$tmp_bad" ;;
+    esac
+  done < "$tmp_paths"
+  if [ -s "$tmp_bad" ]; then
+    warn "tarball contains paths with traversal components (refused):"
+    sed 's|^|  |' "$tmp_bad" >&2
     violations=$((violations + 1))
   fi
 
   # 4. Over-long paths (>1024 bytes). Some hosts have PATH_MAX=1024.
-  out=$(find "$root" -print 2>/dev/null | awk 'length > 1024' || true)
-  if [ -n "$out" ]; then
+  : > "$tmp_bad"
+  while IFS= read -r -d '' _p; do
+    if [ "${#_p}" -gt 1024 ]; then printf '%s\n' "$_p" >> "$tmp_bad"; fi
+  done < "$tmp_paths"
+  if [ -s "$tmp_bad" ]; then
     warn "tarball contains paths longer than 1024 bytes (refused):"
-    printf '%s\n' "$out" | sed 's|^|  |' >&2
+    sed 's|^|  |' "$tmp_bad" >&2
     violations=$((violations + 1))
   fi
 
   # 5. Case-folding collisions. HFS+/APFS default + WSL on NTFS are
   # case-insensitive; a tarball containing bin/Foo + bin/foo lets a
   # malicious entry shadow a legitimate one after extraction.
-  out=$(find "$root" -print 2>/dev/null | LC_ALL=C awk '{l=tolower($0); if (seen[l]++ && seen[l]==2) print $0; orig[l]=$0}' || true)
-  if [ -n "$out" ]; then
+  #
+  # Use `tr [:upper:] [:lower:]` under the operator's locale so Unicode
+  # case-folding actually works (LC_ALL=C would limit to ASCII A-Z and
+  # miss Café/café, Ω/ω on APFS). `tr`'s POSIX [:upper:]/[:lower:]
+  # classes honor the current locale on macOS and glibc both.
+  : > "$tmp_bad"
+  local tmp_lc; tmp_lc=$(mktemp "${TMPDIR:-/tmp}/rc-inspect-lc.XXXXXX")
+  : > "$tmp_lc"
+  while IFS= read -r -d '' _p; do
+    [ -n "$_p" ] || continue
+    case "$_p" in *$'\n'*) continue ;; esac
+    printf '%s\t%s\n' "$(printf '%s' "$_p" | tr '[:upper:]' '[:lower:]')" "$_p" >> "$tmp_lc"
+  done < "$tmp_paths"
+  # awk emits both colliding paths for each lowercase key seen ≥ 2 times.
+  LC_ALL=C sort -t $'\t' -k1,1 "$tmp_lc" \
+    | awk -F '\t' '{ if ($1==prev) print prev_path"\n"$2; prev=$1; prev_path=$2 }' \
+    | LC_ALL=C sort -u > "$tmp_bad" 2>/dev/null || true
+  rm -f -- "$tmp_lc"
+  if [ -s "$tmp_bad" ]; then
     warn "tarball contains case-folding-collision paths (refused on case-insensitive FS):"
-    printf '%s\n' "$out" | sed 's|^|  |' >&2
+    sed 's|^|  |' "$tmp_bad" >&2
     violations=$((violations + 1))
   fi
+
+  rm -f -- "$tmp_paths" "$tmp_bad"
 
   if [ "$violations" -gt 0 ]; then
     err "tarball failed post-extract safety inspection (${violations} class(es)). Refusing to install."
