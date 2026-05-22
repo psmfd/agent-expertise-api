@@ -428,7 +428,27 @@ edit ~/.config/expertise-api/secrets.env          # set ConnectionStrings__Defau
 ./scripts/expertise-apictl health                 # curl /health
 ./scripts/uninstall.sh --yes                      # remove service + binaries
 ./scripts/uninstall.sh --yes --purge              # also remove models + secrets
+./scripts/uninstall.sh --yes --dry-run            # print what would happen; execute nothing
 ```
+
+The uninstaller defends against destructive `--prefix` mistakes:
+
+- The argument must be an absolute path containing `expertise-api` as a
+  path component (or `--allow-system-prefix` must be passed).
+- Paths containing `..` are rejected outright (no symlink/realpath
+  resolution).
+- Two blocklist tiers reject catastrophic targets. *Exact-match* covers
+  parent containers and mount points (`/`, `/home`, `/Users`, `/opt`,
+  `/usr/local`, `/mnt`, `/Volumes`, `/tmp`, ...) so descendants like
+  `/Users/me/svc/expertise-api` or `/opt/expertise-api` are still allowed.
+  *Prefix-match* covers system subtrees where nothing should live
+  (`/bin`, `/etc`, `/lib`, `/System`, `/Library`, `/private`, ...) and
+  blocks every descendant unconditionally — `--allow-system-prefix` does
+  *not* relax this.
+- Under `--system` mode the prefix may not be a symlink (TOCTOU defense
+  for multi-user hosts).
+- `--dry-run` forces a non-destructive run even with `--yes` and is the
+  primary safety hook used by `tests/uninstall/test-prefix-guard.sh`.
 
 Quick start (Windows, elevated PowerShell 7+):
 
