@@ -176,6 +176,9 @@ The scripts source that file automatically when present — no per-shell exports
 For a solo developer who wants the API as a persistent OS service rather
 than `docker compose up`, see `scripts/install.sh` (macOS + Linux + WSL),
 `scripts/install.ps1` (Windows), and the README's "Archetype A2" section.
+The long-term artifact format for this install path (cosign-signed
+tarball published by CI rather than `dotnet publish` on the install
+host) is captured in [`adrs/011-deployment-artifact-format.md`](adrs/011-deployment-artifact-format.md).
 
 The API host wires `builder.Host.UseSystemd().UseWindowsService(...)` in
 `Program.cs` immediately after `WebApplication.CreateBuilder(args)`. Both
