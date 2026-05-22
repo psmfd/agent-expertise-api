@@ -12,9 +12,36 @@
 #                      [--rid RID] [--fix-line-endings]
 #                      [--allow-system-prefix]
 #                      [--install-deps] [--upgrade-deps]
+#                      [--from-release | --from-source [--i-accept-unverified-source]]
+#                      [--version vX.Y.Z|latest]
+#                      [--allow-downgrade] [--accept-republished-version]
+#                      [--skip-release-api-crosscheck]
 #                      [--help]
 #
 # Defaults: per-user install, fdd publish, bind 127.0.0.1:8080.
+#
+# Install mode (ADR-011, issue #249):
+#
+#   * --from-release   Fetch cosign-signed portable tarball from GHCR
+#                      Releases. Cosign verifies the manifest; manifest's
+#                      sha256 binds the tarball. Default mode after the
+#                      D4 flip gate clears. Requires --version on FIRST
+#                      release-mode install (--version latest only
+#                      permitted on upgrades).
+#   * --from-source    Build from local source tree (current default for
+#                      back-compat with pre-D3 callers). Becomes opt-in
+#                      after the D4 flip; --i-accept-unverified-source
+#                      will be mandatory then. Accepted silently in D3.
+#   * --version vX.Y.Z Pin the release tag (release-mode only). Required
+#                      on first install. "latest" permitted on upgrades.
+#   * --allow-downgrade  Permit ${incoming} < ${prior}. Cosign verify still
+#                      applies. Use to recover from a bad version bump.
+#   * --accept-republished-version  Permit reinstalling the same
+#                      ${version} with a different manifest sha (republish
+#                      scenario). Investigate provenance first.
+#   * --skip-release-api-crosscheck  Disable the independent GitHub
+#                      Releases API tag→assets check (air-gap escape
+#                      hatch). Sole trust anchor becomes the cosign sig.
 #
 # Dependency bootstrap (issue #241, PR C1):
 #
@@ -81,8 +108,17 @@ FIX_LINE_ENDINGS=0
 ALLOW_SYSTEM_PREFIX=0
 INSTALL_DEPS=0
 UPGRADE_DEPS=0
+# D3 (#249) — release-mode args. Defaults preserve pre-D3 behavior (source
+# mode silent default) until the D4 flip gate clears (one release cycle of
+# D2 green + D3 smoke test green on macOS+Linux). See ADR-011.
+INSTALL_MODE=""               # "" (= source, silent default in D3) | release | source
+REQUESTED_VERSION=""          # vX.Y.Z, X.Y.Z, or "latest" — release mode only
+ALLOW_DOWNGRADE=0
+ACCEPT_REPUBLISHED_VERSION=0
+SKIP_RELEASE_API_CROSSCHECK=0
+ACCEPT_UNVERIFIED_SOURCE=0    # no-op in D3; mandatory after D4 default-flip
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -96,6 +132,17 @@ while [[ $# -gt 0 ]]; do
     --allow-system-prefix) ALLOW_SYSTEM_PREFIX=1; shift ;;
     --install-deps)      INSTALL_DEPS=1; shift ;;
     --upgrade-deps)      UPGRADE_DEPS=1; shift ;;
+    --from-release)              
+      if [[ "${INSTALL_MODE}" == "source" ]]; then err "--from-release and --from-source are mutually exclusive"; fi
+      INSTALL_MODE="release"; shift ;;
+    --from-source)               
+      if [[ "${INSTALL_MODE}" == "release" ]]; then err "--from-release and --from-source are mutually exclusive"; fi
+      INSTALL_MODE="source"; shift ;;
+    --i-accept-unverified-source) ACCEPT_UNVERIFIED_SOURCE=1; shift ;;
+    --version)                   REQUESTED_VERSION="${2:?--version needs vX.Y.Z or latest}"; shift 2 ;;
+    --allow-downgrade)           ALLOW_DOWNGRADE=1; shift ;;
+    --accept-republished-version) ACCEPT_REPUBLISHED_VERSION=1; shift ;;
+    --skip-release-api-crosscheck) SKIP_RELEASE_API_CROSSCHECK=1; shift ;;
     --help|-h)           usage; exit 0 ;;
     *)                   err "unknown flag: $1 (try --help)" ;;
   esac
@@ -118,6 +165,38 @@ fi
 
 [[ "${PUBLISH_MODE}" == "fdd" || "${PUBLISH_MODE}" == "scd" ]] \
   || err "--publish-mode must be 'fdd' or 'scd'"
+
+# D3 (#249) — install-mode validation. Silent default in D3 = source (= "")
+# for back-compat. After the D4 flip gate clears, the default becomes
+# release and --from-source will require --i-accept-unverified-source.
+#
+# D3 pre-PR (shell-expert LOW): the arg-parse loop currently lets
+# `--from-release --from-source` (or vice versa) silently take the LAST
+# value of INSTALL_MODE. Refuse the conflict so the operator's intent is
+# never resolved silently.
+if [[ "${INSTALL_MODE}" == "release" ]] && [[ "${ACCEPT_UNVERIFIED_SOURCE}" == "1" ]]; then
+  err "--i-accept-unverified-source is meaningful only with --from-source (release mode is cosign-verified)"
+fi
+if [[ "${INSTALL_MODE}" == "release" ]]; then
+  if [[ -z "${REQUESTED_VERSION}" ]]; then
+    REQUESTED_VERSION="latest"   # first-install policy enforced in rc_publish_from_release
+  fi
+  # --version is meaningful only for release mode; reject in source mode
+  # to avoid silently ignoring the operator's intent.
+  :
+else
+  # source mode (explicit "--from-source" or unset). Reject --version so the
+  # operator does not assume it pins source-build behavior.
+  if [[ -n "${REQUESTED_VERSION}" ]]; then
+    err "--version is only meaningful with --from-release (got: --version ${REQUESTED_VERSION} without --from-release)"
+  fi
+  if (( ALLOW_DOWNGRADE == 1 || ACCEPT_REPUBLISHED_VERSION == 1 || SKIP_RELEASE_API_CROSSCHECK == 1 )); then
+    err "--allow-downgrade / --accept-republished-version / --skip-release-api-crosscheck are release-mode-only flags"
+  fi
+  # Touch ACCEPT_UNVERIFIED_SOURCE so shellcheck sees it referenced; will
+  # become load-bearing after the D4 default-flip.
+  : "${ACCEPT_UNVERIFIED_SOURCE}"
+fi
 
 # ---------------------------------------------------------------------------
 # OS detection
@@ -167,6 +246,10 @@ RID="${EXPLICIT_RID:-$(detect_rid)}"
 # ---------------------------------------------------------------------------
 # shellcheck source=lib/prefix-validation.sh disable=SC1091
 . "${SCRIPT_DIR}/lib/prefix-validation.sh"
+# D3 (#249) — release-consumer helpers. Sourcing release-consumer.sh also
+# sources verify-release.sh (via rc_source_verify_release) on first use.
+# shellcheck source=lib/release-consumer.sh disable=SC1091
+. "${SCRIPT_DIR}/lib/release-consumer.sh"
 if [[ -n "${PREFIX_OVERRIDE}" ]]; then
   PREFIX_OVERRIDE="$(normalize_prefix "${PREFIX_OVERRIDE}")"
   validate_prefix "${PREFIX_OVERRIDE}"
@@ -237,6 +320,17 @@ cleanup() {
       if [[ -d "${STAGE_DIR}" && ! -L "${STAGE_DIR}" ]]; then
         rm -rf -- "${STAGE_DIR}" 2>/dev/null || true
         warn "removed staged tree: ${STAGE_DIR}"
+      fi
+      # D3 pre-PR (shell + security MED): also mop up the release-mode
+      # quarantine sibling and the download stash so a refused install
+      # does not leave libarchive-extracted bytes under ${PREFIX}.
+      if [[ -d "${STAGE_DIR}.unpack" && ! -L "${STAGE_DIR}.unpack" ]]; then
+        rm -rf -- "${STAGE_DIR}.unpack" 2>/dev/null || true
+        warn "removed quarantine tree: ${STAGE_DIR}.unpack"
+      fi
+      if [[ -d "${PREFIX}/.release-download" && ! -L "${PREFIX}/.release-download" ]]; then
+        rm -rf -- "${PREFIX}/.release-download" 2>/dev/null || true
+        warn "removed release download stash: ${PREFIX}/.release-download"
       fi
       ;;
     swapped)
@@ -766,12 +860,20 @@ main() {
   if (( INSTALL_DEPS == 1 )); then
     bootstrap_deps
   fi
-  publish_app_staged
+  if [[ "${INSTALL_MODE}" == "release" ]]; then
+    rc_publish_from_release "${REQUESTED_VERSION}"
+  else
+    publish_app_staged
+  fi
   write_wrapper
   run_migrate_staged
   atomic_swap
   install_service
   write_install_version_marker
+  # D3 (#249) — post-swap mode/semver/history markers. Written AFTER
+  # atomic_swap so they only reflect committed installs (a rollback path
+  # that runs cleanup() before SUCCESS=1 will not have touched them).
+  rc_write_post_install_markers "${INSTALL_MODE:-source}"
   SUCCESS=1
 
   log "install complete"
