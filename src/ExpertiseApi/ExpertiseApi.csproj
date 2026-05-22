@@ -25,7 +25,7 @@
     <!--
       Portable RID-agnostic publish precondition for Archetype A2 (ADR-011).
 
-      `dotnet publish` without `--runtime` produces a single portable output (a
+      `dotnet publish` without a `runtime` flag produces a single portable output (a
       DLL invoked as `dotnet ExpertiseApi.dll`, no apphost). NuGet only copies
       per-RID native binaries from `runtimes/<rid>/native/` into the published
       output for RIDs declared in <RuntimeIdentifiers>. Microsoft.SemanticKernel
