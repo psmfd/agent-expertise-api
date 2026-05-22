@@ -21,10 +21,13 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/migrate.sh [--prefix DIR] [--secrets-file FILE]
+Usage: scripts/migrate.sh [--prefix DIR] [--bin-dir DIR] [--secrets-file FILE]
 
 Options:
   --prefix DIR         Install root (default: $HOME/.local/share/expertise-api)
+  --bin-dir DIR        Target binary directory directly (overrides --prefix-derived
+                       ${PREFIX}/bin). Used by install.sh during stage-then-swap
+                       to migrate against the new binaries before they go live.
   --secrets-file FILE  Override path to secrets.env (default: $XDG_CONFIG_HOME/expertise-api/secrets.env)
   -h, --help           Show this help
 
@@ -37,17 +40,23 @@ EOF
 
 PREFIX="${HOME}/.local/share/expertise-api"
 SECRETS_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/secrets.env"
+BIN_DIR_OVERRIDE=""
 
 while (($#)); do
   case "$1" in
     --prefix)        PREFIX="${2:?--prefix needs a directory}"; shift 2 ;;
     --secrets-file)  SECRETS_FILE="${2:?--secrets-file needs a path}"; shift 2 ;;
+    --bin-dir)       BIN_DIR_OVERRIDE="${2:?--bin-dir needs a directory}"; shift 2 ;;
     -h|--help)       usage; exit 0 ;;
     *)               printf '[migrate] ERROR: unknown arg: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-BIN_DIR="${PREFIX}/bin"
+# --bin-dir takes precedence over --prefix-derived path. Used by
+# install.sh during the publish-staged → migrate-against-staged → swap
+# flow so migrate runs against the new binaries without disturbing
+# the live tree.
+BIN_DIR="${BIN_DIR_OVERRIDE:-${PREFIX}/bin}"
 
 log()  { printf '[migrate] %s\n' "$1"; }
 warn() { printf '[migrate] WARN: %s\n' "$1" >&2; }

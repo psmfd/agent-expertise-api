@@ -125,4 +125,40 @@ Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
 
 - **2026-05-22** — Plan drafted (this file). #223 ACs updated; new issue #241 filed for dependency bootstrap.
 - **2026-05-22** — `shell-expert` pre-design review on PR A: verdict PASS_WITH_WARNINGS. Folded `..` rejection + lexical normalization (no `realpath`); two-tier blocklist; first-class `--dry-run`; test fixtures under `tests/uninstall/`.
-- **2026-05-22** — Pre-PR fan-out on PR A: 3-way parallel (`shell-expert` + `security-review-expert` + `linter`). Aggregate verdict PASS_WITH_WARNINGS (most-severe-wins). Linter PASS. Shell-expert 3 Medium / 4 Low/Info. Security 1 Warning / multiple Info. Citation-currency caveat: both reviewers flagged they could not live-fetch first-party docs in-session; substantive POSIX/Bash claims (`rm -rf` symlink semantics, `"$@"` argv preservation) are well-known foundational behavior. Folded in: `daemon-reload` `|| true` regression; expanded blocklist (`/usr/{bin,sbin,lib,libexec,share,include}`, `/var/lib`, `/snap` promoted to prefix-block); whitespace/CR rejection; dropped `[[ -d ]]` precheck (TOCTOU window); 17 new test assertions (now 49 total); invariant-grep test forbidding absolute-path destructive binaries. Filed #242 for the multi-user-safety PREFIX-parent TOCTOU (out of scope for PR A; naturally part of #145 LaunchDaemon thread). README updated with expanded blocklist precision and #242 caveat.
+- **2026-05-22** — Pre-PR fan-out on PR A: 3-way parallel (`shell-expert` + `security-review-expert` + `linter`). Aggregate verdict PASS_WITH_WARNINGS (most-severe-wins). Linter PASS. Shell-expert 3 Medium / 4 Low/Info. Security 1 Warning / multiple Info. Citation-currency caveat: both reviewers flagged they could not live-fetch first-party docs in-session. Folded in: `daemon-reload` `|| true` regression; expanded blocklist (`/usr/{bin,sbin,lib,libexec,share,include}`, `/var/lib`, `/snap` promoted to prefix-block); whitespace/CR rejection; dropped `[[ -d ]]` precheck (TOCTOU window); 17 new test assertions (now 49 total); invariant-grep test. Filed #242 for the multi-user-safety PREFIX-parent TOCTOU. Filed pi_config#151 for the web_fetch enablement gap.
+- **2026-05-22** — PR A (#243) merged to dev as `411bcad`. #222 closed.
+- **2026-05-22** — Pre-design fan-out on PR B: 3-way parallel (`shell-expert` + `security-review-expert` + `dotnet-expert`). All three NEEDS_CHANGES with a converging redesign. Critical finding: `migrate.sh` execs the published binary's `migrate` verb (not `dotnet ef`), so the original publish→swap→migrate→rollback shape was inverted. Correct shape: publish-staged → migrate-against-staged → swap on success. Additional findings: wrapper-script clobber (relocate outside BIN_DIR), `migrate.sh` hardcodes `${BIN_DIR}` (needs `--bin-dir` flag), trap-with-SUCCESS-flag, CRLF detector moves to preflight, secrets-stub umask window, schema-header opt-in only, portable `mkdir` lock (not flock), `git describe` byte-filter, CRLF output line-number-only.
+
+## PR B redesign (locked 2026-05-22)
+
+Final operation order in `main()`:
+
+```text
+acquire_install_lock                    # mkdir ${PREFIX}/.install.lock
+preflight                               # + secrets CRLF detector (early)
+resolve_install_version                 # git describe → sanitized $NEW_VERSION
+ensure_models                           # idempotent, outside swap surface
+ensure_config_stubs                     # umask 077 wrap; v1 header on fresh
+publish_app_staged                      # → ${BIN_DIR}.new (symlink-trap checked)
+write_wrapper_to_prefix                 # → ${PREFIX}/launch-expertise-api.sh
+run_migrate_against_staged              # migrate.sh --bin-dir ${BIN_DIR}.new
+atomic_swap                             # rename current→old; rename new→current; rm old
+install_service                         # templates updated for new wrapper path
+write_install_version_marker            # ${PREFIX}/.install-version
+SUCCESS=1
+```
+
+Trap cleanup (single function, branches on `STAGE`):
+
+- `STAGE=init`: release lock only.
+- `STAGE=staged` or `STAGE=migrated`: remove `${BIN_DIR}.new`, release lock. Live tree untouched.
+- `STAGE=swapped`: best-effort restore from `${BIN_DIR}.old`; emit operator recovery checklist; release lock.
+- `STAGE=done` (SUCCESS=1): trap is no-op.
+
+Wrapper script lives at `${PREFIX}/launch-expertise-api.sh` (NOT inside `${BIN_DIR}`) so it survives binary swaps. Service templates updated. Uninstall guard already protects PREFIX root.
+
+Not in PR B (deferred):
+
+- Destructive-migration convention guardrail (doc-only follow-up commit).
+- Multi-user ancestor-ownership check on `${PREFIX}` — #242.
+- `--system` permissions hardening on `.install-version` — #145 LaunchDaemon thread.
