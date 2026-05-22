@@ -9,9 +9,25 @@
 # Usage:
 #   scripts/install.sh [--prefix DIR] [--bind ADDR:PORT] [--system]
 #                      [--publish-mode fdd|scd] [--skip-preflight]
-#                      [--rid RID] [--fix-line-endings] [--help]
+#                      [--rid RID] [--fix-line-endings]
+#                      [--allow-system-prefix]
+#                      [--install-deps] [--upgrade-deps]
+#                      [--help]
 #
 # Defaults: per-user install, fdd publish, bind 127.0.0.1:8080.
+#
+# Dependency bootstrap (issue #241, PR C1):
+#
+#   * --install-deps installs missing host deps (.NET 10 SDK, PostgreSQL 17,
+#     pgvector) and creates the `expertise` role + database. Off by default.
+#     Currently macOS only via Homebrew; #246 (Debian) and #247 (RHEL) follow.
+#   * --upgrade-deps bumps already-present deps within the allowed band
+#     (minor only; never crosses major). Requires --install-deps.
+#   * Generated DB password is never echoed to stdout/stderr/logs; only
+#     written via psql parameter binding into secrets.env (mode 600).
+#   * Re-runs are idempotent (detect-then-skip); never rotate the password
+#     if secrets.env already has a connection string.
+#   * One-line-per-run audit appended to ${PREFIX}/.install-deps-history.
 #
 # Upgrade safety (issue #223):
 #
@@ -63,8 +79,10 @@ EXPLICIT_RID=""
 PREFIX_OVERRIDE=""
 FIX_LINE_ENDINGS=0
 ALLOW_SYSTEM_PREFIX=0
+INSTALL_DEPS=0
+UPGRADE_DEPS=0
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,6 +94,8 @@ while [[ $# -gt 0 ]]; do
     --rid)               EXPLICIT_RID="${2:?--rid needs a runtime identifier}"; shift 2 ;;
     --fix-line-endings)  FIX_LINE_ENDINGS=1; shift ;;
     --allow-system-prefix) ALLOW_SYSTEM_PREFIX=1; shift ;;
+    --install-deps)      INSTALL_DEPS=1; shift ;;
+    --upgrade-deps)      UPGRADE_DEPS=1; shift ;;
     --help|-h)           usage; exit 0 ;;
     *)                   err "unknown flag: $1 (try --help)" ;;
   esac
@@ -83,6 +103,18 @@ done
 # Touch ALLOW_SYSTEM_PREFIX so shellcheck sees it as referenced; the
 # real consumer is scripts/lib/prefix-validation.sh sourced below.
 : "${ALLOW_SYSTEM_PREFIX}"
+
+# Hard-error on --upgrade-deps without --install-deps. Surfaced as a
+# pre-design HIGH (shell-expert): silent-no-op footgun for operator typos
+# that imply intent to mutate.
+#
+# This is also enforced inside scripts/lib/bootstrap-common.sh via
+# bc_require_install_deps_flag() — belt-and-suspenders so a future
+# refactor that bypasses arg-parse-time validation still trips the
+# library-side guard before any state mutation.
+if (( UPGRADE_DEPS == 1 && INSTALL_DEPS == 0 )); then
+  err "--upgrade-deps requires --install-deps (refusing silent no-op; pass both or neither)"
+fi
 
 [[ "${PUBLISH_MODE}" == "fdd" || "${PUBLISH_MODE}" == "scd" ]] \
   || err "--publish-mode must be 'fdd' or 'scd'"
@@ -693,12 +725,47 @@ install_service() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Dependency bootstrap dispatch (issue #241 PR C1)
+#
+# Sources scripts/lib/bootstrap-common.sh + the per-OS module on demand.
+# Modules contain function definitions only (sentinel-guarded against
+# direct execution). The dispatch happens AFTER arg parsing and AFTER
+# preflight()/resolve_install_version() so the modules can rely on
+# INSTALL_DEPS / UPGRADE_DEPS / OS / NEW_VERSION / PREFIX / SECRETS_FILE.
+#
+# PR C1: macOS only. Debian/RHEL modules land via #246 / #247.
+# ---------------------------------------------------------------------------
+bootstrap_deps() {
+  STAGE="bootstrap"
+  # shellcheck source=lib/bootstrap-common.sh disable=SC1091
+  . "${SCRIPT_DIR}/lib/bootstrap-common.sh"
+  bc_require_install_deps_flag
+  bc_refuse_xtrace
+  case "${OS}" in
+    macos)
+      # shellcheck source=lib/bootstrap-macos.sh disable=SC1091
+      . "${SCRIPT_DIR}/lib/bootstrap-macos.sh"
+      bootstrap_macos_run
+      ;;
+    linux)
+      err "--install-deps for Linux is not yet implemented (tracked by #246 Debian, #247 RHEL). For now, install dotnet SDK 10, postgresql 17, and pgvector via your package manager and re-run without --install-deps."
+      ;;
+    *)
+      err "--install-deps does not support OS=${OS}"
+      ;;
+  esac
+}
+
 main() {
   acquire_lock
   if (( SKIP_PREFLIGHT == 0 )); then preflight; fi
   resolve_install_version
   ensure_config_stubs
   ensure_models
+  if (( INSTALL_DEPS == 1 )); then
+    bootstrap_deps
+  fi
   publish_app_staged
   write_wrapper
   run_migrate_staged

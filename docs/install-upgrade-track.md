@@ -2,7 +2,7 @@
 
 Persistent TODO for the multi-PR effort that gets the native-service install path (Archetype A2) ready for pi-agent integration. Updated at the end of every working session.
 
-**Last updated:** 2026-05-22
+**Last updated:** 2026-05-22 (PRs A+B merged; PR C scope-split into C1/C2/C3 + ADR follow-up)
 **Driver issue:** [#230 readiness sweep](https://github.com/TheSemicolon/agent-expertise-api/issues/230)
 **Goal:** make `scripts/install.sh` safe, upgrade-aware, and capable of bootstrapping host dependencies on macOS (primary) and Linux, so the pi-agent integration session has a turn-key target.
 
@@ -17,12 +17,15 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
 
 | # | Workstream | Issue | Status | Notes |
 |---|---|---|---|---|
-| 0 | File dependency-bootstrap issue | #241 | ☑ filed 2026-05-22 | Per-OS modules + upgrade band table baked into ACs. |
-| 1 | Update #223 description to add upgrade-safety ACs | #223 | ☑ updated 2026-05-22 | Atomic-publish rollback on migrate failure, version marker, secrets schema-version header. |
-| A | PR A — uninstall hardening | #222 | ◐ in progress — code + tests done, awaiting PR | `eval` removal, `--prefix` guard, `--allow-system-prefix` escape, smoke test. |
-| B | PR B — install atomicity + upgrade safety + CRLF | #223 | ☐ blocked-by-A | Re-framed per ACs above. |
-| C | PR C — host-dependency bootstrap | #241 | ☐ blocked-by-A,B | Per-OS modules under `scripts/lib/`. `--install-deps` + `--upgrade-deps` flags. |
-| T | Upgrade-roundtrip test | (lands w/ B + C) | ☐ blocked-by-B | `scripts/test/test-upgrade-roundtrip.sh`. Covers atomic publish, migrate-fail rollback, version-marker, dep upgrade band. |
+| 0 | File dependency-bootstrap issue | #241 | ☑ filed 2026-05-22 | Re-scoped 2026-05-22 to PR C1 (macOS only) after pre-design review. |
+| 1 | Update #223 description to add upgrade-safety ACs | #223 | ☑ updated 2026-05-22 | Closed by PR B (#244). |
+| A | PR A — uninstall hardening | #222 | ☑ merged as `411bcad` (#243) | `eval` removal, `--prefix` guard, `--allow-system-prefix` escape, 49-assertion smoke test. |
+| B | PR B — install atomicity + upgrade safety + CRLF | #223 | ☑ merged as `44fd668` (#244) | Atomic stage-then-swap, migrate-against-staged, version marker, CRLF detector, shared `scripts/lib/prefix-validation.sh`. 93/93 tests pass. |
+| **C1** | **PR C1 — macOS Homebrew bootstrap + shared library** | **#241** | **◐ in flight** | `bootstrap-common.sh` + `bootstrap-macos.sh`. ‘Install the SDK’ short-term default per #245. |
+| C2 | PR C2 — Debian/Ubuntu bootstrap | #246 | ☐ blocked-by-C1 | Microsoft feed + GPG pinning; WSL warn-and-refuse for Postgres. |
+| C3 | PR C3 — RHEL/Fedora bootstrap | #247 | ☐ blocked-by-C1 | Microsoft feed + PGDG repo; RHEL AppStream native `dotnet` module preferred where present. |
+| ADR | ADR for deployment artifact format | #245 | ☐ blocked-by-C1 | SDK-on-host vs pre-publish+cosign tarball. Resolves latent preflight bug. |
+| T | Upgrade-roundtrip test | (landed w/ B) | ☑ in PR B | `tests/install/test-upgrade-roundtrip.sh` (39 assertions). Extend in C1 for `--install-deps` paths. |
 
 Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
 
@@ -123,11 +126,14 @@ Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
 
 ## Session log
 
-- **2026-05-22** — Plan drafted (this file). #223 ACs updated; new issue #241 filed for dependency bootstrap.
+- **2026-05-22** — Plan drafted.
+- **2026-05-22** — PR A (#243) merged to dev as `411bcad`. #222 closed.
+- **2026-05-22** — PR B (#244) merged to dev as `44fd668`. #223 closed. 93/93 tests across three suites; shared `scripts/lib/prefix-validation.sh` extracted.
+- **2026-05-22** — PR C pre-design fan-out: shell-expert + security-review-expert + dotnet-expert. All NEEDS_CHANGES. Convergent finding (dotnet-expert HIGH): install host runs `dotnet publish` which requires SDK, not just runtime — the brief's 'runtime-only' framing is broken and is also a latent preflight bug. Resolution: PR C1 installs the SDK (pragmatic short-term); #245 owns the ADR-eligible refactor to pre-publish + cosign artifact path. PR C scope-split: C1 (macOS, this round, #241), C2 (Debian, #246), C3 (RHEL, #247). C4 (WSL) folded into C2 as warn-and-refuse for Postgres. Critical findings folded into C1 implementation plan: CREATE EXTENSION SUPERUSER + IF NOT EXISTS; `--upgrade-deps` requires `--install-deps` (hard-error); password via psql `-v pw=:$pw -f -` parameter binding (never argv); single-quoted connection string; secrets.env never-overwrite-existing-connection-string; loopback-only PG bind; audit trail to `${PREFIX}/.install-deps-history`; brew keg-only path handling; `/dev/urandom | base64` primary password path.
+- **2026-05-22** — PR C1 in flight on `feat/install-deps-bootstrap`: shared `scripts/lib/bootstrap-common.sh` (password gen w/ /dev/urandom primary + openssl fallback, secrets.env atomic injection, audit trail, sudo discipline, xtrace refusal) + `scripts/lib/bootstrap-macos.sh` (Homebrew bootstrap: SDK + PG17 + pgvector + role/db/extension). `--install-deps` / `--upgrade-deps` flags wired into install.sh; `--upgrade-deps` alone hard-errors per shell-expert HIGH. New tests `test-install-deps-flag.sh` (7) + `test-bootstrap-common.sh` (32); all 5 install-track suites pass (132/132 assertions). shellcheck clean across 8 files. Live install deferred to CI smoke per #241 ACs.
 - **2026-05-22** — `shell-expert` pre-design review on PR A: verdict PASS_WITH_WARNINGS. Folded `..` rejection + lexical normalization (no `realpath`); two-tier blocklist; first-class `--dry-run`; test fixtures under `tests/uninstall/`.
 - **2026-05-22** — Pre-PR fan-out on PR A: 3-way parallel (`shell-expert` + `security-review-expert` + `linter`). Aggregate verdict PASS_WITH_WARNINGS (most-severe-wins). Linter PASS. Shell-expert 3 Medium / 4 Low/Info. Security 1 Warning / multiple Info. Citation-currency caveat: both reviewers flagged they could not live-fetch first-party docs in-session. Folded in: `daemon-reload` `|| true` regression; expanded blocklist (`/usr/{bin,sbin,lib,libexec,share,include}`, `/var/lib`, `/snap` promoted to prefix-block); whitespace/CR rejection; dropped `[[ -d ]]` precheck (TOCTOU window); 17 new test assertions (now 49 total); invariant-grep test. Filed #242 for the multi-user-safety PREFIX-parent TOCTOU. Filed pi_config#151 for the web_fetch enablement gap.
-- **2026-05-22** — PR A (#243) merged to dev as `411bcad`. #222 closed.
-- **2026-05-22** — Pre-design fan-out on PR B: 3-way parallel (`shell-expert` + `security-review-expert` + `dotnet-expert`). All three NEEDS_CHANGES with a converging redesign. Critical finding: `migrate.sh` execs the published binary's `migrate` verb (not `dotnet ef`), so the original publish→swap→migrate→rollback shape was inverted. Correct shape: publish-staged → migrate-against-staged → swap on success. Additional findings: wrapper-script clobber (relocate outside BIN_DIR), `migrate.sh` hardcodes `${BIN_DIR}` (needs `--bin-dir` flag), trap-with-SUCCESS-flag, CRLF detector moves to preflight, secrets-stub umask window, schema-header opt-in only, portable `mkdir` lock (not flock), `git describe` byte-filter, CRLF output line-number-only.
+- **2026-05-22** — PR A (#243) merged to dev as `411bcad`. #222 closed.: 3-way parallel (`shell-expert` + `security-review-expert` + `dotnet-expert`). All three NEEDS_CHANGES with a converging redesign. Critical finding: `migrate.sh` execs the published binary's `migrate` verb (not `dotnet ef`), so the original publish→swap→migrate→rollback shape was inverted. Correct shape: publish-staged → migrate-against-staged → swap on success. Additional findings: wrapper-script clobber (relocate outside BIN_DIR), `migrate.sh` hardcodes `${BIN_DIR}` (needs `--bin-dir` flag), trap-with-SUCCESS-flag, CRLF detector moves to preflight, secrets-stub umask window, schema-header opt-in only, portable `mkdir` lock (not flock), `git describe` byte-filter, CRLF output line-number-only.
 
 ## PR B redesign (locked 2026-05-22)
 
