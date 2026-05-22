@@ -132,6 +132,23 @@ jobs:
       - name: Helm render tests
         run: bash helm/expertise-api/tests/test-render.sh
 
+  release-manifest-generator:
+    name: release manifest generator (unit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Targeted single-script CI step for tests/install/test-generate-manifest.sh.
+    # The broader tests/install/ suite is wired into CI by #166 (end-to-end
+    # install smoke). This step exists to give the ADR-011 / D2 manifest
+    # generator regression coverage on every PR without waiting on #166.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run generate-manifest unit tests
+        run: bash tests/install/test-generate-manifest.sh
+
   apictl-restart-race-macos:
     name: apictl restart race regression (macOS)
     runs-on: macos-latest

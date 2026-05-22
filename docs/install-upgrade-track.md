@@ -2,7 +2,7 @@
 
 Persistent TODO for the multi-PR effort that gets the native-service install path (Archetype A2) ready for pi-agent integration. Updated at the end of every working session.
 
-**Last updated:** 2026-05-22 (PRs A+B+C1 merged; ADR-011 in flight as docs PR)
+**Last updated:** 2026-05-22 (PRs A+B+C1 merged; ADR-011 merged; D1 + D2 in flight)
 **Driver issue:** [#230 readiness sweep](https://github.com/TheSemicolon/agent-expertise-api/issues/230)
 **Goal:** make `scripts/install.sh` safe, upgrade-aware, and capable of bootstrapping host dependencies on macOS (primary) and Linux, so the pi-agent integration session has a turn-key target.
 
@@ -24,7 +24,9 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
 | **C1** | PR C1 — macOS Homebrew bootstrap + shared library | #241 | ☑ merged as `afaba45` (#248) | `bootstrap-common.sh` + `bootstrap-macos.sh`. ‘Install the SDK’ short-term default per #245; ADR-011 records the long-term migration. 139/139 tests pass. |
 | C2 | PR C2 — Debian/Ubuntu bootstrap | #246 | ☐ unblocked, scope updated by ADR-011 | Under ADR-011 Option B: bootstrap surface reduces from ‘Microsoft feed + GPG pinning’ to ‘cosign + bsdtar’. WSL warn-and-refuse for Postgres unchanged. |
 | C3 | PR C3 — RHEL/Fedora bootstrap | #247 | ☐ unblocked, scope updated by ADR-011 | Same scope contraction as C2 under ADR-011 Option B. |
-| ADR | ADR for deployment artifact format | #245 | ◐ in flight (this PR) | `adrs/011-deployment-artifact-format.md`. Endorses Option B (CI publishes a portable cosign-signed tarball; install.sh cosign-verifies + bsdtar-extracts) with Option A retained as `--from-source`. Implementation tracked separately. |
+| ADR | ADR for deployment artifact format | #245 | ☑ merged as `fcb3c19` (#250) | `adrs/011-deployment-artifact-format.md`. Endorses Option B (CI publishes a portable cosign-signed tarball; install.sh cosign-verifies + bsdtar-extracts) with Option A retained as `--from-source`. Implementation tracked as #249. |
+| D1 | csproj `<RuntimeIdentifiers>` + `<RollForward>` precondition | #249 | ◐ in flight (PR #251) | One-line csproj addition. Hard precondition for D2 portable publish (ONNX RID natives). Zero behavior change to docker/helm/`dotnet run`/existing A2 installs. |
+| D2 | release.yml portable publish + manifest + cosign sign-blob | #249 | ◐ in flight (this PR) | Adds `scripts/build/generate-manifest.sh` + 26-assertion test suite; release.yml publish/manifest/sign/upload steps; README §Supply-chain verification stanza for the tarball-via-manifest recipe; CI `release-manifest-generator` job seeds #166 incrementally. |
 | T | Upgrade-roundtrip test | (landed w/ B) | ☑ in PR B | `tests/install/test-upgrade-roundtrip.sh` (39 assertions). Extend in C1 for `--install-deps` paths. |
 
 Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
