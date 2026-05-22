@@ -402,11 +402,94 @@ pending EF Core migrations and is idempotent (no-op when up to date).
   (or `%ProgramData%\ExpertiseApi\config\secrets.env` on Windows), run
   `scripts/migrate.sh` (or `.\scripts\migrate.ps1`) manually, then start
   the service.
-- On an **upgrade** the secrets file is preserved and migrate runs to
-  completion. Migrate failure is fatal: the install script exits non-zero,
-  the service is **not** restarted, and the prior binary keeps serving.
+- On an **upgrade** the secrets file is preserved and migrate runs
+  against the **staged** binaries (`${BIN_DIR}.new`) before the atomic
+  swap. If migrate fails, the staged tree is removed, the live `bin/`
+  directory is untouched, the service keeps running on the prior
+  binaries, and the install script exits non-zero with a remediation
+  message.
 - The migrate scripts are safe to run standalone any time; they exit 0 on
   no-op so they're cheap to wire into other automation.
+
+#### Upgrade safety
+
+`scripts/install.sh` is safe to re-run for upgrades. Each invocation:
+
+1. Acquires a `mkdir`-based lock at `${PREFIX}/.install.lock` (portable;
+   no `flock`). A second concurrent invocation fails fast.
+2. Validates `secrets.env` line endings in pre-flight — fails on CRLF
+   (Windows clipboard paste smuggling) with a line-number-only message
+   (the offending value is never echoed). Pass `--fix-line-endings` to
+   convert in place; mode 600 and original owner are preserved (the
+   latter matters under `sudo`).
+3. Stages the new publish output to `${BIN_DIR}.new` and refuses to
+   proceed if `${BIN_DIR}.new` or `${BIN_DIR}.old` exist as symlinks
+   (TOCTOU defense).
+4. Writes the launch wrapper to `${PREFIX}/launch-expertise-api.sh`
+   (NOT inside `${BIN_DIR}`) so it survives binary swaps.
+5. Runs migrate against the staged binaries via
+   `scripts/migrate.sh --bin-dir ${BIN_DIR}.new`. On failure the staged
+   tree is removed and the live tree is untouched. EF Core migrations
+   are transactional per migration, so a retry on the next install run
+   resumes at the failed migration.
+6. Performs the atomic swap (`mv ${BIN_DIR} → .old; mv .new → ${BIN_DIR}`).
+   The brief window where `${BIN_DIR}` does not exist does not affect
+   the running service (POSIX inode-by-handle). `${BIN_DIR}.old` is
+   preserved as a rollback runway through the remaining steps; it is
+   cleaned only after step 8 succeeds.
+7. Re-installs the service unit (systemd `daemon-reload` + restart, or
+   `launchctl bootstrap + kickstart`).
+8. Writes the new version to `${PREFIX}/.install-version`. On the next
+   run, the marker is read to log one of `fresh install` /
+   `reinstall (X)` / `upgrade X -> Y`. Steady-state cleanup of
+   `${BIN_DIR}.old` then runs in the success branch of the trap.
+
+`scripts/install.sh` shares the same `--prefix` validation as
+`scripts/uninstall.sh` (catastrophic-target blocklist, `..` rejection,
+`expertise-api` path-component requirement — see the Uninstall section
+below). When `--prefix DIR` is passed, `secrets.env`, models/, and
+logs/ all co-locate under `DIR/` rather than the per-OS XDG/macOS
+defaults; set the XDG paths explicitly via env vars if you want them
+split.
+
+##### Rollback
+
+Automatic on failure. Trap-based cleanup branches on a `STAGE` variable:
+
+| Failure stage | Action |
+|---|---|
+| `init`, `preflight`, `version`, `models`, `config` | Release lock. Live tree untouched. |
+| `staged`, `migrated` | Remove `${BIN_DIR}.new`. Live tree untouched. |
+| `swapped` (post-swap step failed) | Best-effort restore `${BIN_DIR}.old → ${BIN_DIR}`. If restoration itself fails, prints manual recovery steps. |
+
+The `secrets.env`, `models/`, `logs/`, and `.install-version` paths all
+live outside `${BIN_DIR}` and are unaffected by binary swaps.
+
+##### Troubleshooting
+
+- **`CRLF line endings detected`** — your `secrets.env` was edited on a
+  Windows host or pasted from a clipboard that injected `\r`. Either
+  re-run with `--fix-line-endings`, or manually:
+  `tr -d '\r' < secrets.env > secrets.env.tmp && mv secrets.env.tmp
+  secrets.env && chmod 600 secrets.env`.
+- **`another install in progress`** — a prior `install.sh` invocation
+  crashed before releasing its lock. If no install is actually running,
+  `rmdir ${PREFIX}/.install.lock` and retry.
+- **`refusing to swap: symlink at ${BIN_DIR}.new`** — stale or hostile
+  symlink in `${PREFIX}`. Inspect with `ls -la ${PREFIX}/`, remove the
+  symlink, retry.
+- **`migrate failed`** — the staged tree was removed, the live tree is
+  intact, and the prior binaries are still serving. Inspect the migrate
+  output (typically Npgsql or EF schema-conflict messages), fix the DB
+  or migration, then re-run `scripts/install.sh`.
+
+##### Schema version
+
+`secrets.env` carries a `# expertise-api-secrets-version=N` header (`N=1`
+today). Files predating the header are treated as v0; the installer
+warns but does not auto-mutate operator-owned credential files.
+Forward migrations will land behind an explicit
+`--upgrade-secrets` flag when needed.
 
 > **Upgrade note** for installs that predate #144: pre-existing `secrets.env`
 > files generated by earlier installs may have the connection string

@@ -56,6 +56,9 @@ while [[ $# -gt 0 ]]; do
     *)                      err "unknown flag: $1 (try --help)" ;;
   esac
 done
+# Touch ALLOW_SYSTEM_PREFIX so shellcheck sees it as referenced; the
+# real consumer is scripts/lib/prefix-validation.sh sourced below.
+: "${ALLOW_SYSTEM_PREFIX}"
 
 if (( PURGE == 1 && APPLY == 0 )); then
   err "--purge requires --yes (refusing destructive op without explicit confirmation)"
@@ -71,114 +74,14 @@ esac
 # ----------------------------------------------------------------------------
 # Prefix normalization + validation
 #
-# Design locked 2026-05-22 via shell-expert pre-review. Two key choices:
-#
-#  1. No realpath/readlink -f. Non-portable on macOS, false-secure on
-#     non-existent paths, and resolving symlinks can hide attacks rather
-#     than surface them. Instead: reject '..' components outright, then
-#     lexically collapse '//' and strip trailing slash.
-#
-#  2. Prefix-match blocklist (not exact-match). Exact-match lets
-#     /var/log, /private/var, /mnt/c/Users slip past. With prefix-match,
-#     '/var' blocks every '/var/*' that doesn't carry an expertise-api
-#     path component.
-#
-# --allow-system-prefix relaxes only the component check. The blocklist
-# stays unconditional — it answers a different question (is this path
-# obviously catastrophic?) than the component check (does this look like
-# an expertise-api install?).
+# Implementation lives in scripts/lib/prefix-validation.sh so install.sh
+# and uninstall.sh share the same guard (extracted from this file during
+# PR B / #223 pre-PR review). Required caller-defined symbols:
+#   err(), INSTALL_SCOPE, ALLOW_SYSTEM_PREFIX.
 # ----------------------------------------------------------------------------
 
-normalize_prefix() {
-  local p="$1"
-  # Reject embedded whitespace / line-ending characters. Most often a CR
-  # smuggled in via a Windows clipboard paste; also catches accidental
-  # tabs and newlines. Bash treats NUL as a string terminator so we do
-  # not need to handle it explicitly.
-  case "$p" in
-    *$'\t'*|*$'\r'*|*$'\n'*) err "--prefix may not contain whitespace or line-ending characters" ;;
-  esac
-  # Reject parent-directory traversal entirely. The four patterns are
-  # exhaustive only because absolute paths are '/'-anchored — if this
-  # helper is ever reused for relative paths, extend accordingly.
-  case "$p" in
-    *"/../"*|*/..|"../"*|"..") err "--prefix may not contain '..'" ;;
-  esac
-  # Collapse runs of slashes.
-  while [[ "$p" == *"//"* ]]; do p="${p//\/\//\/}"; done
-  # Strip trailing slash but never the root.
-  if [[ "$p" != "/" && "$p" == */ ]]; then p="${p%/}"; fi
-  printf '%s\n' "$p"
-}
-
-validate_prefix() {
-  local p="$1"
-  [[ "$p" = /* ]]      || err "--prefix must be an absolute path"
-  [[ "$p" != "/" ]]    || err "--prefix may not be /"
-  [[ "$p" != "$HOME" ]] || err "--prefix may not be \$HOME ($HOME)"
-
-  # Symlinked prefix is refused in --system mode (TOCTOU defense for
-  # multi-user hosts). User-mode operators owning $HOME do not pay this
-  # cost.
-  if [[ "${INSTALL_SCOPE}" == "system" && -L "$p" ]]; then
-    err "--prefix is a symlink ($p); pass the resolved path explicitly under --system"
-  fi
-
-  # Two-tier blocklist. Always-on, regardless of --allow-system-prefix.
-  #
-  #   blocked_exact   = parent containers / mount points. Block the bare dir
-  #                     itself but allow descendants (e.g. /Users is rejected
-  #                     but /Users/me/path is fine — every macOS HOME lives
-  #                     under /Users, so a prefix-match here would block all
-  #                     legitimate user installs).
-  #   blocked_prefix  = catastrophic system subtrees where nothing under the
-  #                     root is a sane install target (/bin, /etc, /System...).
-  local blocked_exact=(
-    /
-    /home /root /Users         # user-home parent containers
-    /opt /usr/local            # common system install parents (descendants allowed)
-    /mnt /media /Volumes /Network  # mount-point parents
-    /tmp /var /usr /srv /run /cores /.vol /host /rootfs  # exact-block; descendants gated by prefix/component checks below
-  )
-  local blocked_prefix=(
-    # POSIX system subtrees
-    /bin /sbin /etc /lib /lib64 /boot /dev /proc /sys
-    # FHS /usr subtrees — /usr/local is the exact-only carve-out above.
-    /usr/bin /usr/sbin /usr/lib /usr/libexec /usr/share /usr/include
-    # FHS /var/lib (canonical writable system-state location; off-limits to us).
-    /var/lib
-    # Immutable squashfs mounts (snap packages).
-    /snap
-    # macOS system subtrees
-    /Library /System /Applications /private
-    # WSL drive mounts (user code goes here, services should not)
-    /mnt/c /mnt/wsl
-    # User fat-finger guards (only meaningful when $HOME is set)
-    "${HOME:+${HOME}/Desktop}"
-    "${HOME:+${HOME}/Documents}"
-  )
-  local b
-  for b in "${blocked_exact[@]}"; do
-    [[ -n "$b" ]] || continue
-    if [[ "$p" == "$b" ]]; then
-      err "--prefix '$p' is a blocked parent/mount path (descendants are allowed; this exact path is not)"
-    fi
-  done
-  for b in "${blocked_prefix[@]}"; do
-    [[ -n "$b" ]] || continue
-    if [[ "$p/" == "$b/"* ]]; then
-      err "--prefix '$p' is under blocked system root '$b' (unconditional; --allow-system-prefix does not relax this)"
-    fi
-  done
-
-  # Component check: defense-in-depth. Bypassable with --allow-system-prefix
-  # for legitimately-named non-default install layouts.
-  if (( ALLOW_SYSTEM_PREFIX == 0 )); then
-    if [[ "/$p/" != *"/expertise-api/"* ]]; then
-      err "--prefix '$p' must contain 'expertise-api' as a path component (or pass --allow-system-prefix to skip this check)"
-    fi
-  fi
-}
+# shellcheck source=lib/prefix-validation.sh disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/prefix-validation.sh"
 
 if [[ -n "${PREFIX_OVERRIDE}" ]]; then
   PREFIX_OVERRIDE="$(normalize_prefix "${PREFIX_OVERRIDE}")"
@@ -297,6 +200,9 @@ esac
 do_action rm -rf "${BIN_DIR}"
 
 # Wrapper script (idempotent under `-f`).
+# Wrapper script (idempotent under `-f`). Cover both the post-#223 location
+# (${PREFIX}/launch-expertise-api.sh) and the legacy in-BIN_DIR location.
+do_action rm -f "${PREFIX}/launch-expertise-api.sh"
 do_action rm -f "${PREFIX}/bin/launch-expertise-api.sh"
 
 if (( PURGE == 1 )); then
