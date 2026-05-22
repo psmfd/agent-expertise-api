@@ -324,14 +324,80 @@ assert "case 13: publishMode override flows into manifest" \
   bash -c "[ \"\$(jq -r .publishMode '$out13')\" = 'self-contained' ]"
 
 # ---------------------------------------------------------------------------
+# Case 14: runtimeconfig.json with `frameworks` ARRAY form (single entry).
+# .NET SDK is permitted to emit either singular `.framework` (the typical
+# Microsoft.NET.Sdk.Web shape) OR an array `.frameworks` shape. The
+# defensive jq path must accept both and produce the same manifest. This
+# is the principal regression test for the runtimeconfig-shape-tolerance
+# refactor (D2.1 / generate-manifest defensive jq).
+# ---------------------------------------------------------------------------
+case14=${SCRATCH}/case14
+publish14=$(build_fixture "$case14" '{"runtimeOptions":{"tfm":"net10.0","rollForward":"LatestMinor","frameworks":[{"name":"Microsoft.AspNetCore.App","version":"10.0.0"}]}}')
+out14=${case14}/manifest.json
+run_gen \
+  --publish-dir "$publish14" \
+  --app-version "1.2.3" \
+  --git-sha "abc" \
+  --tarball "${case14}/artifact.tar.gz" \
+  --source-date-epoch "1577836800" \
+  --output "$out14" >/dev/null 2>&1
+assert "case 14: frameworks-array form yields requiredRuntime.name = AspNetCore.App" \
+  bash -c "[ \"\$(jq -r .requiredRuntime.name '$out14')\" = 'Microsoft.AspNetCore.App' ]"
+assert "case 14: frameworks-array form yields requiredRuntime.minVersion = 10.0.0" \
+  bash -c "[ \"\$(jq -r .requiredRuntime.minVersion '$out14')\" = '10.0.0' ]"
+
+# ---------------------------------------------------------------------------
+# Case 15: runtimeconfig.json with `frameworks` array containing BOTH
+# Microsoft.NETCore.App and Microsoft.AspNetCore.App. The filter MUST pick
+# AspNetCore.App (NETCore.App is a lower-level floor that would give
+# install.sh's preflight the wrong answer).
+# ---------------------------------------------------------------------------
+case15=${SCRATCH}/case15
+publish15=$(build_fixture "$case15" '{"runtimeOptions":{"tfm":"net10.0","frameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.0"},{"name":"Microsoft.AspNetCore.App","version":"10.0.5"}]}}')
+out15=${case15}/manifest.json
+run_gen \
+  --publish-dir "$publish15" \
+  --app-version "1.2.3" \
+  --git-sha "abc" \
+  --tarball "${case15}/artifact.tar.gz" \
+  --source-date-epoch "1577836800" \
+  --output "$out15" >/dev/null 2>&1
+assert "case 15: multi-framework array picks AspNetCore.App, not NETCore.App" \
+  bash -c "[ \"\$(jq -r .requiredRuntime.name '$out15')\" = 'Microsoft.AspNetCore.App' ]"
+assert "case 15: multi-framework array picks AspNetCore.App version (10.0.5), not NETCore (10.0.0)" \
+  bash -c "[ \"\$(jq -r .requiredRuntime.minVersion '$out15')\" = '10.0.5' ]"
+
+# ---------------------------------------------------------------------------
+# Case 16: runtimeconfig.json with frameworks-array containing ONLY
+# Microsoft.NETCore.App (no AspNetCore.App). install.sh preflight checks
+# the AspNetCore floor; emitting a manifest with no AspNetCore floor
+# would either misdirect preflight or silently pass garbage. Refuse to
+# emit (exit 2 + actionable error message).
+# ---------------------------------------------------------------------------
+case16=${SCRATCH}/case16
+publish16=$(build_fixture "$case16" '{"runtimeOptions":{"tfm":"net10.0","frameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.0"}]}}')
+out16=${case16}/manifest.json
+run_gen --publish-dir "$publish16" --app-version "1.2.3" --git-sha "abc" \
+  --tarball "${case16}/artifact.tar.gz" --source-date-epoch "1577836800" \
+  --output "$out16" >/dev/null 2>&1 && rc=0 || rc=$?
+assert "case 16: refuses when frameworks array lacks AspNetCore.App" \
+  bash -c "[ '$rc' -ne 0 ]"
+assert "case 16: did not produce a manifest file" \
+  bash -c "[ ! -s '$out16' ]"
+
+# ---------------------------------------------------------------------------
 # Static lint-time guard: refuse to emit a manifest that hand-sets
 # requiredRuntime — the script must always read it from runtimeconfig.
 # Grep-based defense (mirrors the argv-leak guard in test-bootstrap-common).
 # ---------------------------------------------------------------------------
 assert "static guard: no hardcoded requiredRuntime.minVersion in generator" \
   bash -c "! grep -E 'requiredRuntime.minVersion[[:space:]]*=[[:space:]]*\"?[0-9]' '$GEN'"
-assert "static guard: requiredRuntime sourced via jq from runtimeconfig" \
-  bash -c "grep -qE 'jq -r .{0,2}\.runtimeOptions\.framework\.version' '$GEN'"
+assert "static guard: requiredRuntime sourced via jq from runtimeconfig (D2.1 framework_jq form)" \
+  bash -c "grep -qF 'framework_jq' '$GEN'"
+assert "static guard: defensive filter pins Microsoft.AspNetCore.App" \
+  bash -c "grep -qF 'Microsoft.AspNetCore.App' '$GEN'"
+assert "static guard: accepts both singular .framework AND array .frameworks shapes" \
+  bash -c "grep -qF '.runtimeOptions.frameworks' '$GEN' && grep -qF '.runtimeOptions.framework' '$GEN'"
 
 # ---------------------------------------------------------------------------
 # Summary

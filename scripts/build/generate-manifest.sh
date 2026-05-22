@@ -152,9 +152,20 @@ esac
 
 # ---------------------------------------------------------------------------
 # requiredRuntime sourced from runtimeconfig (NEVER hand-set — ADR-011)
+#
+# .NET runtimeconfig.json supports two mutually-exclusive shapes:
+#   * runtimeOptions.framework  (singular object) — single shared framework
+#   * runtimeOptions.frameworks (array)           — multiple shared frameworks
+# For a vanilla Microsoft.NET.Sdk.Web app on net10.0 the SDK historically
+# emits the singular form, but the array form is well-formed and SDK behavior
+# is version-sensitive. Defensive: accept both, normalize to an array, then
+# filter to Microsoft.AspNetCore.App (the floor install.sh checks installed
+# runtimes against — NOT Microsoft.NETCore.App, which is a lower-level floor
+# that would give D3's preflight the wrong answer).
 # ---------------------------------------------------------------------------
-required_runtime_name=$(jq -r '.runtimeOptions.framework.name // empty' "$runtime_config")
-required_runtime_version=$(jq -r '.runtimeOptions.framework.version // empty' "$runtime_config")
+framework_jq='(.runtimeOptions.frameworks // [.runtimeOptions.framework // empty]) | map(select(.name == "Microsoft.AspNetCore.App")) | .[0]'
+required_runtime_name=$(jq -r "${framework_jq} | .name // empty" "$runtime_config")
+required_runtime_version=$(jq -r "${framework_jq} | .version // empty" "$runtime_config")
 required_runtime_rollforward=$(jq -r '.runtimeOptions.rollForward // "Minor"' "$runtime_config")
 target_framework=$(jq -r '.runtimeOptions.tfm // empty' "$runtime_config")
 
