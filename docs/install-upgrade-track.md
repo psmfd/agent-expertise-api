@@ -2,7 +2,7 @@
 
 Persistent TODO for the multi-PR effort that gets the native-service install path (Archetype A2) ready for pi-agent integration. Updated at the end of every working session.
 
-**Last updated:** 2026-05-22 (PRs A+B+C1 merged; ADR-011 merged; D1+D2 merged; D3+D4 pending)
+**Last updated:** 2026-05-22 (PRs A+B+C1 merged; ADR-011 merged; D1+D2+D2.1 merged; D3 in flight)
 **Driver issue:** [#230 readiness sweep](https://github.com/TheSemicolon/agent-expertise-api/issues/230)
 **Goal:** make `scripts/install.sh` safe, upgrade-aware, and capable of bootstrapping host dependencies on macOS (primary) and Linux, so the pi-agent integration session has a turn-key target.
 
@@ -27,7 +27,7 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
 | ADR | ADR for deployment artifact format | #245 | ☑ merged as `fcb3c19` (#250) | `adrs/011-deployment-artifact-format.md`. Endorses Option B (CI publishes a portable cosign-signed tarball; install.sh cosign-verifies + bsdtar-extracts) with Option A retained as `--from-source`. Implementation tracked as #249. |
 | D1 | csproj `<RuntimeIdentifiers>` + `<RollForward>` precondition | #249 | ☑ merged as `a54aabf` (#251) | One-line csproj addition. Hard precondition for D2 portable publish (ONNX RID natives). Zero behavior change to docker/helm/`dotnet run`/existing A2 installs. |
 | D2 | release.yml portable publish + manifest + cosign sign-blob | #249 | ☑ merged as `6929bdb` (#252) | `scripts/build/generate-manifest.sh` + 30-assertion test suite; release.yml publish/manifest/sign/upload steps; README §Supply-chain verification stanza for the tarball-via-manifest recipe; CI `release-manifest-generator` job seeds #166 incrementally. First D2 production run gates the D4 default-flip per ADR-011. |
-| D3 | install.sh `--from-release` opt-in (cosign verify + bsdtar extract + downgrade defense + runtime semver tighten) | #249 | ☐ next session | Load-bearing PR. Deserves full pre-design fan-out (shell + security + checkmarx). Adds `scripts/verify-release.sh` + `tests/install/test-release-tarball-flow.sh`. |
+| D3 | install.sh `--from-release` opt-in (cosign verify + bsdtar extract + downgrade defense + runtime semver tighten) | #249 | ☐ in flight — branch `feat/install-from-release-cosign-verify`, pre-PR fan-out pending | Load-bearing PR. Ships `scripts/verify-release.sh` (sanctioned cosign-verify entrypoint), `scripts/lib/release-consumer.sh` (fetch/verify/inspect/extract/markers), install.sh wiring (`--from-release` / `--from-source` / `--version` / `--allow-downgrade` / `--accept-republished-version` / `--skip-release-api-crosscheck`), and `tests/install/test-release-tarball-flow.sh` (33 assertions). D2.1 (#254, `61fc24a`) hardened generate-manifest to accept frameworks-array runtimeconfig shape as a D3 precondition. Two follow-up flags deferred to #255 (`--tarball-url` mirror) and #256 (`--allow-offline-verify`). |
 | D4 | Cosign as managed dep in `bootstrap-*.sh`; default flip `--from-source` → `--from-release` | #249 | ☐ gated | Gated on (a) one release cycle of D2 green publishing manifest+sig artifacts; (b) D3 smoke test green on macOS + Ubuntu runners. ADR-011 binding-flip rule. |
 | T | Upgrade-roundtrip test | (landed w/ B) | ☑ in PR B | `tests/install/test-upgrade-roundtrip.sh` (39 assertions). Extend in C1 for `--install-deps` paths. |
 
