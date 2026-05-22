@@ -435,20 +435,30 @@ The uninstaller defends against destructive `--prefix` mistakes:
 
 - The argument must be an absolute path containing `expertise-api` as a
   path component (or `--allow-system-prefix` must be passed).
-- Paths containing `..` are rejected outright (no symlink/realpath
-  resolution).
-- Two blocklist tiers reject catastrophic targets. *Exact-match* covers
-  parent containers and mount points (`/`, `/home`, `/Users`, `/opt`,
-  `/usr/local`, `/mnt`, `/Volumes`, `/tmp`, ...) so descendants like
-  `/Users/me/svc/expertise-api` or `/opt/expertise-api` are still allowed.
-  *Prefix-match* covers system subtrees where nothing should live
-  (`/bin`, `/etc`, `/lib`, `/System`, `/Library`, `/private`, ...) and
-  blocks every descendant unconditionally — `--allow-system-prefix` does
-  *not* relax this.
-- Under `--system` mode the prefix may not be a symlink (TOCTOU defense
-  for multi-user hosts).
+- Paths containing `..`, embedded whitespace, or line-ending characters
+  are rejected outright (no symlink/realpath resolution).
+- Two blocklist tiers reject catastrophic targets:
+  - *Exact-match* covers parent containers and mount points (`/`,
+    `/home`, `/Users`, `/opt`, `/usr/local`, `/mnt`, `/Volumes`, `/tmp`,
+    `/var`, `/usr`, ...) so legitimate descendants like
+    `/Users/me/svc/expertise-api`, `/opt/expertise-api`, and
+    `/usr/local/expertise-api` remain allowed.
+  - *Prefix-match* covers system subtrees where nothing should live
+    (`/bin`, `/etc`, `/lib`, `/System`, `/Library`, `/private`,
+    `/usr/{bin,sbin,lib,libexec,share,include}`, `/var/lib`, `/snap`,
+    ...) and blocks every descendant unconditionally —
+    `--allow-system-prefix` does *not* relax this.
+- Under `--system` mode the prefix directory itself may not be a
+  symlink (TOCTOU defense for multi-user hosts). **Caveat:** the
+  uninstaller does not currently verify that *ancestors* of the prefix
+  are owned by root — if you operate a multi-user host, ensure
+  `/opt/<your-parent>/` is root-owned and not group-writable. Tracking
+  in [#242](https://github.com/TheSemicolon/agent-expertise-api/issues/242).
 - `--dry-run` forces a non-destructive run even with `--yes` and is the
   primary safety hook used by `tests/uninstall/test-prefix-guard.sh`.
+  The plan reflects host state at dry-run invocation time; if the
+  service is (re)installed between dry-run and apply, the apply path
+  will see the newer state.
 
 Quick start (Windows, elevated PowerShell 7+):
 

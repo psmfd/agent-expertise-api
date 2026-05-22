@@ -91,7 +91,16 @@ esac
 
 normalize_prefix() {
   local p="$1"
-  # Reject parent-directory traversal entirely. No legitimate --prefix needs it.
+  # Reject embedded whitespace / line-ending characters. Most often a CR
+  # smuggled in via a Windows clipboard paste; also catches accidental
+  # tabs and newlines. Bash treats NUL as a string terminator so we do
+  # not need to handle it explicitly.
+  case "$p" in
+    *$'\t'*|*$'\r'*|*$'\n'*) err "--prefix may not contain whitespace or line-ending characters" ;;
+  esac
+  # Reject parent-directory traversal entirely. The four patterns are
+  # exhaustive only because absolute paths are '/'-anchored — if this
+  # helper is ever reused for relative paths, extend accordingly.
   case "$p" in
     *"/../"*|*/..|"../"*|"..") err "--prefix may not contain '..'" ;;
   esac
@@ -127,13 +136,19 @@ validate_prefix() {
   local blocked_exact=(
     /
     /home /root /Users         # user-home parent containers
-    /opt /usr/local            # FHS / common system install parents (descendants allowed)
+    /opt /usr/local            # common system install parents (descendants allowed)
     /mnt /media /Volumes /Network  # mount-point parents
-    /tmp /var /usr /srv /run /snap /cores /.vol /host /rootfs  # exact-block; descendants only blocked by component check
+    /tmp /var /usr /srv /run /cores /.vol /host /rootfs  # exact-block; descendants gated by prefix/component checks below
   )
   local blocked_prefix=(
     # POSIX system subtrees
     /bin /sbin /etc /lib /lib64 /boot /dev /proc /sys
+    # FHS /usr subtrees — /usr/local is the exact-only carve-out above.
+    /usr/bin /usr/sbin /usr/lib /usr/libexec /usr/share /usr/include
+    # FHS /var/lib (canonical writable system-state location; off-limits to us).
+    /var/lib
+    # Immutable squashfs mounts (snap packages).
+    /snap
     # macOS system subtrees
     /Library /System /Applications /private
     # WSL drive mounts (user code goes here, services should not)
@@ -243,14 +258,25 @@ else
   log "  mode       = remove binaries only (user data preserved)"
 fi
 
-# Stop service first
+# Stop service first.
+#
+# Note: the `systemctl --user list-unit-files` / `[[ -f PLIST ]]` probes
+# below execute even under --dry-run because they are pure read-only
+# queries. This means the --dry-run plan reflects host state at
+# dry-run time, not at apply time — intentional and documented in
+# README. Do not wrap these probes in do_action.
 case "${OS}" in
   linux|wsl)
     if systemctl --user list-unit-files expertise-api.service 2>/dev/null | grep -q expertise-api; then
       do_action systemctl --user stop expertise-api.service 2>/dev/null || true
       do_action systemctl --user disable expertise-api.service 2>/dev/null || true
       do_action rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/expertise-api.service"
-      do_action systemctl --user daemon-reload
+      # `daemon-reload` can fail when no user-DBUS session exists (e.g.
+      # uninstall over SSH without `loginctl enable-linger`). That's a
+      # degraded-cleanup case, not a destructive one — the unit file is
+      # already removed by the preceding `rm -f`. Tolerate the failure
+      # so the script proceeds to delete the binary tree below.
+      do_action systemctl --user daemon-reload 2>/dev/null || true
     else
       log "systemd unit not present — skipping service teardown"
     fi ;;
@@ -265,22 +291,18 @@ case "${OS}" in
     fi ;;
 esac
 
-# Remove binary tree
-if [[ -d "${BIN_DIR}" ]]; then
-  do_action rm -rf "${BIN_DIR}"
-else
-  log "binary dir not present — skipping"
-fi
+# Remove binary tree. `rm -rf` swallows ENOENT under `-f`, so we do not
+# precheck `[[ -d ... ]]` — that would only widen the TOCTOU window
+# between the existence test and the deletion.
+do_action rm -rf "${BIN_DIR}"
 
-# Wrapper script
-if [[ -f "${PREFIX}/bin/launch-expertise-api.sh" ]]; then
-  do_action rm -f "${PREFIX}/bin/launch-expertise-api.sh"
-fi
+# Wrapper script (idempotent under `-f`).
+do_action rm -f "${PREFIX}/bin/launch-expertise-api.sh"
 
 if (( PURGE == 1 )); then
   log "purge: removing user data"
   for d in "${MODEL_DIR}" "${LOG_DIR}" "${CONFIG_DIR}" "${PREFIX}"; do
-    [[ -d "${d}" ]] && do_action rm -rf "${d}"
+    do_action rm -rf "${d}"
   done
 else
   log "preserved: ${MODEL_DIR}        (use --purge to remove)"

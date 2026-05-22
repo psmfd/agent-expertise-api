@@ -162,9 +162,35 @@ assert_dry_blocked /bin/expertise-api
 assert_dry_blocked /etc/expertise-api
 assert_dry_blocked /sbin/expertise-api
 assert_dry_blocked /lib/expertise-api
+assert_dry_blocked /dev/expertise-api
+assert_dry_blocked /proc/expertise-api
+assert_dry_blocked /sys/expertise-api
 assert_dry_blocked /System/foo --allow-system-prefix
 assert_dry_blocked /Library/foo --allow-system-prefix
 assert_dry_blocked /private/var/expertise-api
+assert_dry_blocked /private/tmp/expertise-api
+# FHS /usr subtrees — promoted to prefix-block after the pre-PR review
+assert_dry_blocked /usr/share/expertise-api --allow-system-prefix
+assert_dry_blocked /usr/lib/expertise-api --allow-system-prefix
+assert_dry_blocked /usr/sbin/expertise-api --allow-system-prefix
+assert_dry_blocked /usr/libexec/expertise-api --allow-system-prefix
+assert_dry_blocked /usr/include/expertise-api --allow-system-prefix
+assert_dry_blocked /var/lib/expertise-api --allow-system-prefix
+# Snap (immutable squashfs) — promoted to prefix-block
+assert_dry_blocked /snap/expertise-api/current --allow-system-prefix
+
+# Whitespace / line-ending smuggling
+assert_dry_blocked $'/home/me/expertise-api/svc\r'
+assert_dry_blocked $'/home/me/\texpertise-api/svc'
+
+# Empty / whitespace-only prefix (the ${2:?} guard catches empty; the
+# space-only case should fail the absolute-path check).
+out=$("${SCRIPT}" --prefix " " --yes --purge --dry-run 2>&1) && {
+  printf 'FAIL: prefix=" " — expected non-zero exit\n' >&2; FAIL=$((FAIL+1))
+} || PASS=$((PASS+1))
+
+# $HOME exact reject (parametric on the running user)
+assert_dry_blocked "$HOME"
 
 # Traversal attack
 assert_dry_blocked /Users/x/.local/../../etc
@@ -193,6 +219,24 @@ assert_dry_allowed /usr/local/expertise-api
 
 # --allow-system-prefix unlocks the component check
 assert_dry_allowed /custom/svc-data --allow-system-prefix
+
+# Descendants of the /usr/local carve-out (exact-only block on /usr/local)
+assert_dry_allowed /usr/local/expertise-api
+
+# ---------------------------------------------------------------------------
+# Invariant: uninstall.sh must not embed absolute paths to destructive
+# binaries. The shim layer below relies on PATH lookups; an absolute
+# `/bin/rm` or `/usr/bin/launchctl` would silently bypass the shim.
+# Catching this here keeps the secondary defense honest.
+# ---------------------------------------------------------------------------
+UNINSTALL="$(cd "$(dirname "$0")/../.." && pwd)/scripts/uninstall.sh"
+if grep -nE '(^|[[:space:]])(/usr)?/(s?bin|libexec)/(rm|launchctl|systemctl)\b' "${UNINSTALL}" >/dev/null; then
+  echo 'FAIL: uninstall.sh contains absolute-path destructive binary (breaks shim defense):' >&2
+  grep -nE '(^|[[:space:]])(/usr)?/(s?bin|libexec)/(rm|launchctl|systemctl)\b' "${UNINSTALL}" | sed 's/^/  | /' >&2
+  FAIL=$((FAIL+1))
+else
+  PASS=$((PASS+1))
+fi
 
 # ---------------------------------------------------------------------------
 # Normalization

@@ -11,6 +11,7 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
 - `scripts/install.ps1` / `uninstall.ps1` mirror parity — separate follow-up issue, file when PR C lands.
 - `#145` macOS LaunchDaemon opt-in — separate session.
 - `#166` CI smoke test — naturally consumes everything below; pursue after PR C lands.
+- `#242` PREFIX-parent TOCTOU in `--system` mode — surfaced by security review on PR A; multi-user safety is naturally addressed alongside #145 LaunchDaemon work.
 
 ## Workstream status
 
@@ -124,4 +125,4 @@ Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
 
 - **2026-05-22** — Plan drafted (this file). #223 ACs updated; new issue #241 filed for dependency bootstrap.
 - **2026-05-22** — `shell-expert` pre-design review on PR A: verdict PASS_WITH_WARNINGS. Folded `..` rejection + lexical normalization (no `realpath`); two-tier blocklist; first-class `--dry-run`; test fixtures under `tests/uninstall/`.
-- **2026-05-22** — PR A coded: `scripts/uninstall.sh` rewritten with normalize+validate, two-tier blocklist (exact for parents like `/Users` `/home` `/opt`; prefix for catastrophic roots like `/bin` `/etc` `/System`), `--dry-run` flag, `do_action` argv refactor. `tests/uninstall/test-prefix-guard.sh` exercises 32 assertions; all pass. shellcheck clean. README updated. Caught one regression during testing — initial `/Users` prefix-match would have blocked every Mac install; corrected via two-tier list.
+- **2026-05-22** — Pre-PR fan-out on PR A: 3-way parallel (`shell-expert` + `security-review-expert` + `linter`). Aggregate verdict PASS_WITH_WARNINGS (most-severe-wins). Linter PASS. Shell-expert 3 Medium / 4 Low/Info. Security 1 Warning / multiple Info. Citation-currency caveat: both reviewers flagged they could not live-fetch first-party docs in-session; substantive POSIX/Bash claims (`rm -rf` symlink semantics, `"$@"` argv preservation) are well-known foundational behavior. Folded in: `daemon-reload` `|| true` regression; expanded blocklist (`/usr/{bin,sbin,lib,libexec,share,include}`, `/var/lib`, `/snap` promoted to prefix-block); whitespace/CR rejection; dropped `[[ -d ]]` precheck (TOCTOU window); 17 new test assertions (now 49 total); invariant-grep test forbidding absolute-path destructive binaries. Filed #242 for the multi-user-safety PREFIX-parent TOCTOU (out of scope for PR A; naturally part of #145 LaunchDaemon thread). README updated with expanded blocklist precision and #242 caveat.
