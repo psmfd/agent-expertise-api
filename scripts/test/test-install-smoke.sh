@@ -236,6 +236,22 @@ chmod 700 "${CONFIG_DIR}"
 #                                          fail on the unconditionally-registered
 #                                          EmbeddingService. Tracked as follow-up
 #                                          (migrate.sh should mirror the wrapper).
+# DOTNET_ROOT must point at a real .NET install. The path is OS-
+# specific: Debian's apt package puts it at /usr/share/dotnet (Linux
+# container path used by E1); GHA's setup-dotnet on macos-latest puts
+# it at /Users/runner/.dotnet and exports DOTNET_ROOT in the job env.
+# Honor the caller's DOTNET_ROOT when set; only fall back to per-OS
+# defaults so the harness keeps working in the Linux container where
+# DOTNET_ROOT is not pre-exported.
+if [ -n "${DOTNET_ROOT:-}" ]; then
+  effective_dotnet_root="${DOTNET_ROOT}"
+else
+  case "$(uname -s)" in
+    Linux)  effective_dotnet_root="/usr/share/dotnet" ;;
+    Darwin) effective_dotnet_root="/usr/local/share/dotnet" ;;
+    *)      err_exit "unsupported OS for DOTNET_ROOT default: $(uname -s)" ;;
+  esac
+fi
 cat > "${SECRETS_FILE}" <<EOF
 ConnectionStrings__DefaultConnection="Host=${POSTGRES_HOST};Port=${POSTGRES_PORT};Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
 ASPNETCORE_ENVIRONMENT=Development
@@ -243,7 +259,7 @@ Auth__Mode=ApiKey
 Auth__ApiKey=smoke-api-key-not-secret
 Onnx__ModelPath=${PREFIX}/models/model.onnx
 Onnx__VocabPath=${PREFIX}/models/vocab.txt
-DOTNET_ROOT=/usr/share/dotnet
+DOTNET_ROOT=${effective_dotnet_root}
 EOF
 chmod 600 "${SECRETS_FILE}"
 assert "secrets file written with conn string" test -s "${SECRETS_FILE}"
