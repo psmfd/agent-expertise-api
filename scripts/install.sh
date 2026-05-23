@@ -317,20 +317,28 @@ cleanup() {
   case "${STAGE}" in
     init|preflight|version|models|config|staged|migrated)
       # Live ${BIN_DIR} untouched. Drop the staged tree if it exists.
-      if [[ -d "${STAGE_DIR}" && ! -L "${STAGE_DIR}" ]]; then
-        rm -rf -- "${STAGE_DIR}" 2>/dev/null || true
-        warn "removed staged tree: ${STAGE_DIR}"
-      fi
-      # D3 pre-PR (shell + security MED): also mop up the release-mode
-      # quarantine sibling and the download stash so a refused install
-      # does not leave libarchive-extracted bytes under ${PREFIX}.
-      if [[ -d "${STAGE_DIR}.unpack" && ! -L "${STAGE_DIR}.unpack" ]]; then
-        rm -rf -- "${STAGE_DIR}.unpack" 2>/dev/null || true
-        warn "removed quarantine tree: ${STAGE_DIR}.unpack"
-      fi
-      if [[ -d "${PREFIX}/.release-download" && ! -L "${PREFIX}/.release-download" ]]; then
-        rm -rf -- "${PREFIX}/.release-download" 2>/dev/null || true
-        warn "removed release download stash: ${PREFIX}/.release-download"
+      # CI / debug escape hatch: EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE=1
+      # keeps STAGE_DIR and the quarantine in place so the caller can
+      # inspect what install.sh staged before the failure. Production
+      # installs never set this; only the smoke harness (E1 / #166).
+      if [[ "${EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE:-0}" = "1" ]]; then
+        warn "EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE=1 — leaving ${STAGE_DIR} in place for diagnostic"
+      else
+        if [[ -d "${STAGE_DIR}" && ! -L "${STAGE_DIR}" ]]; then
+          rm -rf -- "${STAGE_DIR}" 2>/dev/null || true
+          warn "removed staged tree: ${STAGE_DIR}"
+        fi
+        # D3 pre-PR (shell + security MED): also mop up the release-mode
+        # quarantine sibling and the download stash so a refused install
+        # does not leave libarchive-extracted bytes under ${PREFIX}.
+        if [[ -d "${STAGE_DIR}.unpack" && ! -L "${STAGE_DIR}.unpack" ]]; then
+          rm -rf -- "${STAGE_DIR}.unpack" 2>/dev/null || true
+          warn "removed quarantine tree: ${STAGE_DIR}.unpack"
+        fi
+        if [[ -d "${PREFIX}/.release-download" && ! -L "${PREFIX}/.release-download" ]]; then
+          rm -rf -- "${PREFIX}/.release-download" 2>/dev/null || true
+          warn "removed release download stash: ${PREFIX}/.release-download"
+        fi
       fi
       ;;
     swapped)
@@ -758,6 +766,18 @@ install_systemd_user() {
     -e "s|@@SECRETS_FILE@@|${SECRETS_FILE}|g" \
     -e "s|@@LOG_DIR@@|${LOG_DIR}|g" \
     "${tpl}" > "${unit_path}.tmp"
+  # CI escape hatch: strip the strict-hardening directives that require
+  # CAP_SYS_ADMIN to enforce. user-mode systemd inside a privileged Docker
+  # container does not have permission to drop these capabilities and
+  # rejects the unit with "Failed to drop capabilities: Operation not
+  # permitted". Production installs on real Linux hosts (with proper
+  # cgroup-delegation to user@1000.service) honor these directives and
+  # do not set this env var. E1 (#166) smoke harness sets it.
+  if [[ "${EXPERTISE_API_RELAXED_HARDENING:-0}" = "1" ]]; then
+    warn "EXPERTISE_API_RELAXED_HARDENING=1 — stripping container-incompatible hardening directives from unit"
+    sed -i.bak -E '/^(ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectControlGroups|PrivateDevices|RestrictNamespaces|LockPersonality|RestrictAddressFamilies|SystemCallArchitectures|PrivateTmp)=/d' "${unit_path}.tmp"
+    rm -f -- "${unit_path}.tmp.bak"
+  fi
   mv -f -- "${unit_path}.tmp" "${unit_path}"
   log "systemd user unit: ${unit_path}"
 

@@ -218,6 +218,79 @@ jobs:
         if: always()
         run: docker rm -f apictl-test || true
 
+  install-smoke-linux:
+    name: install.sh end-to-end smoke (Linux / systemd-user / postgres-17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Privileged container; restrict to same-repo PRs and pushes to avoid
+    # running --privileged docker for arbitrary fork-PR content. Mirrors
+    # the gate used by the apictl-restart-race-debian13 job above.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build install-smoke image (debian13 + systemd + postgres17 + dotnet-sdk-10)
+        run: |
+          # Pin the SDK version inside the image to match the repo's global.json,
+          # so the smoke runs against the same SDK feature band the project
+          # requires. rollForward: latestPatch does NOT cross feature bands.
+          sdk_version=$(jq -r '.sdk.version' global.json)
+          docker build \
+            --build-arg "DOTNET_SDK_VERSION=${sdk_version}" \
+            -t install-smoke-debian13 \
+            -f scripts/test/Dockerfile.install-smoke \
+            scripts/test
+
+      - name: Start container (systemd as PID 1)
+        run: |
+          docker run -d --name install-smoke \
+            --privileged \
+            --cgroupns=host \
+            --tmpfs /tmp --tmpfs /run --tmpfs /run/lock \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/workspace:ro" \
+            install-smoke-debian13
+          # Surface container state immediately so a dead PID 1 shows up
+          # in logs rather than as a silent wait-loop timeout. Same pattern
+          # as apictl-restart-race-debian13.
+          sleep 2
+          docker ps -a --filter name=install-smoke
+          docker logs install-smoke || true
+          for _ in $(seq 1 30); do
+            if docker exec install-smoke systemctl is-system-running --wait 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec install-smoke systemctl --no-pager status >/dev/null || true
+
+      - name: Run install.sh smoke harness (in container, as user 'apictl')
+        run: |
+          docker exec -u apictl install-smoke bash -lc '
+            cp -r /workspace /home/apictl/repo &&
+            cd /home/apictl/repo &&
+            bash scripts/test/test-install-smoke.sh
+          '
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker logs install-smoke || true
+          docker exec install-smoke journalctl --no-pager -n 400 || true
+          docker exec -u apictl install-smoke bash -lc 'cat ~/expertise-api/.smoke-install.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke bash -lc 'cat ~/expertise-api/.smoke-restart.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke bash -lc 'cat ~/expertise-api/.smoke-stop.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke bash -lc \
+            'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status expertise-api.service --no-pager -l || true'
+          docker exec -u apictl install-smoke bash -lc \
+            'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u expertise-api --no-pager -n 200 || true'
+
+      - name: Tear down container
+        if: always()
+        run: docker rm -f install-smoke || true
+
   openapi-diff:
     name: OpenAPI breaking-change check
     # PR-only: a push to dev has no base to diff against (semantically the spec
