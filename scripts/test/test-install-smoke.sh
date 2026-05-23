@@ -304,23 +304,33 @@ else
       export DOTNET_ROOT="${DOTNET_ROOT:-/usr/share/dotnet}"
       set +e
       if [ -x "${PREFIX}/bin.new/ExpertiseApi" ]; then
-        "${PREFIX}/bin.new/ExpertiseApi" migrate
+        "${PREFIX}/bin.new/ExpertiseApi" migrate \
+          > "${PREFIX}/.diag-migrate.stdout" 2> "${PREFIX}/.diag-migrate.stderr"
       else
-        dotnet "${PREFIX}/bin.new/ExpertiseApi.dll" migrate
+        dotnet "${PREFIX}/bin.new/ExpertiseApi.dll" migrate \
+          > "${PREFIX}/.diag-migrate.stdout" 2> "${PREFIX}/.diag-migrate.stderr"
       fi
       bin_rc=$?
       set -e
       printf -- '\n[diag] binary exited rc=%d\n' "${bin_rc}" >&2
-      # Probe the runtime resolution path with a no-arg invocation
-      printf -- '\n[diag] binary with no args (should print Hosting/Startup info or error):\n' >&2
+      printf -- '[diag] stdout (%d bytes):\n' "$(wc -c < "${PREFIX}/.diag-migrate.stdout")" >&2
+      cat "${PREFIX}/.diag-migrate.stdout" >&2 || true
+      printf -- '\n[diag] stderr (%d bytes):\n' "$(wc -c < "${PREFIX}/.diag-migrate.stderr")" >&2
+      cat "${PREFIX}/.diag-migrate.stderr" >&2 || true
+      # Probe the runtime resolution path with a DLL-via-dotnet invocation.
+      # The apphost call above may be silenced by a Console-vs-pipe quirk;
+      # `dotnet ... .dll` produces predictable Console output.
+      printf -- '\n[diag] dotnet DLL invocation (catches apphost-vs-dotnet output divergence):\n' >&2
       set +e
-      if [ -x "${PREFIX}/bin.new/ExpertiseApi" ]; then
-        timeout 5 "${PREFIX}/bin.new/ExpertiseApi" 2>&1 | head -30
-      else
-        timeout 5 dotnet "${PREFIX}/bin.new/ExpertiseApi.dll" 2>&1 | head -30
-      fi
-      printf -- '\n[diag] binary no-args exit rc=%d\n' "$?" >&2
+      DOTNET_ROOT="${DOTNET_ROOT:-/usr/share/dotnet}" dotnet "${PREFIX}/bin.new/ExpertiseApi.dll" migrate \
+        > "${PREFIX}/.diag-dll.stdout" 2> "${PREFIX}/.diag-dll.stderr"
+      dll_rc=$?
       set -e
+      printf -- '[diag] dll exited rc=%d\n' "${dll_rc}" >&2
+      printf -- '[diag] dll stdout (%d bytes):\n' "$(wc -c < "${PREFIX}/.diag-dll.stdout")" >&2
+      cat "${PREFIX}/.diag-dll.stdout" >&2 || true
+      printf -- '\n[diag] dll stderr (%d bytes):\n' "$(wc -c < "${PREFIX}/.diag-dll.stderr")" >&2
+      cat "${PREFIX}/.diag-dll.stderr" >&2 || true
     ) >&2 2>&1
     printf -- '----- end direct binary migrate retry -----\n\n' >&2
   fi
