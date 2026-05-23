@@ -65,17 +65,22 @@ https://apt.postgresql.org/pub/repos/apt trixie-pgdg main" \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
-# .NET 10 SDK via the canonical dotnet-install.sh. Pinned to channel 10.0
-# (LTS). install.sh's bootstrap layer (#248) does the same on real hosts;
-# we shortcut here so the smoke harness need not exercise the bootstrap
-# leg (covered by tests/install/test-bootstrap-common.sh + the C2/C3
-# follow-ups #246/#247).
+# .NET SDK via the canonical dotnet-install.sh. The SDK version is passed
+# as a build-arg sourced from the repo's global.json so the image always
+# matches what the codebase requires. global.json uses rollForward:
+# latestPatch which does NOT cross feature bands (10.0.1xx ≠ 10.0.3xx),
+# so --channel 10.0 (which picks the latest patch across all bands) would
+# install an SDK that's then refused by `dotnet publish` at runtime. The
+# build-arg pinning is what docker-expert's E1 pre-PR review recommended
+# ("pin via cat global.json | jq -r .sdk.version and pass as a build-arg")
+# and what CI surfaced on the first smoke run.
 # ---------------------------------------------------------------------------
+ARG DOTNET_SDK_VERSION=10.0.100
 ENV DOTNET_ROOT=/usr/share/dotnet
 ENV PATH="${PATH}:${DOTNET_ROOT}"
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
     && chmod +x /tmp/dotnet-install.sh \
-    && /tmp/dotnet-install.sh --channel 10.0 --install-dir "${DOTNET_ROOT}" \
+    && /tmp/dotnet-install.sh --version "${DOTNET_SDK_VERSION}" --install-dir "${DOTNET_ROOT}" \
     && rm -f /tmp/dotnet-install.sh \
     && dotnet --info \
     # ENV in the Dockerfile is inherited by `docker exec`, but a LOGIN shell

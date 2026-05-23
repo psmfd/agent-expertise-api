@@ -232,7 +232,16 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Build install-smoke image (debian13 + systemd + postgres17 + dotnet-sdk-10)
-        run: docker build -t install-smoke-debian13 -f scripts/test/Dockerfile.install-smoke scripts/test
+        run: |
+          # Pin the SDK version inside the image to match the repo's global.json,
+          # so the smoke runs against the same SDK feature band the project
+          # requires. rollForward: latestPatch does NOT cross feature bands.
+          sdk_version=$(jq -r '.sdk.version' global.json)
+          docker build \
+            --build-arg "DOTNET_SDK_VERSION=${sdk_version}" \
+            -t install-smoke-debian13 \
+            -f scripts/test/Dockerfile.install-smoke \
+            scripts/test
 
       - name: Start container (systemd as PID 1)
         run: |
