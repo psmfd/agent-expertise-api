@@ -197,8 +197,21 @@ chmod 700 "${CONFIG_DIR}"
 # Heredoc with unquoted delimiter intentionally expands ${POSTGRES_PASSWORD}.
 # The default password is shell-safe; callers overriding POSTGRES_PASSWORD
 # must avoid characters that need quoting ($, `, ", \). Documented contract.
+#
+# Beyond the connection string, the smoke needs:
+#   - ASPNETCORE_ENVIRONMENT=Development   so Auth:Mode=ApiKey is accepted
+#                                          (Production / Staging refuse it)
+#   - Auth__Mode=ApiKey                    short-circuits the OIDC issuers
+#                                          requirement that defaults to Prod
+#   - Auth__ApiKey=<not-secret>            the bearer the smoke does not
+#                                          actually use today, but the
+#                                          ApiKey provider refuses to start
+#                                          without a non-empty value
 cat > "${SECRETS_FILE}" <<EOF
 ConnectionStrings__DefaultConnection="Host=${POSTGRES_HOST};Port=${POSTGRES_PORT};Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+ASPNETCORE_ENVIRONMENT=Development
+Auth__Mode=ApiKey
+Auth__ApiKey=smoke-api-key-not-secret
 EOF
 chmod 600 "${SECRETS_FILE}"
 assert "secrets file written with conn string" test -s "${SECRETS_FILE}"
