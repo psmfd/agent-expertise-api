@@ -207,11 +207,23 @@ chmod 700 "${CONFIG_DIR}"
 #                                          actually use today, but the
 #                                          ApiKey provider refuses to start
 #                                          without a non-empty value
+#   - Onnx__ModelPath / Onnx__VocabPath    pinned to ${PREFIX}/models/. The
+#                                          launch wrapper sets these at runtime
+#                                          but migrate.sh bypasses the wrapper
+#                                          and otherwise defaults to
+#                                          ${baseDir}/models/ (= bin.new/models)
+#                                          — which does not exist during a fresh
+#                                          install, causing DI validation to
+#                                          fail on the unconditionally-registered
+#                                          EmbeddingService. Tracked as follow-up
+#                                          (migrate.sh should mirror the wrapper).
 cat > "${SECRETS_FILE}" <<EOF
 ConnectionStrings__DefaultConnection="Host=${POSTGRES_HOST};Port=${POSTGRES_PORT};Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
 ASPNETCORE_ENVIRONMENT=Development
 Auth__Mode=ApiKey
 Auth__ApiKey=smoke-api-key-not-secret
+Onnx__ModelPath=${PREFIX}/models/model.onnx
+Onnx__VocabPath=${PREFIX}/models/vocab.txt
 EOF
 chmod 600 "${SECRETS_FILE}"
 assert "secrets file written with conn string" test -s "${SECRETS_FILE}"
