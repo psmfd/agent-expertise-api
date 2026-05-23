@@ -103,7 +103,7 @@ RUN useradd -m -u 1000 -s /bin/bash apictl \
     && mkdir -p /run/user/1000 \
     && chown apictl:apictl /run/user/1000 \
     && chmod 700 /run/user/1000 \
-    && echo 'apictl ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /bin/su, /usr/bin/pg_isready' \
+    && echo 'apictl ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /bin/su, /usr/bin/pg_isready, /usr/bin/psql' \
         > /etc/sudoers.d/apictl-smoke \
     && chmod 0440 /etc/sudoers.d/apictl-smoke
 

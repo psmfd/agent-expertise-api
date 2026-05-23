@@ -84,6 +84,14 @@ log() { printf '[smoke] %s\n' "$1"; }
 warn() { printf '[smoke] WARN: %s\n' "$1" >&2; }
 err_exit() { printf '[smoke] FATAL: %s\n' "$1" >&2; exit 1; }
 
+# Suppress the dotnet first-run telemetry/HTTPS-cert banner so it does not
+# consume our tail-N install-log window during failure diagnostics. Mirrors
+# the launch wrapper's runtime defaults.
+export DOTNET_NOLOGO=true
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export DOTNET_GENERATE_ASPNET_CERTIFICATE=false
+export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=true
+
 assert() {
   local name="$1"; shift
   if "$@"; then
@@ -142,7 +150,11 @@ create_postgres_role_and_db() {
     *)      err_exit "unsupported OS for psql dispatch: $(uname -s)" ;;
   esac
   log "creating role/db ${POSTGRES_USER}/${POSTGRES_DB} (idempotent)"
-  "${psql_cmd[@]}" <<SQL || warn "role/db create returned non-zero (may be pre-existing)"
+  # Use `err_exit` not `warn` for the role-create: if this fails the rest
+  # of the harness silently runs against a missing db and migrate's real
+  # error is buried under connection-refused noise. (CI run #26331919803
+  # missed a sudoers misconfiguration this way.)
+  "${psql_cmd[@]}" <<SQL || err_exit "role create failed"
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${POSTGRES_USER}') THEN
@@ -153,7 +165,8 @@ END
 SQL
   "${psql_cmd[@]}" -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'" \
     | grep -q 1 \
-    || "${psql_cmd[@]}" -c "CREATE DATABASE ${POSTGRES_DB} OWNER ${POSTGRES_USER}"
+    || "${psql_cmd[@]}" -c "CREATE DATABASE ${POSTGRES_DB} OWNER ${POSTGRES_USER}" \
+    || err_exit "database create failed"
   # pgvector extension — install.sh's migrate path expects it.
   "${psql_cmd[@]}" -d "${POSTGRES_DB}" -c "CREATE EXTENSION IF NOT EXISTS vector" \
     || warn "CREATE EXTENSION vector failed — pgvector apt package may be missing; embeddings will fail but smoke continues"
@@ -245,12 +258,13 @@ if bash "${ROOT}/scripts/install.sh" \
 else
   rc=$?
   FAIL=$((FAIL + 1))
-  printf 'FAIL: install.sh exit %d
-' "$rc" >&2
+  printf 'FAIL: install.sh exit %d\n' "$rc" >&2
   # Use `--` to terminate option parsing: argv starting with `-----` would
-  # otherwise be parsed as a flag by bash's printf builtin.
-  printf -- '\n----- install.sh log (last 80 lines) -----\n' >&2
-  tail -n 80 "${PREFIX}/.smoke-install.log" >&2 || true
+  # otherwise be parsed as a flag by bash's printf builtin. Tail 200 lines
+  # not 80 so a fresh-CI dotnet first-run banner doesn't push the actual
+  # migrate error out of the window.
+  printf -- '\n----- install.sh log (last 200 lines) -----\n' >&2
+  tail -n 200 "${PREFIX}/.smoke-install.log" >&2 || true
   printf -- '----- end install.sh log -----\n\n' >&2
 fi
 
