@@ -317,20 +317,28 @@ cleanup() {
   case "${STAGE}" in
     init|preflight|version|models|config|staged|migrated)
       # Live ${BIN_DIR} untouched. Drop the staged tree if it exists.
-      if [[ -d "${STAGE_DIR}" && ! -L "${STAGE_DIR}" ]]; then
-        rm -rf -- "${STAGE_DIR}" 2>/dev/null || true
-        warn "removed staged tree: ${STAGE_DIR}"
-      fi
-      # D3 pre-PR (shell + security MED): also mop up the release-mode
-      # quarantine sibling and the download stash so a refused install
-      # does not leave libarchive-extracted bytes under ${PREFIX}.
-      if [[ -d "${STAGE_DIR}.unpack" && ! -L "${STAGE_DIR}.unpack" ]]; then
-        rm -rf -- "${STAGE_DIR}.unpack" 2>/dev/null || true
-        warn "removed quarantine tree: ${STAGE_DIR}.unpack"
-      fi
-      if [[ -d "${PREFIX}/.release-download" && ! -L "${PREFIX}/.release-download" ]]; then
-        rm -rf -- "${PREFIX}/.release-download" 2>/dev/null || true
-        warn "removed release download stash: ${PREFIX}/.release-download"
+      # CI / debug escape hatch: EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE=1
+      # keeps STAGE_DIR and the quarantine in place so the caller can
+      # inspect what install.sh staged before the failure. Production
+      # installs never set this; only the smoke harness (E1 / #166).
+      if [[ "${EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE:-0}" = "1" ]]; then
+        warn "EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE=1 — leaving ${STAGE_DIR} in place for diagnostic"
+      else
+        if [[ -d "${STAGE_DIR}" && ! -L "${STAGE_DIR}" ]]; then
+          rm -rf -- "${STAGE_DIR}" 2>/dev/null || true
+          warn "removed staged tree: ${STAGE_DIR}"
+        fi
+        # D3 pre-PR (shell + security MED): also mop up the release-mode
+        # quarantine sibling and the download stash so a refused install
+        # does not leave libarchive-extracted bytes under ${PREFIX}.
+        if [[ -d "${STAGE_DIR}.unpack" && ! -L "${STAGE_DIR}.unpack" ]]; then
+          rm -rf -- "${STAGE_DIR}.unpack" 2>/dev/null || true
+          warn "removed quarantine tree: ${STAGE_DIR}.unpack"
+        fi
+        if [[ -d "${PREFIX}/.release-download" && ! -L "${PREFIX}/.release-download" ]]; then
+          rm -rf -- "${PREFIX}/.release-download" 2>/dev/null || true
+          warn "removed release download stash: ${PREFIX}/.release-download"
+        fi
       fi
       ;;
     swapped)

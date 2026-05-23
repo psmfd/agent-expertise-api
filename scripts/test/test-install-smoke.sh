@@ -255,7 +255,12 @@ assert "secrets file written with conn string" test -s "${SECRETS_FILE}"
 #    facing host preflight (CI is not a human-facing host).
 # ---------------------------------------------------------------------------
 log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR}"
-if bash "${ROOT}/scripts/install.sh" \
+# Preserve the staged tree on failure so the failure-handler below can
+# re-run the migrate binary directly and capture its real stderr. The
+# escape hatch is a CI / debug-only env that production installs never
+# set.
+if EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE=1 \
+    bash "${ROOT}/scripts/install.sh" \
      --skip-preflight \
      --prefix "${PREFIX}" \
      --bind "${BIND_ADDR}" \
