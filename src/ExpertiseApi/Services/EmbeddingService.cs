@@ -3,7 +3,7 @@ using Pgvector;
 
 namespace ExpertiseApi.Services;
 
-public class EmbeddingService(IEmbeddingGenerator<string, Embedding<float>> generator)
+internal class EmbeddingService(IEmbeddingGenerator<string, Embedding<float>> generator)
 {
     public static string BuildInputText(string title, string body) => $"{title} {body}";
 

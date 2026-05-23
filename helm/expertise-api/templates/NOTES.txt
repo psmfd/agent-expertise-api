@@ -1,0 +1,138 @@
+expertise-api {{ .Chart.AppVersion }} installed in namespace {{ .Release.Namespace | quote }}.
+{{- if not .Chart.AppVersion }}
+
+  ERROR: Chart.yaml is missing appVersion. The chart cannot fall back to a
+         default image tag without one. Either set image.tag explicitly in
+         values.yaml, or repair Chart.yaml's appVersion field. (Render aborted
+         downstream by Kubernetes — the Deployment will produce an invalid
+         image reference like "<repo>:" and the Pod will fail to schedule
+         with ErrImagePull / InvalidImageName.)
+{{- end }}
+
+  Image:      {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+  Chart ver:  {{ .Chart.Version }}
+  Probes:     liveness  {{ .Values.api.probes.liveness.path }}
+              readiness {{ .Values.api.probes.readiness.path }}
+              startup   {{ .Values.api.probes.startup.path }}
+{{- if and .Values.image.tag (ne .Values.image.tag .Chart.AppVersion) }}
+
+  WARNING: image.tag ({{ .Values.image.tag | quote }}) is set explicitly and does
+           NOT match the chart's appVersion ({{ .Chart.AppVersion | quote }}). The
+           image may expose health on routes that differ from the chart's defaults.
+           If probes report Unready after rollout, override `api.probes.*.path`
+           to match the image's actual health routes. See issue #216 / #153.
+{{- end }}
+{{- if eq .Values.image.tag "latest" }}
+
+  WARNING: image.tag is set to the mutable tag "latest". This defeats
+           reproducibility and the chart's signed-digest verification
+           contract (Part D C8). Pin to an immutable tag (e.g. the chart's
+           appVersion {{ .Chart.AppVersion | quote }}) before promoting beyond dev.
+{{- end }}
+
+────────────────────────────────────────────────────────────────────────────────
+1. URL
+────────────────────────────────────────────────────────────────────────────────
+{{- if .Values.ingress.enabled }}
+
+  https://{{ .Values.ingress.hostname }}
+
+  Health check (no auth required):
+    curl https://{{ .Values.ingress.hostname }}/health
+{{- else }}
+
+  Ingress is disabled. The API is reachable in-cluster only:
+    http://{{ include "expertise-api.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+{{- end }}
+
+────────────────────────────────────────────────────────────────────────────────
+2. Required Secrets
+────────────────────────────────────────────────────────────────────────────────
+
+Two Secrets must exist in the {{ .Release.Namespace | quote }} namespace BEFORE
+the pods become Ready. The chart does NOT create these — the operator manages
+them out-of-band (via SealedSecrets, External Secrets Operator, sops, etc.).
+
+  • {{ .Values.auth.secretName | quote }}
+        Mounted on the API container via envFrom. Must contain at minimum:
+          AUTH__APIKEY                       (LocalDev/ApiKey/Hybrid only)
+          Auth__Oidc__Issuers__N__GroupToTenantMapping__<group-uuid>
+                                             (per OIDC issuer if not in values.yaml)
+{{- if not .Values.postgres.enabled }}
+          ConnectionStrings__DefaultConnection
+                                             (REQUIRED in external-Postgres mode — the
+                                             chart does NOT deploy an in-cluster
+                                             postgres; supply a connection string
+                                             pointing at your managed/external DB)
+{{- end }}
+{{- if .Values.postgres.enabled }}
+
+  • {{ .Values.postgres.secretName | quote }}
+        Used by the postgres StatefulSet and the API connection string.
+        Must contain:
+          POSTGRES_PASSWORD
+          POSTGRES_USER       (optional — defaults to "expertise")
+{{- else }}
+
+  ✓ External-Postgres mode active (postgres.enabled=false).
+        The chart will NOT deploy a Postgres StatefulSet, Service, or
+        ConfigMap. Ensure your external Postgres is reachable from the API
+        pod, has the `vector` extension installed, and that
+        ConnectionStrings__DefaultConnection in {{ .Values.auth.secretName | quote }}
+        points at it.
+{{- if and .Values.networkPolicy.enabled (not (and .Values.postgres.external .Values.postgres.external.cidr)) }}
+
+  WARNING: networkPolicy.enabled=true AND postgres.enabled=false AND
+           postgres.external.cidr is unset. The API NetworkPolicy will
+           contain NO egress rule for Postgres traffic — the API will not
+           be able to reach your external DB. Set postgres.external.cidr
+           to your external Postgres subnet CIDR, or set
+           networkPolicy.enabled=false (loses ingress hardening too).
+{{- end }}
+{{- end }}
+
+────────────────────────────────────────────────────────────────────────────────
+3. Production checklist
+────────────────────────────────────────────────────────────────────────────────
+{{- if eq .Values.auth.mode "Oidc" }}
+{{- if not .Values.auth.oidc.issuers }}
+
+  WARNING: auth.mode=Oidc but auth.oidc.issuers is empty.
+           The API will fail startup with a clear error message.
+           Populate at least one issuer (Entra, Authentik, etc.) in values.yaml
+           and `helm upgrade` to recover.
+{{- else }}
+
+  ✓ Auth mode: Oidc with {{ len .Values.auth.oidc.issuers }} issuer(s) configured.
+{{- end }}
+{{- else }}
+
+  WARNING: auth.mode={{ .Values.auth.mode | quote }}.
+           Modes other than "Oidc" are permitted only when
+           ASPNETCORE_ENVIRONMENT=Development. The API's startup guard will
+           hard-fail in any other environment.
+{{- end }}
+{{- if not .Values.forwardedHeaders.trustedCidr }}
+
+  WARNING: forwardedHeaders.trustedCidr is empty.
+           Audit logs will record the ingress pod IP rather than the real
+           client IP. Set this to your cluster pod CIDR (and any other proxy
+           networks) to fix attribution. Typical value:
+             forwardedHeaders:
+               trustedCidr:
+{{- if .Values.postgres.enabled }}
+                 - "{{ .Values.postgres.podCidr }}"   # cluster pod CIDR
+{{- else }}
+                 - "10.42.0.0/16"   # replace with your cluster pod CIDR
+{{- end }}
+{{- else }}
+
+  ✓ ForwardedHeaders trusts {{ len .Values.forwardedHeaders.trustedCidr }} CIDR(s).
+{{- end }}
+
+────────────────────────────────────────────────────────────────────────────────
+4. Verify
+────────────────────────────────────────────────────────────────────────────────
+
+  kubectl rollout status deployment/{{ include "expertise-api.fullname" . }} -n {{ .Release.Namespace }}
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "expertise-api.name" . }}

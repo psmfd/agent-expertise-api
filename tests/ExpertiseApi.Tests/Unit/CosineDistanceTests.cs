@@ -1,5 +1,4 @@
 using ExpertiseApi.Data;
-using FluentAssertions;
 
 namespace ExpertiseApi.Tests.Unit;
 

@@ -1,3 +1,4 @@
+{{- if .Values.postgres.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -18,3 +19,4 @@ spec:
       targetPort: 6432
   selector:
     {{- include "expertise-api.postgresSelectorLabels" . | nindent 4 }}
+{{- end }}

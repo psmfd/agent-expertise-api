@@ -1,0 +1,66 @@
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - nuget
+    commit-message:
+      prefix: chore
+      include: scope
+    ignore:
+      # FluentAssertions v8+ is governed by the Xceed Commercial license and
+      # requires a paid subscription for commercial use. This repo migrated to
+      # AwesomeAssertions (Apache 2.0 community fork). Any future Dependabot PR
+      # that tries to re-add FluentAssertions must be rejected.
+      - dependency-name: "FluentAssertions"
+    groups:
+      ef-core:
+        patterns:
+          - "Microsoft.EntityFrameworkCore*"
+          - "Npgsql.EntityFrameworkCore*"
+          - "Pgvector.EntityFrameworkCore*"
+      aspnet-core:
+        patterns:
+          - "Microsoft.AspNetCore.*"
+      serilog:
+        patterns:
+          - "Serilog.*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      docker-images:
+        patterns:
+          - "*"

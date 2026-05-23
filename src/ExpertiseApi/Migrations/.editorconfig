@@ -1,0 +1,5 @@
+# EF Core migration scaffolding generates `public partial class` by default;
+# CA1515 would flag every migration on every regeneration. Suppress here so
+# the rule only governs hand-authored code. See ADR-006.
+[*.cs]
+dotnet_diagnostic.CA1515.severity = none

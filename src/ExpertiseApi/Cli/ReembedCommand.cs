@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ExpertiseApi.Cli;
 
-public static class ReembedCommand
+internal static class ReembedCommand
 {
     public static bool IsReembedRequested(string[] args) =>
         args.Length > 0 && args[0].Equals("reembed", StringComparison.OrdinalIgnoreCase);
@@ -25,7 +25,11 @@ public static class ReembedCommand
 
         while (true)
         {
-            var query = db.ExpertiseEntries.OrderBy(e => e.Id).AsQueryable();
+            // CLI must process every tenant — bypass the EF tenant query filter explicitly.
+            // The accessor returns null in CLI scope so the filter would short-circuit anyway,
+            // but the explicit call documents intent and is robust against future changes to
+            // the null-handling semantics in HasQueryFilter.
+            var query = db.ExpertiseEntries.IgnoreQueryFilters().OrderBy(e => e.Id).AsQueryable();
             if (lastId is not null)
                 query = query.Where(e => e.Id > lastId.Value);
 

@@ -1,0 +1,16 @@
+extends: default
+
+ignore: |
+  helm/**/templates/
+  node_modules/
+
+rules:
+  line-length:
+    max: 120
+    level: warning
+  document-start: disable
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+  truthy:
+    check-keys: false  # GitHub Actions workflows use `on:` which yamllint flags as truthy

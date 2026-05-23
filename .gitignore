@@ -49,8 +49,22 @@ Thumbs.db
 *.local.json
 !appsettings.*.json
 
-## ONNX models (large binaries — downloaded at build time)
-src/ExpertiseApi/models/
+## ONNX models (large binaries — downloaded at build time). Pattern intentionally
+## targets the artifact filenames rather than the directory, because on case-insensitive
+## filesystems (macOS HFS+/APFS with core.ignorecase=true) a `src/ExpertiseApi/models/`
+## directory rule would also match the C# `src/ExpertiseApi/Models/` namespace directory
+## and silently ignore new `.cs` files added under it.
+src/ExpertiseApi/Models/model.onnx
+src/ExpertiseApi/Models/vocab.txt
+src/ExpertiseApi/Models/*.bin
+src/ExpertiseApi/Models/tokenizer*.json
 
 ## Claude Code worktrees
 .claude/worktrees/
+
+## Part D C8: build-time OpenAPI document emission (Microsoft.Extensions.ApiDescription.Server)
+## Output of _GenerateOpenApiDocuments MSBuild target; published as a GitHub Release asset via release.yml.
+src/ExpertiseApi/artifacts/
+
+## pi extension node_modules
+.pi/extensions/*/node_modules/

@@ -1,7 +1,15 @@
 image:
   repository: ghcr.io/thesemicolon/agent-expertise-api
-  tag: latest
-  pullPolicy: Always
+  # Empty default falls back to .Chart.AppVersion in deployment.yaml. Override
+  # only when pinning to a maintenance/preview tag distinct from the chart's
+  # appVersion (image+chart skew is then surfaced in NOTES.txt as a warning).
+  # Setting tag: "latest" is permitted by the schema but discouraged — it
+  # defeats reproducibility and the C8 signed-digest verification story.
+  tag: ""
+  # IfNotPresent is the default. Pair pullPolicy: Always only with a
+  # mutable tag ("latest", "main"); for any pinned tag IfNotPresent saves
+  # registry round-trips on pod restart.
+  pullPolicy: IfNotPresent
 
 imagePullSecrets:
   - name: ghcr-pull-secret
@@ -14,12 +22,92 @@ service:
 
 ingress:
   enabled: true
+  className: nginx
   hostname: expertise.example.com
   clusterIssuer: letsencrypt-prod
 
+# NetworkPolicy is opt-in (default false) to preserve current behavior.
+# When enabled the chart restricts pod-to-pod traffic so:
+#   - Only the API talks to postgres on 6432
+#   - Only pods in the prometheus namespace scrape /metrics on 8080
+#   - The ingress controller can reach the API on 8080
+networkPolicy:
+  enabled: false
+  ingressNamespaceSelector:
+    # Default targets the upstream nginx-ingress chart's namespace label.
+    # Override to match your ingress controller's actual namespace.
+    matchLabels:
+      kubernetes.io/metadata.name: ingress-nginx
+  prometheusNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: monitoring
+
+# EF Core schema migrations run automatically as a Helm pre-install + pre-upgrade
+# hook by default — without this, `helm upgrade` ships application code against
+# the prior schema and the deployment can deadlock on first request.
+#
+# Set migrations.enabled=false only if you run `dotnet ef database update`
+# manually as part of your deploy pipeline.
+migrations:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Authentication.
+#
+# `mode: Oidc` is the only mode permitted by the API's startup guard outside
+# Development. `LocalDev`, `ApiKey`, and `Hybrid` will hard-fail at startup
+# unless ASPNETCORE_ENVIRONMENT=Development. Operators MUST populate
+# `auth.oidc.issuers` with at least one entry — otherwise every request 401s.
 auth:
-  mode: apikey
+  mode: Oidc
   secretName: expertise-api-app
+  oidc:
+    # One entry per IdP (Entra, Authentik, etc). The chart renders these as
+    # `Auth__Oidc__Issuers__N__*` env vars on the API container; the API binds
+    # them via the ASP.NET Core configuration system.
+    #
+    # Required per entry: name, issuer, audience.
+    # Optional: additionalAudiences, scopeClaims, tenantSource, roleSeparator,
+    #           groupClaim, groupToTenantMapping.
+    #
+    # Issuer URL must be byte-exact to the issuer's `iss` claim — copy from
+    # `.well-known/openid-configuration`. Authentik includes a trailing slash;
+    # Entra v2 does not.
+    issuers: []
+    # Example (commented):
+    # - name: Entra
+    #   issuer: "https://login.microsoftonline.com/{tenant-id}/v2.0"
+    #   audience: "{api-client-id-guid}"
+    #   additionalAudiences: []
+    #   scopeClaims: ["scp", "roles"]
+    #   tenantSource: CompoundRole
+    #   roleSeparator: ":"
+    #   groupClaim: "groups"
+    #   groupToTenantMapping: {}
+    # - name: Authentik
+    #   issuer: "https://auth.example.com/application/o/expertise-api/"
+    #   audience: "expertise-api"
+    #   scopeClaims: ["scope"]
+    #   tenantSource: Groups
+    #   groupClaim: "groups"
+    #   groupToTenantMapping:
+    #     "<group-uuid>": team-alpha
+
+# Networks (CIDR list) the ASP.NET Core ForwardedHeaders middleware will trust
+# for X-Forwarded-For. Without an explicit allowlist the middleware trusts only
+# loopback and audit-log IpAddress records the ingress pod IP rather than the
+# real client. Typical value: the cluster pod CIDR (matches `postgres.podCidr`
+# below) plus any other proxy networks.
+forwardedHeaders:
+  trustedCidr: []
+  # Example:
+  # - "10.42.0.0/16"
 
 api:
   resources:
@@ -29,8 +117,51 @@ api:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Probe paths and tunables. Defaults match the routes wired in Program.cs;
+  # override only when running a forked image that exposes health on
+  # different routes (e.g. behind a reverse-proxy prefix). NOTES.txt prints
+  # the resolved paths and warns when image.tag drifts from .Chart.AppVersion.
+  # See #216 / #153.
+  probes:
+    startup:
+      path: /health/ready
+      failureThreshold: 30
+      periodSeconds: 5
+    liveness:
+      path: /health/live
+      periodSeconds: 30
+      failureThreshold: 3
+    readiness:
+      path: /health/ready
+      periodSeconds: 10
+      failureThreshold: 3
 
+# In-cluster Postgres + PgBouncer (sidecar in the postgres pod).
+#
+# Set postgres.enabled=false to skip ALL in-chart Postgres resources — the
+# StatefulSet, the service, the configmaps, and the PgBouncer sidecar. Use
+# this when running against managed Postgres (Azure Database for PostgreSQL
+# Flexible Server, RDS, Cloud SQL), an existing in-cluster CNPG cluster, or
+# host-level Postgres. The operator must then supply
+# 'ConnectionStrings__DefaultConnection' in the secret named by
+# 'auth.secretName' pointing at the external database.
+#
+# Caveat (documented in values.yaml + README): when postgres.enabled=false
+# AND networkPolicy.enabled=true, supply postgres.external.cidr so the API
+# NetworkPolicy emits the correct egress rule. Without that, either set
+# networkPolicy.enabled=false (loses ingress hardening) or provide custom
+# egress rules.
 postgres:
+  enabled: true
+  # External-Postgres parameters — only consulted when 'enabled: false'.
+  # 'cidr' becomes the API NetworkPolicy egress ipBlock when networkPolicy.enabled=true.
+  # 'port' defaults to 5432 in the rendered policy.
+  external: {}
+  # Example for external mode:
+  # enabled: false
+  # external:
+  #   cidr: "10.20.0.0/16"
+  #   port: 5432
   image: pgvector/pgvector:pg17
   storage: 1Gi
   secretName: expertise-postgres
@@ -61,13 +192,18 @@ metrics:
     scrapeTimeout: 10s
     labels: {}
 
-backup:
-  enabled: true
-  schedule: "0 2 * * *"
-  image: schickling/postgres-backup-s3:latest
-  secretName: expertise-s3-backup
-  retention: "7"
-  s3:
-    bucket: expertise-backup
-    endpoint: ""
-    forcePathStyle: false
+# AllowedHosts — ASP.NET Core HostFiltering middleware allow-list (Part D C1).
+#
+# Default in the container image is `localhost;127.0.0.1;[::1]` (set in
+# src/ExpertiseApi/appsettings.json). When the API is fronted by an Ingress /
+# reverse proxy that injects a non-loopback Host header (the production path),
+# the operator MUST override this with the externally-routable hostname(s),
+# otherwise every request through the ingress 400s with `HostFilteringMiddleware`
+# rejecting the host.
+#
+# Semicolon-separated list, bound by the WebHost via the top-level `AllowedHosts`
+# configuration key. Examples:
+#   allowedHosts: "expertise-api.prod.example.com"
+#   allowedHosts: "expertise-api.example.com;expertise-api.internal.example.com"
+# Leave empty to inherit the tight loopback-only default from appsettings.json.
+allowedHosts: ""

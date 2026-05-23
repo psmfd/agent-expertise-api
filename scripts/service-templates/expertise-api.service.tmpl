@@ -1,0 +1,65 @@
+[Unit]
+Description=Agent Expertise API
+Documentation=https://github.com/TheSemicolon/agent-expertise-api
+# Ordering only — user units cannot Require= system targets.
+After=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+# Watchdog intentionally disabled — see issue #217.
+#
+# Microsoft.Extensions.Hosting.Systemd registers SystemdNotifier for
+# READY=1 and STOPPING=1 only; it does NOT periodically ping
+# WATCHDOG=1. Enabling 'WatchdogSec=' without a hosted-service that
+# pings WATCHDOG=1 every WatchdogSec/2 causes systemd to SIGABRT the
+# unit after the first interval expires, producing a silent restart
+# loop under any GC/load condition that delays the runtime by ~half
+# the configured interval.
+#
+# To re-enable: add a hosted service that calls sd_notify("WATCHDOG=1")
+# on a timer (e.g. via the Tmds.Systemd or libsystemd P/Invoke route),
+# then reinstate 'WatchdogSec=30' here.
+#WatchdogSec=30
+WorkingDirectory=@@WORKDIR@@
+ExecStart=@@WRAPPER@@
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Stop budget. Must exceed HostOptions.ShutdownTimeout (30s) configured in
+# src/ExpertiseApi/Program.cs. systemd sends SIGTERM, waits this long, then
+# SIGKILL. 45s = 30s app drain + 15s OS-level dispose / log flush. See #142.
+TimeoutStopSec=45
+
+# Environment file (optional — install.sh creates a chmod-600 stub)
+EnvironmentFile=-@@SECRETS_FILE@@
+
+# Hardening (user-unit subset; some are no-ops at user scope but documented
+# for system-unit promotion).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# DO NOT enable MemoryDenyWriteExecute — RyuJIT writes executable pages.
+# Enabling crashes the .NET process at first JIT.
+MemoryDenyWriteExecute=false
+
+# Allow log dir writes (user-unit honors this; explicit for clarity)
+ReadWritePaths=@@LOG_DIR@@
+
+[Install]
+# User unit — default.target, NOT multi-user.target.
+WantedBy=default.target

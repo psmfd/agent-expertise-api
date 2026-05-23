@@ -1,5 +1,0 @@
-# MD013: line-length — disabled because tables and URLs routinely exceed 80 chars
-# MD060: table-column-style — disabled because aligned style forces lines past
-#        80 chars and compact style conflicts with aligned in the same file
-MD013: false
-MD060: false

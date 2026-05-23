@@ -1,0 +1,69 @@
+{{- if .Values.migrations.enabled }}
+# Pre-install + pre-upgrade hook: applies pending EF Core schema migrations via
+# the efbundle binary baked into the API image at /app/efbundle. The bundle is
+# self-contained (no SDK needed) and idempotent — already-applied migrations
+# are skipped via the __EFMigrationsHistory tracking table.
+#
+# Hook ordering: weight 5 places this AFTER any namespace/RBAC bootstrap a
+# parent chart might do at lower weights, but before the API Deployment lands.
+# Without this hook, helm upgrade ships application code against the prior
+# schema and the new pods can deadlock on first request.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "expertise-api.fullname" . }}-migrations
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "expertise-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "expertise-api.apiSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        runAsGroup: 1654
+        fsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: efbundle
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # efbundle reads the connection string from the
+          # ConnectionStrings__DefaultConnection env var (mounted via the
+          # API's auth Secret).
+          envFrom:
+            - secretRef:
+                name: {{ .Values.auth.secretName }}
+          command: ["/app/efbundle"]
+          args: ["--connection", "$(ConnectionStrings__DefaultConnection)"]
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

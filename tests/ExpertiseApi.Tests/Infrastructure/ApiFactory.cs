@@ -25,6 +25,16 @@ public class ApiFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        // Override DefaultConnection so any DI consumer that reads from
+        // IConfiguration (e.g. the singleton NpgsqlDataSource backing
+        // IIdempotencyStore per ADR-010) sees the testcontainer connection
+        // string. The DbContext is also explicitly re-registered below —
+        // we do both because the two consumers acquire the value through
+        // different paths. Mirrors the same override in JwtApiFactory;
+        // required since the hard-require flip (2026-05-19) makes the
+        // idempotency store actively engage on every POST in this suite.
+        builder.UseSetting("ConnectionStrings:DefaultConnection", _connectionString);
+
         builder.ConfigureLogging(logging =>
         {
             logging.ClearProviders();
@@ -59,7 +69,6 @@ public class ApiFactory : WebApplicationFactory<Program>
                 .Returns(callInfo =>
                 {
                     var inputs = callInfo.ArgAt<IEnumerable<string>>(0).ToList();
-                    var embeddings = new List<GeneratedEmbeddings<Embedding<float>>>();
                     var result = new GeneratedEmbeddings<Embedding<float>>();
                     foreach (var _ in inputs)
                     {
@@ -73,8 +82,16 @@ public class ApiFactory : WebApplicationFactory<Program>
                 });
 
             services.AddSingleton(mockGenerator);
+            // Auto-inject Idempotency-Key on POSTs server-side so the
+            // suite's pre-existing PostAsJsonAsync call sites still work
+            // under the hard-require flip (ADR-010, 2026-05-19).
+            services.AddTransient<IStartupFilter, AutoIdempotencyKeyStartupFilter>();
         });
 
         builder.UseSetting("Auth:ApiKey", TestHelpers.TestApiKey);
+        // The API key handler defaults Tenant to "legacy"; align the test client with the
+        // SeedEntry helper's default tenant ("test") so existing tests don't all fail under
+        // the new tenant filter.
+        builder.UseSetting("Auth:ApiKeyDefaults:DefaultTenant", TestHelpers.TestTenant);
     }
 }

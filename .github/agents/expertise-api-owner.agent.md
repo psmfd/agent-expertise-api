@@ -37,7 +37,7 @@ The authoritative design decisions, data model, API surface, authentication arch
 
 ## Output format
 
-```
+```text
 ## Answer
 [Direct answer to the question, grounded in design document and/or source code]
 

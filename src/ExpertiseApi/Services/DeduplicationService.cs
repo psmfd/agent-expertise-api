@@ -1,3 +1,4 @@
+using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
 using ExpertiseApi.Endpoints;
 using ExpertiseApi.Models;
@@ -6,27 +7,30 @@ using Pgvector;
 
 namespace ExpertiseApi.Services;
 
-public class DeduplicationOptions
+internal class DeduplicationOptions
 {
     public bool Enabled { get; set; } = true;
     public double SemanticThreshold { get; set; } = 0.10;
 }
 
-public class DeduplicationService(IExpertiseRepository repo, IOptions<DeduplicationOptions> options)
+internal class DeduplicationService(IExpertiseRepository repo, IOptions<DeduplicationOptions> options)
 {
     public async Task<(bool IsDuplicate, ExpertiseEntry? Existing)> CheckAsync(
-        CreateExpertiseRequest request, Vector embedding, CancellationToken ct = default)
+        CreateExpertiseRequest request, Vector embedding, TenantContext ctx, CancellationToken ct = default)
     {
         var opts = options.Value;
 
         if (!opts.Enabled)
             return (false, null);
 
-        var exact = await repo.FindExactMatchAsync(request.Domain, request.Title, ct);
+        // Tenant-scoped dedup: an entry in tenant A must NEVER be reported as a duplicate
+        // of a tenant B entry — that would leak the B entry's full content via the 409
+        // Conflict response body. The repository already filters by ctx.Tenant.
+        var exact = await repo.FindExactMatchAsync(request.Domain, request.Title, ctx, ct);
         if (exact is not null && exact.Body == request.Body)
             return (true, exact);
 
-        var nearest = await repo.FindNearestInDomainAsync(request.Domain, embedding, opts.SemanticThreshold, ct);
+        var nearest = await repo.FindNearestInDomainAsync(request.Domain, embedding, opts.SemanticThreshold, ctx, ct);
         if (nearest is not null)
             return (true, nearest);
 
@@ -36,6 +40,7 @@ public class DeduplicationService(IExpertiseRepository repo, IOptions<Deduplicat
     public async Task<IReadOnlyList<(bool IsDuplicate, ExpertiseEntry? Existing)>> CheckBatchAsync(
         IReadOnlyList<CreateExpertiseRequest> requests,
         IReadOnlyList<Vector> embeddings,
+        TenantContext ctx,
         CancellationToken ct = default)
     {
         if (embeddings.Count != requests.Count)
@@ -61,7 +66,7 @@ public class DeduplicationService(IExpertiseRepository repo, IOptions<Deduplicat
 
             // Bulk exact-match: one query per domain instead of N
             var titles = items.Select(x => x.Request.Title).ToList();
-            var exactMatches = await repo.FindExactMatchesAsync(domain, titles, ct);
+            var exactMatches = await repo.FindExactMatchesAsync(domain, titles, ctx, ct);
 
             // Map title -> list of candidates (OrdinalIgnoreCase) to handle multiple entries sharing the same title
             var matchesByTitle = exactMatches
@@ -86,7 +91,7 @@ public class DeduplicationService(IExpertiseRepository repo, IOptions<Deduplicat
                 }
 
                 // Check semantic match in memory
-                domainEntries ??= await repo.FindAllEmbeddingsInDomainAsync(domain, ct);
+                domainEntries ??= await repo.FindAllEmbeddingsInDomainAsync(domain, ctx, ct);
 
                 // Precompute domain entry arrays once per domain group, skipping null embeddings
                 if (domainEntryArrays is null)

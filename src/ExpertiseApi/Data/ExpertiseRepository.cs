@@ -1,18 +1,103 @@
+using System.Diagnostics.CodeAnalysis;
+using ExpertiseApi.Auth;
 using ExpertiseApi.Models;
+using ExpertiseApi.Services;
 using Microsoft.EntityFrameworkCore;
 using Pgvector;
 using Pgvector.EntityFrameworkCore;
 
 namespace ExpertiseApi.Data;
 
-public class ExpertiseRepository(ExpertiseDbContext db, ILogger<ExpertiseRepository> logger) : IExpertiseRepository
+internal class ExpertiseRepository(
+    ExpertiseDbContext db,
+    IHttpContextAccessor httpContextAccessor,
+    ILogger<ExpertiseRepository> logger) : IExpertiseRepository
 {
-    public async Task<ExpertiseEntry?> GetByIdAsync(Guid id, CancellationToken ct)
+    /// <summary>
+    /// Builds the tenant predicate per ADR-001: a row is visible if its <c>Tenant</c>
+    /// matches the caller's, or if it is in the cross-tenant <c>shared</c> namespace.
+    /// </summary>
+    private static IQueryable<ExpertiseEntry> ApplyTenantFilter(
+        IQueryable<ExpertiseEntry> query, TenantContext ctx)
     {
-        return await db.ExpertiseEntries.FindAsync([id], ct);
+        var tenant = RequireTenant(ctx);
+        return query.Where(e => e.Tenant == tenant || e.Tenant == "shared");
+    }
+
+    /// <summary>
+    /// Reads default to <see cref="ReviewState.Approved"/>. Drafts and Rejected entries
+    /// are exposed only via the dedicated <c>/drafts</c> endpoint.
+    /// </summary>
+    private static IQueryable<ExpertiseEntry> ApplyApprovedReviewFilter(
+        IQueryable<ExpertiseEntry> query) =>
+            query.Where(e => e.ReviewState == ReviewState.Approved);
+
+    /// <summary>
+    /// Defensive guard. If the auth pipeline produced a <see cref="TenantContext"/> with a
+    /// null <c>Tenant</c> (unmapped principal), the authorization handler should have
+    /// returned 403 before we reached the repository — but if anything slips through, fail
+    /// loud rather than running an unbounded query against the full table.
+    /// </summary>
+    private static string RequireTenant(TenantContext ctx) =>
+        ctx.Tenant ?? throw new InvalidOperationException(
+            "Repository invoked with TenantContext.Tenant=null. The authorization pipeline " +
+            "must reject unmapped principals before any repository call.");
+
+    /// <summary>
+    /// Builds an audit log row for a state-changing operation. Caller is responsible for
+    /// adding the row to the DbContext alongside its mutation in a single SaveChangesAsync.
+    /// </summary>
+    private ExpertiseAuditLog BuildAuditRow(
+        AuditAction action,
+        ExpertiseEntry entry,
+        TenantContext ctx,
+        string? beforeHash,
+        string? afterHash)
+    {
+        var principal = ctx.Principal.FindFirst("sub")?.Value
+                     ?? ctx.Principal.Identity?.Name
+                     ?? "system";
+
+        return new ExpertiseAuditLog
+        {
+            Timestamp = DateTime.UtcNow,
+            Action = action,
+            EntryId = entry.Id,
+            Tenant = entry.Tenant,
+            Principal = principal,
+            Agent = ctx.Agent,
+            // Part D C6: actor-class fields. ActorClass is required (defaults to Human via
+            // TenantContext.ActorClass default); AuthMethod/ActorClassHeader are recoverable
+            // forensic context that makes the fail-open-to-Human decision queryable.
+            ActorClass = ctx.ActorClass,
+            AuthMethod = ctx.AuthMethod,
+            ActorClassHeader = ctx.ActorClassHeader,
+            BeforeHash = beforeHash,
+            AfterHash = afterHash,
+            IpAddress = httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString()
+        };
+    }
+
+    public async Task<ExpertiseEntry?> GetByIdAsync(Guid id, TenantContext ctx, CancellationToken ct)
+    {
+        // FindAsync would short-circuit through the identity map and bypass the tenant
+        // filter; explicit Where + FirstOrDefaultAsync keeps every read tenant-scoped.
+        return await ApplyApprovedReviewFilter(ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx))
+            .Where(e => e.Id == id)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    public async Task<ExpertiseEntry?> GetByIdIncludingDraftsAsync(Guid id, TenantContext ctx, CancellationToken ct)
+    {
+        // Approve/reject paths must be able to load Draft entries; the default
+        // ApplyApprovedReviewFilter would exclude them.
+        return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
+            .Where(e => e.Id == id)
+            .FirstOrDefaultAsync(ct);
     }
 
     public async Task<List<ExpertiseEntry>> ListAsync(
+        TenantContext ctx,
         string? domain,
         List<string>? tags,
         EntryType? entryType,
@@ -20,7 +105,7 @@ public class ExpertiseRepository(ExpertiseDbContext db, ILogger<ExpertiseReposit
         bool includeDeprecated,
         CancellationToken ct)
     {
-        var query = db.ExpertiseEntries.AsQueryable();
+        var query = ApplyApprovedReviewFilter(ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx));
 
         if (!includeDeprecated)
             query = query.Where(e => e.DeprecatedAt == null);
@@ -40,69 +125,288 @@ public class ExpertiseRepository(ExpertiseDbContext db, ILogger<ExpertiseReposit
         return await query.OrderByDescending(e => e.UpdatedAt).ToListAsync(ct);
     }
 
-    public async Task<ExpertiseEntry> CreateAsync(ExpertiseEntry entry, CancellationToken ct)
+    public async Task<List<ExpertiseEntry>> ListDraftsAsync(TenantContext ctx, CancellationToken ct)
     {
-        entry.CreatedAt = DateTime.UtcNow;
-        entry.UpdatedAt = DateTime.UtcNow;
-
-        db.ExpertiseEntries.Add(entry);
-        await db.SaveChangesAsync(ct);
-
-        return entry;
-    }
-
-    public async Task<ExpertiseEntry?> UpdateAsync(Guid id, Func<ExpertiseEntry, Task> applyUpdates, CancellationToken ct)
-    {
-        var entry = await db.ExpertiseEntries.FindAsync([id], ct);
-        if (entry is null)
-            return null;
-
-        await applyUpdates(entry);
-        entry.UpdatedAt = DateTime.UtcNow;
-
-        await db.SaveChangesAsync(ct);
-        return entry;
-    }
-
-    public async Task<bool> SoftDeleteAsync(Guid id, CancellationToken ct)
-    {
-        var entry = await db.ExpertiseEntries.FindAsync([id], ct);
-        if (entry is null)
-            return false;
-
-        entry.DeprecatedAt = DateTime.UtcNow;
-        entry.UpdatedAt = DateTime.UtcNow;
-
-        await db.SaveChangesAsync(ct);
-        return true;
-    }
-
-    public async Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, bool includeDeprecated, CancellationToken ct)
-    {
-        if (includeDeprecated)
-        {
-            return await db.ExpertiseEntries
-                .FromSqlInterpolated($"""
-                    SELECT * FROM "ExpertiseEntries"
-                    WHERE "SearchVector" @@ plainto_tsquery('english', {query})
-                    ORDER BY ts_rank("SearchVector", plainto_tsquery('english', {query})) DESC
-                    """)
-                .ToListAsync(ct);
-        }
-
+        // Drafts are owned by the writing tenant — no `shared` visibility for the queue.
+        var tenant = RequireTenant(ctx);
         return await db.ExpertiseEntries
-            .FromSqlInterpolated($"""
-                SELECT * FROM "ExpertiseEntries"
-                WHERE "SearchVector" @@ plainto_tsquery('english', {query})
-                  AND "DeprecatedAt" IS NULL
-                ORDER BY ts_rank("SearchVector", plainto_tsquery('english', {query})) DESC
-                """)
+            .Where(e => e.Tenant == tenant)
+            .Where(e => e.ReviewState == ReviewState.Draft || e.ReviewState == ReviewState.Rejected)
+            .Where(e => e.DeprecatedAt == null)
+            .OrderByDescending(e => e.UpdatedAt)
             .ToListAsync(ct);
     }
 
-    public async Task<List<ExpertiseEntry>> SemanticSearchAsync(Vector queryVector, int limit, bool includeDeprecated, CancellationToken ct)
+    public async Task<ExpertiseEntry> CreateAsync(ExpertiseEntry entry, TenantContext ctx, CancellationToken ct)
     {
-        var query = db.ExpertiseEntries
+        // Defensive invariant: entry.Tenant must match the caller's token-asserted tenant,
+        // with one explicit exception: write.approve callers may create Tenant="shared" entries
+        // (which are created directly as Approved — see BuildEntry). BuildEntry always derives
+        // Tenant from TenantContext or a validated request.Tenant, so this guard cannot trip
+        // under normal operation. It exists to catch any future code path that constructs an
+        // ExpertiseEntry with an unvalidated tenant bypassing that assertion.
+        var callerTenant = RequireTenant(ctx);
+        var isSharedByApprover = string.Equals(entry.Tenant, "shared", StringComparison.Ordinal)
+                              && ctx.Scopes.Contains(AuthConstants.WriteApproveScope);
+        if (!string.Equals(entry.Tenant, callerTenant, StringComparison.Ordinal) && !isSharedByApprover)
+            throw new InvalidOperationException(
+                $"Entry tenant '{entry.Tenant}' does not match caller tenant '{callerTenant}'.");
+
+        // Generate the Id client-side so the audit row's EntryId points at a real GUID.
+        // The DB-level gen_random_uuid() default still applies if Id is left empty by other
+        // callers, but EF cannot wire the audit FK across two pending inserts in the same
+        // SaveChanges without a navigation property — so we assign here to be explicit.
+        if (entry.Id == Guid.Empty)
+            entry.Id = Guid.NewGuid();
+
+        entry.CreatedAt = DateTime.UtcNow;
+        entry.UpdatedAt = DateTime.UtcNow;
+        entry.IntegrityHash = IntegrityHashService.Compute(entry);
+
+        db.ExpertiseEntries.Add(entry);
+        db.ExpertiseAuditLogs.Add(BuildAuditRow(AuditAction.Created, entry, ctx, beforeHash: null, afterHash: entry.IntegrityHash));
+        await db.SaveChangesAsync(ct);
+
+        return entry;
+    }
+
+    public async Task<(WriteOutcome Outcome, ExpertiseEntry? Entry)> UpdateAsync(Guid id, TenantContext ctx, Func<ExpertiseEntry, Task> applyUpdates, CancellationToken ct)
+    {
+        var entry = await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
+            .Where(e => e.Id == id)
+            .Where(e => e.DeprecatedAt == null)
+            .FirstOrDefaultAsync(ct);
+        if (entry is null)
+            return (WriteOutcome.NotFound, null);
+
+        var beforeHash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var beforeVisibility = entry.Visibility;
+
+        await applyUpdates(entry);
+
+        // ADR-003 scope escalation: changing Visibility (Private <-> Shared) is the
+        // symmetric inverse of /approve's Visibility selection and must require the
+        // same scope (expertise.write.approve). Verified value-based (post-mutation
+        // compared against pre-mutation snapshot) so a no-op PATCH that includes the
+        // current Visibility value does not escalate. See issue #66.
+        //
+        // Interaction with the state-regression block below: this check fires BEFORE
+        // the regression block, so a denied request never reaches the Approved->Draft
+        // demotion path. A draft-only caller PATCHing an Approved+Shared entry with
+        // Visibility=Shared (no-op) plus a title change DOES regress to Draft+Shared;
+        // the Shared flag on a Draft entry is schema-permitted but semantically dormant
+        // (Draft entries are invisible to cross-tenant reads under ApplyApprovedReviewFilter)
+        // and the next /approve unconditionally overwrites Visibility from the request body.
+        if (entry.Visibility != beforeVisibility
+            && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
+        {
+            return (WriteOutcome.InsufficientScope, null);
+        }
+
+        entry.UpdatedAt = DateTime.UtcNow;
+        entry.IntegrityHash = IntegrityHashService.Compute(entry);
+
+        // ADR-003 state-regression rule: a write.draft-only caller editing an Approved
+        // or Rejected entry resets it to Draft (forces re-review); write.approve callers
+        // preserve the source state. Without this, the approval workflow does not
+        // actually mitigate ASI06 — content can change post-approval without re-review,
+        // and a Rejected entry could not be resubmitted at all.
+        if ((entry.ReviewState == ReviewState.Approved || entry.ReviewState == ReviewState.Rejected)
+            && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
+        {
+            entry.ReviewState = ReviewState.Draft;
+            entry.ReviewedBy = null;
+            entry.ReviewedAt = null;
+            entry.RejectionReason = null;
+        }
+
+        db.ExpertiseAuditLogs.Add(BuildAuditRow(AuditAction.Updated, entry, ctx, beforeHash, entry.IntegrityHash));
+
+        try
+        {
+            await db.SaveChangesAsync(ct);
+            return (WriteOutcome.Success, entry);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return (WriteOutcome.ConcurrentConflict, null);
+        }
+    }
+
+    public async Task<WriteOutcome> SoftDeleteAsync(Guid id, TenantContext ctx, CancellationToken ct)
+    {
+        var entry = await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
+            .Where(e => e.Id == id)
+            .Where(e => e.DeprecatedAt == null)
+            .FirstOrDefaultAsync(ct);
+        if (entry is null)
+            return WriteOutcome.NotFound;
+
+        // ADR-003: soft-delete on shared entries requires expertise.write.approve.
+        // 403 (not 404) is correct here because the caller already knows the entry exists
+        // — they could read it under the same TenantContext.
+        if (entry.Tenant == "shared" && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
+            return WriteOutcome.InsufficientScope;
+
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        entry.DeprecatedAt = DateTime.UtcNow;
+        entry.UpdatedAt = DateTime.UtcNow;
+
+        db.ExpertiseAuditLogs.Add(BuildAuditRow(AuditAction.Deleted, entry, ctx, hash, hash));
+        await db.SaveChangesAsync(ct);
+        return WriteOutcome.Success;
+    }
+
+    public async Task<(WriteOutcome Outcome, ExpertiseEntry? Entry)> ApproveAsync(
+        Guid id, TenantContext ctx, Visibility visibility, CancellationToken ct)
+    {
+        var entry = await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
+            .Where(e => e.Id == id)
+            .Where(e => e.DeprecatedAt == null)
+            .FirstOrDefaultAsync(ct);
+        if (entry is null)
+            return (WriteOutcome.NotFound, null);
+
+        if (entry.ReviewState != ReviewState.Draft)
+            return (WriteOutcome.InvalidState, null);
+
+        var reviewer = ctx.Principal.FindFirst("sub")?.Value
+                    ?? ctx.Principal.Identity?.Name
+                    ?? "system";
+
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        entry.ReviewState = ReviewState.Approved;
+        entry.Visibility = visibility;
+        entry.ReviewedBy = reviewer;
+        entry.ReviewedAt = DateTime.UtcNow;
+        entry.RejectionReason = null;
+        entry.UpdatedAt = DateTime.UtcNow;
+
+        db.ExpertiseAuditLogs.Add(BuildAuditRow(AuditAction.Approved, entry, ctx, hash, hash));
+
+        try
+        {
+            await db.SaveChangesAsync(ct);
+            return (WriteOutcome.Success, entry);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return (WriteOutcome.ConcurrentConflict, null);
+        }
+    }
+
+    public async Task<(WriteOutcome Outcome, ExpertiseEntry? Entry)> RejectAsync(
+        Guid id, TenantContext ctx, string rejectionReason, CancellationToken ct)
+    {
+        var entry = await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
+            .Where(e => e.Id == id)
+            .Where(e => e.DeprecatedAt == null)
+            .FirstOrDefaultAsync(ct);
+        if (entry is null)
+            return (WriteOutcome.NotFound, null);
+
+        if (entry.ReviewState != ReviewState.Draft)
+            return (WriteOutcome.InvalidState, null);
+
+        var reviewer = ctx.Principal.FindFirst("sub")?.Value
+                    ?? ctx.Principal.Identity?.Name
+                    ?? "system";
+
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        entry.ReviewState = ReviewState.Rejected;
+        entry.ReviewedBy = reviewer;
+        entry.ReviewedAt = DateTime.UtcNow;
+        entry.RejectionReason = rejectionReason;
+        entry.UpdatedAt = DateTime.UtcNow;
+
+        db.ExpertiseAuditLogs.Add(BuildAuditRow(AuditAction.Rejected, entry, ctx, hash, hash));
+
+        try
+        {
+            await db.SaveChangesAsync(ct);
+            return (WriteOutcome.Success, entry);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return (WriteOutcome.ConcurrentConflict, null);
+        }
+    }
+
+    public async Task<List<ExpertiseAuditLog>> ListAuditAsync(AuditLogFilter filter, CancellationToken ct)
+    {
+        var query = db.ExpertiseAuditLogs.AsQueryable();
+
+        if (filter.EntryId is { } entryId)
+            query = query.Where(a => a.EntryId == entryId);
+        if (filter.Principal is { Length: > 0 } principal)
+            query = query.Where(a => a.Principal == principal);
+        if (filter.Action is { } action)
+            query = query.Where(a => a.Action == action);
+        if (filter.ActorClass is { } actorClass)
+            query = query.Where(a => a.ActorClass == actorClass);
+        if (filter.From is { } from)
+            query = query.Where(a => a.Timestamp >= from);
+        if (filter.To is { } to)
+            query = query.Where(a => a.Timestamp <= to);
+
+        // Cursor: keyset pagination over (Timestamp DESC, Id) — strictly less than the
+        // cursor row keeps result pages deterministic across inserts.
+        if (filter.AfterTimestamp is { } cursorTs && filter.AfterId is { } cursorId)
+        {
+            query = query.Where(a =>
+                a.Timestamp < cursorTs ||
+                (a.Timestamp == cursorTs && a.Id.CompareTo(cursorId) < 0));
+        }
+
+        var limit = Math.Clamp(filter.Limit, 1, 200);
+        return await query
+            .OrderByDescending(a => a.Timestamp)
+            .ThenByDescending(a => a.Id)
+            .Take(limit)
+            .ToListAsync(ct);
+    }
+
+    public Task<ExpertiseAuditLog?> GetAuditByIdAsync(Guid id, CancellationToken ct)
+    {
+        // Admin-only forensic accessor (gated at the endpoint). No tenant/actor-class
+        // filter — the caller has expertise.admin scope and the use case is incident
+        // triage of the row identified by id.
+        return db.ExpertiseAuditLogs
+            .Where(a => a.Id == id)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    public async Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated, CancellationToken ct)
+    {
+        // Tenant + ReviewState + DeprecatedAt filters live inside the raw SQL alongside
+        // ORDER BY ts_rank because composing LINQ Where on top of FromSqlInterpolated
+        // wraps the original query in a subquery — the planner may then drop the inner
+        // ORDER BY since the subquery has no LIMIT, leaving result order undefined.
+        var tenant = RequireTenant(ctx);
+        var approvedState = nameof(ReviewState.Approved);
+
+        if (includeDeprecated)
+            return await db.ExpertiseEntries.FromSqlInterpolated($"""
+                SELECT *, xmin FROM "ExpertiseEntries"
+                WHERE "SearchVector" @@ plainto_tsquery('english', {query})
+                  AND ("Tenant" = {tenant} OR "Tenant" = 'shared')
+                  AND "ReviewState" = {approvedState}
+                ORDER BY ts_rank("SearchVector", plainto_tsquery('english', {query})) DESC
+                """).ToListAsync(ct);
+
+        return await db.ExpertiseEntries.FromSqlInterpolated($"""
+            SELECT *, xmin FROM "ExpertiseEntries"
+            WHERE "SearchVector" @@ plainto_tsquery('english', {query})
+              AND ("Tenant" = {tenant} OR "Tenant" = 'shared')
+              AND "ReviewState" = {approvedState}
+              AND "DeprecatedAt" IS NULL
+            ORDER BY ts_rank("SearchVector", plainto_tsquery('english', {query})) DESC
+            """).ToListAsync(ct);
+    }
+
+    public async Task<List<ExpertiseEntry>> SemanticSearchAsync(Vector queryVector, TenantContext ctx, int limit, bool includeDeprecated, CancellationToken ct)
+    {
+        var query = ApplyApprovedReviewFilter(ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx))
             .Where(e => e.Embedding != null);
 
         if (!includeDeprecated)
@@ -114,29 +418,43 @@ public class ExpertiseRepository(ExpertiseDbContext db, ILogger<ExpertiseReposit
             .ToListAsync(ct);
     }
 
-    public async Task<ExpertiseEntry?> FindExactMatchAsync(string domain, string title, CancellationToken ct)
+    [SuppressMessage("Globalization", "CA1304:Specify CultureInfo",
+        Justification = "e.Title.ToLower() in this LINQ expression translates to PostgreSQL's LOWER() function and never executes on the .NET runtime; specifying a CultureInfo would not affect the SQL translation. The input parameter is normalized with ToLowerInvariant() above to keep the C#-side value culture-stable.")]
+    [SuppressMessage("Globalization", "CA1311:Specify a culture or use an invariant version",
+        Justification = "e.Title.ToLower() in this LINQ expression translates to PostgreSQL's LOWER() function; specifying a culture has no effect on the SQL output.")]
+    [SuppressMessage("Performance", "CA1862:Use the StringComparison overload of String.Equals",
+        Justification = "EF Core does not consistently translate StringComparison overloads to SQL; the .ToLower() pattern matches the dedicated LOWER(title) index introduced by AddTitleLowerIndex.")]
+    public async Task<ExpertiseEntry?> FindExactMatchAsync(string domain, string title, TenantContext ctx, CancellationToken ct)
     {
-        return await db.ExpertiseEntries
+        // Normalize the input parameter once with InvariantCulture so the
+        // captured value is culture-stable. The server-side `e.Title.ToLower()`
+        // translates to SQL LOWER(), hitting the AddTitleLowerIndex; both sides
+        // are now deterministic and locale-independent on the .NET runtime.
+        var lowerTitle = title.ToLowerInvariant();
+        return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
             .Where(e => e.DeprecatedAt == null)
+            .Where(e => e.ReviewState != ReviewState.Rejected)
             .Where(e => e.Domain == domain)
-            .Where(e => e.Title.ToLower() == title.ToLower())
+            .Where(e => e.Title.ToLower() == lowerTitle)
             .FirstOrDefaultAsync(ct);
     }
 
-    public async Task<List<ExpertiseEntry>> FindExactMatchesAsync(string domain, IReadOnlyList<string> titles, CancellationToken ct)
+    public async Task<List<ExpertiseEntry>> FindExactMatchesAsync(string domain, IReadOnlyList<string> titles, TenantContext ctx, CancellationToken ct)
     {
         var lowerTitles = titles.Select(t => t.ToLowerInvariant()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        return await db.ExpertiseEntries
+        return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
             .Where(e => e.DeprecatedAt == null)
+            .Where(e => e.ReviewState != ReviewState.Rejected)
             .Where(e => e.Domain == domain)
-            .Where(e => lowerTitles.Contains(e.Title.ToLower()))
+            .Where(e => lowerTitles.Contains(e.Title.ToLowerInvariant()))
             .ToListAsync(ct);
     }
 
-    public async Task<ExpertiseEntry?> FindNearestInDomainAsync(string domain, Vector queryVector, double maxDistance, CancellationToken ct)
+    public async Task<ExpertiseEntry?> FindNearestInDomainAsync(string domain, Vector queryVector, double maxDistance, TenantContext ctx, CancellationToken ct)
     {
-        var candidate = await db.ExpertiseEntries
+        var candidate = await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
             .Where(e => e.DeprecatedAt == null)
+            .Where(e => e.ReviewState != ReviewState.Rejected)
             .Where(e => e.Domain == domain)
             .Where(e => e.Embedding != null)
             .OrderBy(e => e.Embedding!.CosineDistance(queryVector))
@@ -161,10 +479,11 @@ public class ExpertiseRepository(ExpertiseDbContext db, ILogger<ExpertiseReposit
         return distance.Value <= maxDistance ? candidate : null;
     }
 
-    public async Task<List<ExpertiseEntry>> FindAllEmbeddingsInDomainAsync(string domain, CancellationToken ct)
+    public async Task<List<ExpertiseEntry>> FindAllEmbeddingsInDomainAsync(string domain, TenantContext ctx, CancellationToken ct)
     {
-        return await db.ExpertiseEntries
+        return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
             .Where(e => e.DeprecatedAt == null)
+            .Where(e => e.ReviewState != ReviewState.Rejected)
             .Where(e => e.Domain == domain)
             .Where(e => e.Embedding != null)
             .ToListAsync(ct);

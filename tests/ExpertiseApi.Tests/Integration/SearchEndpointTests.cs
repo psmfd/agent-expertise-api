@@ -3,7 +3,6 @@ using System.Text.Json;
 using ExpertiseApi.Data;
 using ExpertiseApi.Models;
 using ExpertiseApi.Tests.Infrastructure;
-using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ExpertiseApi.Tests.Integration;
@@ -24,6 +23,7 @@ public class SearchEndpointTests : IAsyncLifetime
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        await db.ExpertiseAuditLogs.ExecuteDeleteAsync();
         await db.ExpertiseEntries.ExecuteDeleteAsync();
     }
 
@@ -77,7 +77,7 @@ public class SearchEndpointTests : IAsyncLifetime
 
         using var scope = _factory.Services.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
-        await repo.SoftDeleteAsync(deprecated.Id);
+        await repo.SoftDeleteAsync(deprecated.Id, TestHelpers.CreateTenantContext(deprecated.Tenant));
 
         var response = await _client.GetAsync("/expertise/search?q=migration");
 
@@ -96,7 +96,7 @@ public class SearchEndpointTests : IAsyncLifetime
 
         using var scope = _factory.Services.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
-        await repo.SoftDeleteAsync(deprecated.Id);
+        await repo.SoftDeleteAsync(deprecated.Id, TestHelpers.CreateTenantContext(deprecated.Tenant));
 
         var response = await _client.GetAsync("/expertise/search?q=migration&includeDeprecated=true");
 
@@ -119,10 +119,13 @@ public class SearchEndpointTests : IAsyncLifetime
     private async Task<ExpertiseEntry> SeedEntryViaRepo(
         string domain,
         string title,
-        string body = "Default test body content")
+        string body = "Default test body content",
+        string tenant = TestHelpers.TestTenant)
     {
         using var scope = _factory.Services.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
-        return await repo.CreateAsync(TestHelpers.SeedEntry(domain: domain, title: title, body: body));
+        return await repo.CreateAsync(
+            TestHelpers.SeedEntry(domain: domain, title: title, body: body, tenant: tenant),
+            TestHelpers.CreateTenantContext(tenant));
     }
 }
