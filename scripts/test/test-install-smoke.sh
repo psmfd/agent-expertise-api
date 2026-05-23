@@ -286,18 +286,42 @@ else
   # clean diagnostic regardless.
   if [ -x "${PREFIX}/bin.new/ExpertiseApi" ] || [ -f "${PREFIX}/bin.new/ExpertiseApi.dll" ]; then
     printf -- '\n----- direct binary migrate retry (diagnostic) -----\n' >&2
+    printf -- 'PREFIX=%s\n' "${PREFIX}" >&2
+    printf -- 'STAGE_BIN_DIR=%s\n' "${PREFIX}/bin.new" >&2
+    ls -la "${PREFIX}/bin.new" 2>&1 | head -20 >&2 || true
+    printf -- '\n[diag] dotnet --info via apphost env:\n' >&2
+    DOTNET_ROOT="${DOTNET_ROOT:-/usr/share/dotnet}" "${DOTNET_ROOT:-/usr/share/dotnet}/dotnet" --info 2>&1 | head -20 >&2 || true
+    printf -- '\n[diag] ldd of apphost binary:\n' >&2
+    ldd "${PREFIX}/bin.new/ExpertiseApi" 2>&1 | head -10 >&2 || true
+    printf -- '\n[diag] env that secrets file will set:\n' >&2
     (
       set -a
       # shellcheck disable=SC1090
       . "${SECRETS_FILE}"
       set +a
+      env | grep -E '^(ASPNETCORE|Auth__|Onnx__|DOTNET|Connection)' | sed 's/Password=[^;]*/Password=***/' >&2
+      printf -- '\n[diag] running binary with `migrate` arg; exit code captured separately\n' >&2
       export DOTNET_ROOT="${DOTNET_ROOT:-/usr/share/dotnet}"
+      set +e
       if [ -x "${PREFIX}/bin.new/ExpertiseApi" ]; then
-        "${PREFIX}/bin.new/ExpertiseApi" migrate 2>&1 || true
+        "${PREFIX}/bin.new/ExpertiseApi" migrate
       else
-        dotnet "${PREFIX}/bin.new/ExpertiseApi.dll" migrate 2>&1 || true
+        dotnet "${PREFIX}/bin.new/ExpertiseApi.dll" migrate
       fi
-    ) >&2
+      bin_rc=$?
+      set -e
+      printf -- '\n[diag] binary exited rc=%d\n' "${bin_rc}" >&2
+      # Probe the runtime resolution path with a no-arg invocation
+      printf -- '\n[diag] binary with no args (should print Hosting/Startup info or error):\n' >&2
+      set +e
+      if [ -x "${PREFIX}/bin.new/ExpertiseApi" ]; then
+        timeout 5 "${PREFIX}/bin.new/ExpertiseApi" 2>&1 | head -30
+      else
+        timeout 5 dotnet "${PREFIX}/bin.new/ExpertiseApi.dll" 2>&1 | head -30
+      fi
+      printf -- '\n[diag] binary no-args exit rc=%d\n' "$?" >&2
+      set -e
+    ) >&2 2>&1
     printf -- '----- end direct binary migrate retry -----\n\n' >&2
   fi
 fi
