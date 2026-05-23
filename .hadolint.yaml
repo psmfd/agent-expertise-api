@@ -1,0 +1,20 @@
+# Hadolint configuration — see https://github.com/hadolint/hadolint
+#
+# DL3008 — "Pin versions in apt get install" — is intentionally ignored.
+# The runtime stage installs `curl` for the HEALTHCHECK probe. The slim
+# `mcr.microsoft.com/dotnet/aspnet:10.0` base image ships with neither curl nor
+# wget, so the install is necessary. Pinning curl to a Debian package version
+# would force a Dockerfile bump on every CVE patch (e.g. curl=8.x.y-z), which
+# is not a pattern we maintain for security-tooling packages installed only to
+# support a healthcheck. The healthcheck itself is consumed by Docker and
+# Compose only — Kubernetes uses livenessProbe/readinessProbe defined in the
+# Helm chart.
+ignored:
+  - DL3008
+  # DL3059 — "Multiple consecutive RUN instructions" — ignored at the boundary
+  # between `dotnet restore` and `dotnet tool restore` in the build stage.
+  # Combining them would defeat the layer caching that motivates the
+  # separation: `dotnet restore` caches against csproj changes, `dotnet tool
+  # restore` caches against .config/dotnet-tools.json changes. Merging would
+  # invalidate both layers whenever either input changes.
+  - DL3059

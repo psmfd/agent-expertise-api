@@ -147,8 +147,8 @@
   <p class="subtitle">Browse and search the expertise store. Read-only.</p>
 
   <div class="auth-bar">
-    <label for="apiKey">API Key</label>
-    <input id="apiKey" type="password" placeholder="Bearer token" />
+    <label for="bearerToken">Bearer Token</label>
+    <input id="bearerToken" type="password" placeholder="JWT or API key (no &quot;Bearer&quot; prefix)" />
   </div>
 
   <!-- List / Filter -->
@@ -267,16 +267,30 @@
       document.getElementById(id).classList.toggle('open');
     }
 
+    var TOKEN_STORAGE_KEY = 'expertise-bearer-token';
+
     function getApiKey() {
-      return document.getElementById('apiKey').value.trim();
+      var input = document.getElementById('bearerToken');
+      var value = input.value.trim();
+      if (value) {
+        try { localStorage.setItem(TOKEN_STORAGE_KEY, value); } catch (e) { /* ignore */ }
+      }
+      return value;
     }
+
+    (function restoreToken() {
+      try {
+        var stored = localStorage.getItem(TOKEN_STORAGE_KEY);
+        if (stored) document.getElementById('bearerToken').value = stored;
+      } catch (e) { /* ignore */ }
+    })();
 
     var activeControllers = {};
 
     async function apiCall(path, resultId) {
       var key = getApiKey();
       if (!key) {
-        showResult(resultId, 'Enter an API key above.', true);
+        showResult(resultId, 'Enter a bearer token above.', true);
         return;
       }
 

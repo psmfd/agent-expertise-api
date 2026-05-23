@@ -1,0 +1,27 @@
+name: CodeQL config
+
+# Excludes generated source-generator output and build artifacts from CodeQL
+# analysis. Source-generator output (notably from
+# Microsoft.AspNetCore.OpenApi.SourceGenerators under obj/Release/.../generated/)
+# is third-party code we don't author and can't reasonably fix; including it
+# produces ~8 false-positive alerts (cs/constant-condition, cs/linq/missed-select,
+# cs/nested-if-statements, cs/useless-assignment-to-local) that drown the real
+# findings.
+#
+# NB: for compiled languages (C#) the autobuild emits source-generated files into
+# `obj/Release/.../generated/...`. CodeQL's `paths-ignore` filtering operates on
+# the database-relative path, so we list every plausible spelling that's been
+# observed in alerts:
+#   - `**/obj/**`            — catches the build-artifact tree
+#   - `**/bin/**`            — catches the output tree
+#   - `**/generated/**`      — catches the generator-output subdirectory directly
+#   - `**/*.generated.cs`    — catches generated files by name suffix
+# Alerts that pre-date this widening (numbers 4, 5, 14, 15, 16, 23, 24, 25) were
+# dismissed via the REST API with reason='won't_fix' and an explanatory comment
+# pointing back to this file; they will not re-open on subsequent scans unless
+# CodeQL re-detects the same instance with a new fingerprint.
+paths-ignore:
+  - '**/obj/**'
+  - '**/bin/**'
+  - '**/generated/**'
+  - '**/*.generated.cs'

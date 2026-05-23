@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Cancel queued PR runs when a new push lands on the same PR ref. Don't cancel
+# push-to-dev runs in flight — they may be the input to a release cut.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     name: Build & Test
@@ -22,10 +28,10 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
         with:
-          dotnet-version: '10.0.x'
+          global-json-file: global.json
 
       - name: Cache NuGet packages
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
@@ -34,11 +40,493 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore ExpertiseApi.slnx --disable-build-servers
 
+      - name: SCA — vulnerable NuGet packages
+        run: |
+          dotnet list ExpertiseApi.slnx package --vulnerable --include-transitive | tee vuln-report.txt
+          if grep -q "has the following vulnerable packages" vuln-report.txt; then
+            echo "::error::Vulnerable NuGet packages detected — see vuln-report.txt"
+            exit 1
+          fi
+
+      # Build-time OpenAPI document emission (Part D C8) is wired via
+      # Microsoft.Extensions.ApiDescription.Server in the API csproj. The generator
+      # runs as part of `dotnet build`; runtime startup guards that would otherwise
+      # reject the source-controlled placeholder configuration are bypassed for the
+      # `dotnet-getdocument` entry assembly. See AuthExtensions.IsBuildTimeOpenApiContext.
       - name: Build
         run: dotnet build ExpertiseApi.slnx --configuration Release --no-restore --disable-build-servers
+
+      # Smoke-check that build-time OpenAPI document emission (Part D C8) succeeded.
+      # release.yml picks up artifacts/openapi/ExpertiseApi.json for the GitHub Release
+      # asset attachment. Fail loud here rather than discover the absence in a release run.
+      - name: Verify openapi.json artifact present
+        run: test -f src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
+
+      # Analyzer baseline gate (issue #101, ADR-006). The codebase reached
+      # zero analyzer warnings via PR7a/PR7b/PR7c; this step prevents
+      # regression. Use `dotnet format analyzers` so whitespace/style noise
+      # cannot trip the gate — only analyzer-rule violations do.
+      # Note: --no-restore is intentionally omitted; `dotnet format analyzers`
+      # invokes its own MSBuild instance which doesn't see the prior
+      # restore's output via project.assets.json under all path layouts.
+      - name: Format gate (analyzers must be clean)
+        run: dotnet format analyzers ExpertiseApi.slnx --verify-no-changes
 
       - name: Download ONNX model files
         run: bash scripts/download-models.sh
 
       - name: Test
-        run: dotnet test ExpertiseApi.slnx --configuration Release --no-build --verbosity normal
+        run: |
+          dotnet test ExpertiseApi.slnx \
+            --configuration Release \
+            --no-build \
+            --verbosity normal \
+            --logger "trx;LogFileName=test-results.trx" \
+            --results-directory test-results
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results
+          path: test-results/*.trx
+          retention-days: 14
+
+  pi-extension-typecheck:
+    name: pi extension typecheck + tests (expertise-api)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+      - name: Install deps
+        working-directory: .pi/extensions/expertise-api
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: .pi/extensions/expertise-api
+        run: npm run typecheck
+      - name: Test
+        working-directory: .pi/extensions/expertise-api
+        run: npm test
+
+  helm-lint:
+    name: Helm lint + render tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v3.18.3
+
+      - name: Helm lint (strict)
+        run: helm lint --strict helm/expertise-api
+
+      - name: Helm render tests
+        run: bash helm/expertise-api/tests/test-render.sh
+
+  release-manifest-generator:
+    name: release manifest generator (unit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Targeted single-script CI step for tests/install/test-generate-manifest.sh.
+    # The broader tests/install/ suite is wired into CI by #166 (end-to-end
+    # install smoke). This step exists to give the ADR-011 / D2 manifest
+    # generator regression coverage on every PR without waiting on #166.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run generate-manifest unit tests
+        run: bash tests/install/test-generate-manifest.sh
+
+  apictl-restart-race-macos:
+    name: apictl restart race regression (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run apictl restart race regression test
+        run: bash scripts/test/test-apictl-restart.sh
+
+  apictl-restart-race-debian13:
+    name: apictl restart race regression (Debian 13 / systemd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Privileged container; restrict to same-repo PRs and pushes to avoid
+    # running --privileged docker for arbitrary fork-PR content. Fork PRs
+    # still get coverage from the macos and build-and-test jobs.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build Debian 13 systemd-enabled image
+        run: docker build -t apictl-debian13 -f scripts/test/Dockerfile.debian13 scripts/test
+
+      - name: Start container (systemd as PID 1)
+        run: |
+          docker run -d --name apictl-test \
+            --privileged \
+            --cgroupns=host \
+            --tmpfs /tmp --tmpfs /run --tmpfs /run/lock \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/workspace:ro" \
+            apictl-debian13
+          # Surface container state immediately so a dead PID 1 shows up in
+          # logs rather than as a silent wait-loop timeout.
+          sleep 2
+          docker ps -a --filter name=apictl-test
+          docker logs apictl-test || true
+          # Wait for systemd to settle inside the container.
+          for _ in $(seq 1 30); do
+            if docker exec apictl-test systemctl is-system-running --wait 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec apictl-test systemctl --no-pager status >/dev/null || true
+
+      - name: Run apictl restart race regression test (in container, as user 'apictl')
+        run: |
+          docker exec -u apictl apictl-test bash -lc '
+            cp -r /workspace /home/apictl/repo &&
+            cd /home/apictl/repo &&
+            bash scripts/test/test-apictl-restart.sh
+          '
+
+      - name: Container logs on failure
+        if: failure()
+        run: |
+          docker logs apictl-test || true
+          docker exec apictl-test journalctl --no-pager -n 200 || true
+
+      - name: Tear down container
+        if: always()
+        run: docker rm -f apictl-test || true
+
+  install-smoke-linux:
+    name: install.sh end-to-end smoke (Linux / systemd-user / postgres-17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Privileged container; restrict to same-repo PRs and pushes to avoid
+    # running --privileged docker for arbitrary fork-PR content. Mirrors
+    # the gate used by the apictl-restart-race-debian13 job above.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build install-smoke image (debian13 + systemd + postgres17 + dotnet-sdk-10)
+        run: |
+          # Pin the SDK version inside the image to match the repo's global.json,
+          # so the smoke runs against the same SDK feature band the project
+          # requires. rollForward: latestPatch does NOT cross feature bands.
+          sdk_version=$(jq -r '.sdk.version' global.json)
+          docker build \
+            --build-arg "DOTNET_SDK_VERSION=${sdk_version}" \
+            -t install-smoke-debian13 \
+            -f scripts/test/Dockerfile.install-smoke \
+            scripts/test
+
+      - name: Start container (systemd as PID 1)
+        run: |
+          docker run -d --name install-smoke \
+            --privileged \
+            --cgroupns=host \
+            --tmpfs /tmp --tmpfs /run --tmpfs /run/lock \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/workspace:ro" \
+            install-smoke-debian13
+          # Surface container state immediately so a dead PID 1 shows up
+          # in logs rather than as a silent wait-loop timeout. Same pattern
+          # as apictl-restart-race-debian13.
+          sleep 2
+          docker ps -a --filter name=install-smoke
+          docker logs install-smoke || true
+          for _ in $(seq 1 30); do
+            if docker exec install-smoke systemctl is-system-running --wait 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec install-smoke systemctl --no-pager status >/dev/null || true
+
+      - name: Run install.sh smoke harness (in container, as user 'apictl')
+        run: |
+          docker exec -u apictl install-smoke bash -lc '
+            cp -r /workspace /home/apictl/repo &&
+            cd /home/apictl/repo &&
+            bash scripts/test/test-install-smoke.sh
+          '
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker logs install-smoke || true
+          docker exec install-smoke journalctl --no-pager -n 400 || true
+          docker exec -u apictl install-smoke bash -lc 'cat ~/expertise-api/.smoke-install.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke bash -lc 'cat ~/expertise-api/.smoke-restart.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke bash -lc 'cat ~/expertise-api/.smoke-stop.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke bash -lc \
+            'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status expertise-api.service --no-pager -l || true'
+          docker exec -u apictl install-smoke bash -lc \
+            'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u expertise-api --no-pager -n 200 || true'
+
+      - name: Tear down container
+        if: always()
+        run: docker rm -f install-smoke || true
+
+  install-smoke-macos:
+    name: install.sh end-to-end smoke (macOS / launchd / postgres-17)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    # E2 of #166 / closes #259. Sibling of install-smoke-linux above: same
+    # harness (scripts/test/test-install-smoke.sh), different OS provisioning.
+    # macOS GHA runners have no Docker daemon and no `services:` Postgres,
+    # so we install Postgres via Homebrew and run install.sh directly on
+    # the host. Unlike the Linux job, no privileged-container gate is
+    # needed — this is a regular host job and is safe for fork PRs.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup .NET
+        # The install.sh path on macOS runs `dotnet publish` against the
+        # repo's csproj, so the SDK (not just the runtime) must match
+        # global.json. Matches the Build & Test job above.
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        with:
+          global-json-file: global.json
+
+      - name: Install Postgres 17 + pgvector via Homebrew
+        # `pgvector` is a separate formula that drops the extension into
+        # every Homebrew Postgres formula's share dir, so it must be
+        # installed *after* postgresql@17 is present (brew handles the
+        # ordering when both are on the same `brew install` line).
+        # `postgresql@17` is keg-only — its bin/ is not on PATH by default.
+        run: |
+          brew update >/dev/null
+          brew install postgresql@17 pgvector
+          # Surface the keg-only PATH for every subsequent step. GITHUB_PATH
+          # is the cross-step PATH-prepend channel; exporting in this step
+          # alone would not carry to the harness run-step below.
+          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+
+      - name: Start Postgres via brew services
+        run: |
+          # macos-latest images preinstall postgresql@14 (not started by
+          # default). If a future image change starts it, our pg_isready
+          # against :5432 would succeed against the wrong cluster and the
+          # harness would create the role/db on pg14 with no pgvector.
+          # Hard-fail early if pg14 is already running.
+          if brew services list | awk '$1=="postgresql@14" && $2=="started" {found=1} END {exit !found}'; then
+            echo "::error::postgresql@14 is already running on this runner; refuse to start postgresql@17 alongside it"
+            brew services list
+            exit 1
+          fi
+          brew services start postgresql@17
+          # `brew services start` is fire-and-forget. Poll until the
+          # cluster is accepting connections. The harness also has a
+          # 30s reachability wait (start_postgres_macos), so this is
+          # defense in depth — failing fast here gives a clearer
+          # diagnostic than the harness's generic "unreachable" error.
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+              echo "postgres ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+            echo "::error::postgres did not become ready within 30s"
+            brew services info postgresql@17 || true
+            # `brew services` log paths are stable across formulas.
+            tail -n 200 "$(brew --prefix)/var/log/postgresql@17.log" 2>/dev/null || true
+            exit 1
+          fi
+          # Hard-fail if pgvector did not land in postgresql@17's sharedir.
+          # The harness's CREATE EXTENSION is warn-only, which would let a
+          # broken pgvector formula silently degrade coverage. We want a
+          # loud signal here, not a quiet pass on smoke that ships without
+          # embeddings. Run as the runner user (default brew superuser).
+          psql -h 127.0.0.1 -p 5432 -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector" \
+            -c "DROP EXTENSION vector" \
+            || { echo "::error::pgvector not installed into postgresql@17 sharedir"; exit 1; }
+
+      - name: Run install.sh smoke harness
+        # The harness's start_postgres_macos branch assumes the caller
+        # has Postgres up via brew services (which the steps above did)
+        # and that `psql` is on PATH (handled by the GITHUB_PATH export).
+        run: bash scripts/test/test-install-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          # macOS equivalent of the Linux journalctl --user dump.
+          launchctl list | grep -i expertise || true
+          launchctl print "gui/$(id -u)/com.thesemicolon.expertise-api" 2>&1 | head -200 || true
+          cat "$HOME/expertise-api/.smoke-install.log" 2>/dev/null || true
+          cat "$HOME/expertise-api/.smoke-restart.log" 2>/dev/null || true
+          cat "$HOME/expertise-api/.smoke-stop.log" 2>/dev/null || true
+          # Service stdout/stderr per the plist install.sh writes
+          # (templates/service-templates/expertise-api.plist.tmpl).
+          ls -la "$HOME/Library/Logs/expertise-api/" 2>/dev/null || true
+          tail -n 200 "$HOME/Library/Logs/expertise-api/"*.log 2>/dev/null || true
+          tail -n 200 "$(brew --prefix)/var/log/postgresql@17.log" 2>/dev/null || true
+
+      - name: Stop Postgres
+        if: always()
+        run: brew services stop postgresql@17 || true
+
+  openapi-diff:
+    name: OpenAPI breaking-change check
+    # PR-only: a push to dev has no base to diff against (semantically the spec
+    # IS dev at that point). Required-check status, if/when promoted in branch
+    # protection, applies only to PRs into main/dev.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Label gate is read via the github.event.pull_request.labels payload
+      # (no API call needed), but pull-requests: read keeps the principle of
+      # least-surprise if a future refactor moves to gh CLI for label query.
+      pull-requests: read
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: head
+
+      - name: Checkout base ref (${{ github.event.pull_request.base.ref }})
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Pin to the actual base SHA at PR creation time, not the moving
+          # branch tip. Diff semantics match what the merge-base would resolve
+          # to had we used `actions/checkout@... { ref: refs/heads/${base} }`.
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        with:
+          global-json-file: head/global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.nuget/packages
+          # Distinct from build-and-test cache (different working trees, both
+          # csproj hashes contribute). restore-keys fall back to build-and-test
+          # cache to avoid cold restore on first run.
+          key: nuget-${{ runner.os }}-oasdiff-${{ hashFiles('head/**/*.csproj', 'base/**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-oasdiff-
+            nuget-${{ runner.os }}-
+
+      - name: Build PR head spec
+        working-directory: head
+        run: dotnet build ExpertiseApi.slnx --configuration Release --disable-build-servers
+
+      - name: Build base ref spec (tolerate missing / failure)
+        id: base-build
+        working-directory: base
+        # Tolerate two edge cases without failing the gate:
+        #   1. base ref pre-dates the API project (introductory PR after
+        #      reorg) — no diff possible, treat as non-breaking.
+        #   2. base build fails (SDK drift, transient infra) — we cannot
+        #      diff, but failing the gate would block unrelated PRs on
+        #      base-branch breakage. Surface as a Warning instead.
+        # set -uo pipefail (no -e) so we can capture rc explicitly.
+        run: |
+          set -uo pipefail
+          if [ ! -f src/ExpertiseApi/ExpertiseApi.csproj ]; then
+            echo "::notice::base ref has no API project; skipping diff"
+            echo "buildable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          dotnet build ExpertiseApi.slnx --configuration Release --disable-build-servers
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::base ref build failed (rc=$rc); cannot diff openapi spec — treating as non-breaking"
+            echo "buildable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "buildable=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install oasdiff (SHA-pinned binary release)
+        run: |
+          set -euo pipefail
+          ver=v1.15.3
+          # SHA-256 from upstream release page checksums.txt
+          # https://github.com/oasdiff/oasdiff/releases/tag/v1.15.3
+          expected_sha=a8b2f765dd976792f6fb14a5b9854fe94d73aa3b777161d45535f9002b7a4575
+          url="https://github.com/oasdiff/oasdiff/releases/download/${ver}/oasdiff_${ver#v}_linux_amd64.tar.gz"
+          curl -fsSL -o oasdiff.tgz "$url"
+          echo "${expected_sha}  oasdiff.tgz" | sha256sum -c -
+          tar -xzf oasdiff.tgz oasdiff
+          sudo mv oasdiff /usr/local/bin/oasdiff
+          oasdiff --version
+
+      - name: oasdiff breaking-change scan
+        id: diff
+        if: steps.base-build.outputs.buildable == 'true'
+        # Capture exit code without aborting the step; the next step is the
+        # policy gate (label override vs hard fail).
+        run: |
+          set -uo pipefail
+          base=base/src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
+          head=head/src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
+          if [ ! -f "$base" ]; then
+            echo "::notice::base spec absent (feature-introducing PR); treating as non-breaking"
+            echo "breaking=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # --format githubactions annotates the PR diff with breaking findings.
+          # oasdiff exits non-zero iff breaking changes are present.
+          oasdiff breaking "$base" "$head" --format githubactions
+          rc=$?
+          if [ $rc -eq 0 ]; then
+            echo "breaking=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "breaking=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Enforce gate or honor breaking-change-approved label
+        if: steps.base-build.outputs.buildable == 'true'
+        env:
+          BREAKING: ${{ steps.diff.outputs.breaking }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if [ "${BREAKING:-false}" != "true" ]; then
+            echo "no breaking OpenAPI changes"
+            exit 0
+          fi
+          if printf '%s' "$LABELS" | jq -e 'any(. == "breaking-change-approved")' >/dev/null; then
+            echo "::warning::Breaking OpenAPI changes detected; bypassing gate via" \
+                 "'breaking-change-approved' label (auto-removed on merge)"
+            exit 0
+          fi
+          echo "::error::Breaking OpenAPI changes detected. To merge anyway," \
+               "apply the 'breaking-change-approved' label to this PR."
+          exit 1

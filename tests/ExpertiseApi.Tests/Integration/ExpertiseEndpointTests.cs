@@ -4,7 +4,6 @@ using System.Text.Json;
 using ExpertiseApi.Data;
 using ExpertiseApi.Models;
 using ExpertiseApi.Tests.Infrastructure;
-using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ExpertiseApi.Tests.Integration;
@@ -25,6 +24,8 @@ public class ExpertiseEndpointTests : IAsyncLifetime
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        // FK ON DELETE RESTRICT requires audit logs be removed before their entries.
+        await db.ExpertiseAuditLogs.ExecuteDeleteAsync();
         await db.ExpertiseEntries.ExecuteDeleteAsync();
     }
 
@@ -62,7 +63,7 @@ public class ExpertiseEndpointTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetProperty("id").GetGuid().Should().Be(seeded.Id);
-        json.GetProperty("title").GetString().Should().Be("Test entry");
+        json.GetProperty("title").GetProperty("value").GetString().Should().Contain("Test entry");
     }
 
     [Fact]
@@ -101,7 +102,8 @@ public class ExpertiseEndpointTests : IAsyncLifetime
 
         using var scope = _factory.Services.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
-        await repo.SoftDeleteAsync(deprecated.Id);
+        // Soft-deleted entry was seeded with tenant "test" — match it on the call.
+        await repo.SoftDeleteAsync(deprecated.Id, TestHelpers.CreateTenantContext(deprecated.Tenant));
 
         var response = await _client.GetAsync("/expertise");
 
@@ -118,7 +120,7 @@ public class ExpertiseEndpointTests : IAsyncLifetime
 
         using var scope = _factory.Services.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
-        await repo.SoftDeleteAsync(deprecated.Id);
+        await repo.SoftDeleteAsync(deprecated.Id, TestHelpers.CreateTenantContext(deprecated.Tenant));
 
         var response = await _client.GetAsync("/expertise?includeDeprecated=true");
 
@@ -165,11 +167,13 @@ public class ExpertiseEndpointTests : IAsyncLifetime
     private async Task<ExpertiseEntry> SeedEntryViaRepo(
         string domain = "shared",
         string title = "Test",
-        EntryType entryType = EntryType.Pattern)
+        EntryType entryType = EntryType.Pattern,
+        string tenant = TestHelpers.TestTenant)
     {
         using var scope = _factory.Services.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
         return await repo.CreateAsync(
-            TestHelpers.SeedEntry(domain: domain, title: title, entryType: entryType));
+            TestHelpers.SeedEntry(domain: domain, title: title, entryType: entryType, tenant: tenant),
+            TestHelpers.CreateTenantContext(tenant));
     }
 }

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@@LABEL@@</string>
+
+  <!-- Wrapper script sources secrets.env then exec's the API binary -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@WRAPPER@@</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>@@WORKDIR@@</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+    <key>Crashed</key><true/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <!-- Stop budget. Must exceed HostOptions.ShutdownTimeout (30s) configured
+       in src/ExpertiseApi/Program.cs. launchd default is 20s, which would
+       SIGKILL the .NET host mid-drain under load. 45s = 30s app drain + 15s
+       OS-level dispose / log flush. See #142. -->
+  <key>ExitTimeOut</key>
+  <integer>45</integer>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>@@LOG_DIR@@/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@LOG_DIR@@/stderr.log</string>
+
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key><integer>4096</integer>
+  </dict>
+</dict>
+</plist>

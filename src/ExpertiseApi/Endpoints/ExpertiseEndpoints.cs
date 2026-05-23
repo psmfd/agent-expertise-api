@@ -1,12 +1,19 @@
+using System.Data.Common;
+using System.Diagnostics.CodeAnalysis;
+using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
+using ExpertiseApi.Endpoints.Filters;
+using ExpertiseApi.Hygiene;
 using ExpertiseApi.Models;
 using ExpertiseApi.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 using Pgvector;
 
 namespace ExpertiseApi.Endpoints;
 
-public static class ExpertiseEndpoints
+internal static class ExpertiseEndpoints
 {
     public static RouteGroupBuilder MapExpertiseEndpoints(this WebApplication app)
     {
@@ -15,28 +22,135 @@ public static class ExpertiseEndpoints
             .RequireAuthorization();
 
         group.MapGet("/", ListEntries)
-            .RequireAuthorization("ReadAccess");
+            .RequireAuthorization("ReadAccess")
+            .RequireRateLimiting("expertise-read")
+            .WithSummary("List approved expertise entries")
+            .WithDescription("Returns approved entries scoped to the caller's tenant plus any `shared` entries. " +
+                             "Optional filters: `domain`, `tags` (CSV), `entryType`, `severity`, `includeDeprecated`. " +
+                             "Drafts and rejected entries are excluded \u2014 reviewers see those via GET /expertise/drafts.")
+            .Produces<List<ExpertiseEntryResponse>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
+
+        group.MapGet("/drafts", ListDrafts)
+            .RequireAuthorization(AuthConstants.Policies.WriteApproveAccess)
+            .RequireRateLimiting("expertise-read")
+            .WithSummary("List draft + rejected entries for review")
+            .WithDescription("Reviewer-only queue (`expertise.write.approve` scope). Returns Draft and Rejected entries " +
+                             "in the caller's tenant; shared entries are never surfaced (they bypass the draft state).")
+            .Produces<List<ExpertiseEntryResponse>>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapGet("/{id:guid}", GetEntry)
-            .RequireAuthorization("ReadAccess");
+            .RequireAuthorization("ReadAccess")
+            .RequireRateLimiting("expertise-read")
+            .WithSummary("Fetch a single entry by id")
+            .WithDescription("Returns 200 with the entry if it is visible to the caller's tenant (own tenant or shared); " +
+                             "404 otherwise. Drafts are not surfaced through this endpoint.")
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapPost("/", CreateEntry)
-            .RequireAuthorization("WriteAccess");
+            .RequireAuthorization("WriteAccess")
+            .RequireRateLimiting("expertise-write")
+            .RequireIdempotency()
+            .Accepts<CreateExpertiseRequest>("application/json")
+            .WithSummary("Create a new expertise entry (Draft by default)")
+            .WithDescription("Creates an entry in Draft state in the caller's tenant. Optional `tenant: \"shared\"` requires " +
+                             "`expertise.write.approve` and bypasses the draft queue (created as Approved). " +
+                             "Returns 409 if a near-duplicate is detected by the dedup service.")
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status201Created)
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapPatch("/{id:guid}", UpdateEntry)
-            .RequireAuthorization("WriteAccess");
+            .RequireAuthorization("WriteAccess")
+            .RequireRateLimiting("expertise-write")
+            .Accepts<UpdateExpertiseRequest>("application/json")
+            .WithSummary("Partially update an entry")
+            .WithDescription("Only the supplied fields are modified. If `title` or `body` change the embedding is regenerated. " +
+                             "Changing `visibility` (Private <-> Shared) is a publish/unpublish action and requires `expertise.write.approve` " +
+                             "even for the entry's original writer; a no-op (supplying the current value) does not require the elevated scope. " +
+                             "Returns 409 (ConcurrentConflict) when the entry was modified by another request between read and write.")
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapDelete("/{id:guid}", DeleteEntry)
-            .RequireAuthorization("WriteAccess");
+            .RequireAuthorization("WriteAccess")
+            .RequireRateLimiting("expertise-write")
+            .WithSummary("Soft-delete an entry")
+            .WithDescription("Marks the entry as deprecated. Soft-deleting a `shared` entry requires `expertise.write.approve`.")
+            .Produces(StatusCodes.Status204NoContent)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         group.MapPost("/batch", CreateBatch)
-            .RequireAuthorization("WriteAccess");
+            .RequireAuthorization("WriteAccess")
+            .RequireRateLimiting("expertise-write")
+            .Accepts<List<CreateExpertiseRequest>>("application/json")
+            .WithSummary("Batch ingest up to 100 entries with per-item failure isolation")
+            .WithDescription("Returns 200 with `BatchEntryResult[]` when every item is Created, or 207 (Multi-Status) when any item is " +
+                             "Duplicate / Rejected / Failed. Embedding generation and deduplication are batched into a single ONNX call " +
+                             "and bulk DB query respectively, so partial failures in one phase do not roll back successful items.")
+            .Produces<List<BatchEntryResult>>(StatusCodes.Status200OK)
+            .Produces<List<BatchEntryResult>>(StatusCodes.Status207MultiStatus)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
+
+        group.MapPost("/{id:guid}/approve", ApproveEntry)
+            .RequireAuthorization(AuthConstants.Policies.WriteApproveAccess)
+            .RequireRateLimiting("expertise-write")
+            .RequireIdempotency()
+            .Accepts<ApproveExpertiseRequest>("application/json")
+            .WithSummary("Approve a draft entry (reviewer-only)")
+            .WithDescription("Transitions the entry from Draft to Approved with the supplied `Visibility` " +
+                             "(defaults to Private). Returns 409 if the entry is not currently in Draft state.")
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
+
+        group.MapPost("/{id:guid}/reject", RejectEntry)
+            .RequireAuthorization(AuthConstants.Policies.WriteApproveAccess)
+            .RequireRateLimiting("expertise-write")
+            .RequireIdempotency()
+            .Accepts<RejectExpertiseRequest>("application/json")
+            .WithSummary("Reject a draft entry (reviewer-only)")
+            .WithDescription("Transitions the entry from Draft to Rejected. A non-empty `rejectionReason` (\u2264 2000 chars) is required.")
+            .Produces<ExpertiseEntryResponse>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
+            .ProducesProblem(StatusCodes.Status403Forbidden)
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         return group;
     }
 
     private static async Task<IResult> ListEntries(
+        HttpContext httpContext,
         IExpertiseRepository repo,
+        IResponseHygiene hygiene,
         [FromQuery] string? domain,
         [FromQuery] string? tags,
         [FromQuery] EntryType? entryType,
@@ -44,19 +158,36 @@ public static class ExpertiseEndpoints
         [FromQuery] bool includeDeprecated = false,
         CancellationToken ct = default)
     {
+        // Reads always default to ReviewState = Approved. Reviewers see drafts and rejected
+        // entries via GET /expertise/drafts (which requires write.approve).
+        var tenantContext = httpContext.RequireTenantContext();
         var tagList = tags?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
-        var entries = await repo.ListAsync(domain, tagList, entryType, severity, includeDeprecated, ct);
-        return Results.Ok(entries);
+        var entries = await repo.ListAsync(tenantContext, domain, tagList, entryType, severity, includeDeprecated, ct);
+        return Results.Ok(ExpertiseEntryResponse.FromMany(entries, hygiene));
+    }
+
+    private static async Task<IResult> ListDrafts(
+        HttpContext httpContext,
+        IExpertiseRepository repo,
+        IResponseHygiene hygiene,
+        CancellationToken ct)
+    {
+        var tenantContext = httpContext.RequireTenantContext();
+        var entries = await repo.ListDraftsAsync(tenantContext, ct);
+        return Results.Ok(ExpertiseEntryResponse.FromMany(entries, hygiene));
     }
 
     private static async Task<IResult> GetEntry(
         Guid id,
+        HttpContext httpContext,
         IExpertiseRepository repo,
+        IResponseHygiene hygiene,
         CancellationToken ct)
     {
-        var entry = await repo.GetByIdAsync(id, ct);
-        return entry is null ? Results.NotFound() : Results.Ok(entry);
+        var tenantContext = httpContext.RequireTenantContext();
+        var entry = await repo.GetByIdAsync(id, tenantContext, ct);
+        return entry is null ? Results.NotFound() : Results.Ok(ExpertiseEntryResponse.From(entry, hygiene));
     }
 
     private static bool IsRequestValid(CreateExpertiseRequest request) =>
@@ -67,35 +198,56 @@ public static class ExpertiseEndpoints
 
     private static async Task<IResult> CreateEntry(
         CreateExpertiseRequest request,
+        HttpContext httpContext,
         IExpertiseRepository repo,
         EmbeddingService embeddingService,
         DeduplicationService dedup,
+        IResponseHygiene hygiene,
         CancellationToken ct)
     {
         if (!IsRequestValid(request))
             return Results.Problem("Domain, Title, Body, and Source are required.", statusCode: 400);
 
+        var tenantContext = httpContext.RequireTenantContext();
+
+        // Validate optional Tenant override: only "shared" is permitted, and only for write.approve callers.
+        if (request.Tenant is not null)
+        {
+            if (!string.Equals(request.Tenant, "shared", StringComparison.OrdinalIgnoreCase))
+                return Results.Problem(
+                    "Only Tenant=\"shared\" may be specified; all other tenants are server-assigned.",
+                    statusCode: 400);
+
+            if (!tenantContext.Scopes.Contains(AuthConstants.WriteApproveScope))
+                return Results.Problem(
+                    "Creating shared entries requires expertise.write.approve.",
+                    statusCode: 403);
+        }
+
         var embedding = await embeddingService.GenerateEmbeddingAsync(
             EmbeddingService.BuildInputText(request.Title, request.Body), ct);
 
-        var (isDuplicate, existing) = await dedup.CheckAsync(request, embedding, ct);
+        var (isDuplicate, existing) = await dedup.CheckAsync(request, embedding, tenantContext, ct);
         if (isDuplicate && existing is not null)
-            return Results.Conflict(existing);
+            return Results.Conflict(ExpertiseEntryResponse.From(existing, hygiene));
 
-        var created = await repo.CreateAsync(BuildEntry(request, embedding), ct);
-        return Results.Created($"/expertise/{created.Id}", created);
+        var created = await repo.CreateAsync(BuildEntry(request, embedding, tenantContext), tenantContext, ct);
+        return Results.Created($"/expertise/{created.Id}", ExpertiseEntryResponse.From(created, hygiene));
     }
 
     private static async Task<IResult> UpdateEntry(
         Guid id,
         UpdateExpertiseRequest request,
+        HttpContext httpContext,
         IExpertiseRepository repo,
         EmbeddingService embeddingService,
+        IResponseHygiene hygiene,
         CancellationToken ct)
     {
+        var tenantContext = httpContext.RequireTenantContext();
         var needsReembed = request.Title is not null || request.Body is not null;
 
-        var updated = await repo.UpdateAsync(id, async entry =>
+        var (outcome, updated) = await repo.UpdateAsync(id, tenantContext, async entry =>
         {
             if (request.Domain is not null) entry.Domain = request.Domain;
             if (request.Tags is not null) entry.Tags = request.Tags;
@@ -105,6 +257,7 @@ public static class ExpertiseEndpoints
             if (request.Severity is not null) entry.Severity = request.Severity.Value;
             if (request.Source is not null) entry.Source = request.Source;
             if (request.SourceVersion is not null) entry.SourceVersion = request.SourceVersion;
+            if (request.Visibility is not null) entry.Visibility = request.Visibility.Value;
 
             if (needsReembed)
             {
@@ -113,11 +266,30 @@ public static class ExpertiseEndpoints
             }
         }, ct);
 
-        return updated is null ? Results.NotFound() : Results.Ok(updated);
+        return outcome switch
+        {
+            WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(updated!, hygiene)),
+            WriteOutcome.NotFound => Results.NotFound(),
+            WriteOutcome.InsufficientScope => Results.Problem(
+                title: "Insufficient scope",
+                detail: "Changing Visibility requires expertise.write.approve.",
+                statusCode: StatusCodes.Status403Forbidden),
+            WriteOutcome.ConcurrentConflict => Results.Problem(
+                title: "Concurrent modification",
+                detail: "The entry was modified by another request. Reload and retry.",
+                statusCode: StatusCodes.Status409Conflict),
+            _ => Results.Problem(statusCode: StatusCodes.Status500InternalServerError),
+        };
     }
 
+    [SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "Batch ingest uses per-phase and per-item failure isolation. An unexpected " +
+                        "exception in embedding generation, deduplication, or per-entry create must mark " +
+                        "the affected items as Failed and continue processing the rest. The error is " +
+                        "captured in the BatchEntryResult and surfaced to the caller via the 207 response.")]
     private static async Task<IResult> CreateBatch(
         List<CreateExpertiseRequest> requests,
+        HttpContext httpContext,
         IExpertiseRepository repo,
         EmbeddingService embeddingService,
         DeduplicationService dedup,
@@ -125,6 +297,7 @@ public static class ExpertiseEndpoints
         CancellationToken ct)
     {
         const int MaxBatchSize = 100;
+        var tenantContext = httpContext.RequireTenantContext();
 
         if (requests is null || requests.Count == 0)
             return Results.Problem("Request body must contain at least one entry.", statusCode: 400);
@@ -145,6 +318,25 @@ public static class ExpertiseEndpoints
                     "Domain, Title, Body, and Source are required.");
                 continue;
             }
+
+            // Validate optional Tenant override per item.
+            if (requests[i].Tenant is not null)
+            {
+                if (!string.Equals(requests[i].Tenant, "shared", StringComparison.OrdinalIgnoreCase))
+                {
+                    results[i] = new BatchEntryResult(i, BatchEntryStatus.Rejected, null,
+                        "Only Tenant=\"shared\" may be specified; all other tenants are server-assigned.");
+                    continue;
+                }
+
+                if (!tenantContext.Scopes.Contains(AuthConstants.WriteApproveScope))
+                {
+                    results[i] = new BatchEntryResult(i, BatchEntryStatus.Rejected, null,
+                        "Creating shared entries requires expertise.write.approve.");
+                    continue;
+                }
+            }
+
             validItems.Add((i, requests[i]));
         }
 
@@ -168,8 +360,23 @@ public static class ExpertiseEndpoints
 
             return Results.Json(results.ToList(), statusCode: 207);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is InvalidOperationException
+                                      or HttpRequestException
+                                      or TimeoutException
+                                      or IOException
+                                      or ArgumentException)
         {
+            // Narrowed from `catch (Exception)` to satisfy CodeQL
+            // cs/catch-of-all-exceptions. The IEmbeddingGenerator abstraction
+            // is pluggable, so we cover the realistic failure surface across
+            // both the local ONNX backend (InvalidOperationException for
+            // session/state errors, IOException for model-file issues,
+            // ArgumentException / ArgumentOutOfRangeException from BERT
+            // tokenizer pre-processing on pathological input — lone surrogates,
+            // sequences exceeding positional limits) and any HTTP-backed
+            // backend (HttpRequestException, TimeoutException).
+            // Process-fatal exceptions (OOM, AVE) and OperationCanceledException
+            // (handled by the sibling catch above) propagate by exclusion.
             logger.LogWarning(ex, "Batch embedding generation failed");
 
             foreach (var (index, _) in validItems)
@@ -181,7 +388,7 @@ public static class ExpertiseEndpoints
         try
         {
             var validRequests = validItems.Select(v => v.Request).ToList();
-            dedupResults = await dedup.CheckBatchAsync(validRequests, embeddings, ct);
+            dedupResults = await dedup.CheckBatchAsync(validRequests, embeddings, tenantContext, ct);
         }
         catch (OperationCanceledException)
         {
@@ -190,8 +397,18 @@ public static class ExpertiseEndpoints
 
             return Results.Json(results.ToList(), statusCode: 207);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is DbException
+                                      or DbUpdateException
+                                      or InvalidOperationException
+                                      or ArgumentException)
         {
+            // Narrowed from `catch (Exception)` to satisfy CodeQL
+            // cs/catch-of-all-exceptions. CheckBatchAsync issues bulk DB
+            // queries via the repo and may surface Npgsql/EF errors
+            // (DbException / DbUpdateException), DI/state errors
+            // (InvalidOperationException), or argument-shape mismatches
+            // (ArgumentException — thrown explicitly when embeddings.Count
+            // does not match requests.Count). Process-fatal and OCE propagate.
             logger.LogWarning(ex, "Batch deduplication failed");
 
             foreach (var (index, _) in validItems)
@@ -215,7 +432,7 @@ public static class ExpertiseEndpoints
 
             try
             {
-                var created = await repo.CreateAsync(BuildEntry(request, embedding), ct);
+                var created = await repo.CreateAsync(BuildEntry(request, embedding, tenantContext), tenantContext, ct);
                 results[index] = new BatchEntryResult(index, BatchEntryStatus.Created, created.Id, null);
             }
             catch (OperationCanceledException)
@@ -224,8 +441,16 @@ public static class ExpertiseEndpoints
                     results[validItems[k].Index] = new BatchEntryResult(validItems[k].Index, BatchEntryStatus.Failed, null, "Request was cancelled.");
                 break;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is DbException
+                                          or DbUpdateException
+                                          or InvalidOperationException)
             {
+                // Narrowed from `catch (Exception)` per CodeQL
+                // cs/catch-of-all-exceptions. repo.CreateAsync ultimately calls
+                // db.SaveChangesAsync, which raises DbUpdateException for
+                // constraint violations, DbException for transport-level
+                // Npgsql errors, and InvalidOperationException for tenant-mismatch
+                // guard trips (line ~145). Process-fatal and OCE propagate.
                 logger.LogWarning(ex, "Batch entry {Index} failed", index);
                 results[index] = new BatchEntryResult(index, BatchEntryStatus.Failed, null, "Entry could not be created.");
             }
@@ -238,38 +463,126 @@ public static class ExpertiseEndpoints
             : Results.Json(resultList, statusCode: 207);
     }
 
-    private static ExpertiseEntry BuildEntry(CreateExpertiseRequest request, Vector embedding) => new()
+    private static ExpertiseEntry BuildEntry(
+        CreateExpertiseRequest request,
+        Vector embedding,
+        TenantContext tenantContext)
     {
-        Domain = request.Domain,
-        Tags = request.Tags ?? [],
-        Title = request.Title,
-        Body = request.Body,
-        EntryType = request.EntryType,
-        Severity = request.Severity,
-        Source = request.Source,
-        SourceVersion = request.SourceVersion,
-        Embedding = embedding
-    };
+        var authorPrincipal = tenantContext.Principal.FindFirst("sub")?.Value
+                          ?? tenantContext.Principal.Identity?.Name
+                          ?? "unknown";
+        var isShared = string.Equals(request.Tenant, "shared", StringComparison.OrdinalIgnoreCase);
+        return new ExpertiseEntry
+        {
+            Domain = request.Domain,
+            Tags = request.Tags ?? [],
+            Title = request.Title,
+            Body = request.Body,
+            EntryType = request.EntryType,
+            Severity = request.Severity,
+            Source = request.Source,
+            SourceVersion = request.SourceVersion,
+            Embedding = embedding,
+            Tenant = request.Tenant ?? tenantContext.Tenant!,
+            AuthorPrincipal = authorPrincipal,
+            AuthorAgent = tenantContext.Agent,
+            // Shared entries bypass the draft queue (which is scoped to the writing tenant
+            // and never surfaces shared drafts). Create them directly as Approved to avoid
+            // a permanently unapprovable stranded draft.
+            ReviewState = isShared ? ReviewState.Approved : ReviewState.Draft,
+            ReviewedBy = isShared ? authorPrincipal : null,
+            ReviewedAt = isShared ? DateTime.UtcNow : null,
+        };
+    }
 
     private static async Task<IResult> DeleteEntry(
         Guid id,
+        HttpContext httpContext,
         IExpertiseRepository repo,
         CancellationToken ct)
     {
-        var deleted = await repo.SoftDeleteAsync(id, ct);
-        return deleted ? Results.NoContent() : Results.NotFound();
+        var tenantContext = httpContext.RequireTenantContext();
+        var outcome = await repo.SoftDeleteAsync(id, tenantContext, ct);
+        return outcome switch
+        {
+            WriteOutcome.Success => Results.NoContent(),
+            WriteOutcome.NotFound => Results.NotFound(),
+            WriteOutcome.InsufficientScope => Results.Problem(
+                "Soft-deleting a shared entry requires the expertise.write.approve scope.",
+                statusCode: 403),
+            _ => Results.Problem("Unexpected outcome from soft-delete.", statusCode: 500)
+        };
     }
+
+    private static async Task<IResult> ApproveEntry(
+        Guid id,
+        HttpContext httpContext,
+        IExpertiseRepository repo,
+        IResponseHygiene hygiene,
+        ApproveExpertiseRequest? request,
+        CancellationToken ct)
+    {
+        var tenantContext = httpContext.RequireTenantContext();
+        var visibility = request?.Visibility ?? Visibility.Private;
+
+        var (outcome, entry) = await repo.ApproveAsync(id, tenantContext, visibility, ct);
+        return outcome switch
+        {
+            WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(entry!, hygiene)),
+            WriteOutcome.NotFound => Results.NotFound(),
+            WriteOutcome.InvalidState => Results.Problem(
+                "Entry is not in Draft state and cannot be approved.",
+                statusCode: 409),
+            WriteOutcome.ConcurrentConflict => Results.Problem(
+                "Entry was modified concurrently. Retry.",
+                statusCode: 409),
+            _ => Results.Problem("Unexpected outcome from approve.", statusCode: 500)
+        };
+    }
+
+    private static async Task<IResult> RejectEntry(
+        Guid id,
+        RejectExpertiseRequest request,
+        HttpContext httpContext,
+        IExpertiseRepository repo,
+        IResponseHygiene hygiene,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.RejectionReason))
+            return Results.Problem("rejectionReason is required.", statusCode: 400);
+        if (request.RejectionReason.Length > MaxRejectionReasonLength)
+            return Results.Problem(
+                $"rejectionReason exceeds maximum length of {MaxRejectionReasonLength} characters.",
+                statusCode: 400);
+
+        var tenantContext = httpContext.RequireTenantContext();
+        var (outcome, entry) = await repo.RejectAsync(id, tenantContext, request.RejectionReason, ct);
+        return outcome switch
+        {
+            WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(entry!, hygiene)),
+            WriteOutcome.NotFound => Results.NotFound(),
+            WriteOutcome.InvalidState => Results.Problem(
+                "Entry is not in Draft state and cannot be rejected.",
+                statusCode: 409),
+            WriteOutcome.ConcurrentConflict => Results.Problem(
+                "Entry was modified concurrently. Retry.",
+                statusCode: 409),
+            _ => Results.Problem("Unexpected outcome from reject.", statusCode: 500)
+        };
+    }
+
+    private const int MaxRejectionReasonLength = 2000;
 }
 
-public enum BatchEntryStatus { Created, Duplicate, Rejected, Failed }
+internal enum BatchEntryStatus { Created, Duplicate, Rejected, Failed }
 
-public record BatchEntryResult(
+internal record BatchEntryResult(
     int Index,
     BatchEntryStatus Status,
     Guid? Id,
     string? Error);
 
-public record CreateExpertiseRequest(
+internal record CreateExpertiseRequest(
     string Domain,
     string Title,
     string Body,
@@ -277,9 +590,17 @@ public record CreateExpertiseRequest(
     Severity Severity,
     string Source,
     List<string>? Tags = null,
-    string? SourceVersion = null);
+    string? SourceVersion = null,
+    /// <summary>
+    /// Optional tenant override. Only <c>"shared"</c> is accepted; all other tenants are
+    /// server-assigned from the caller's token. Requires <c>expertise.write.approve</c>.
+    /// Shared entries are created directly as <see cref="ReviewState.Approved"/> to avoid
+    /// stranded drafts (the draft queue is scoped to the writing tenant and never surfaces
+    /// shared entries).
+    /// </summary>
+    string? Tenant = null);
 
-public record UpdateExpertiseRequest(
+internal record UpdateExpertiseRequest(
     string? Domain = null,
     string? Title = null,
     string? Body = null,
@@ -287,4 +608,15 @@ public record UpdateExpertiseRequest(
     Severity? Severity = null,
     string? Source = null,
     List<string>? Tags = null,
-    string? SourceVersion = null);
+    string? SourceVersion = null,
+    /// <summary>
+    /// Optional Visibility change (Private &lt;-&gt; Shared). When this field is supplied
+    /// and the value differs from the entry's current Visibility, the caller must hold
+    /// <c>expertise.write.approve</c>. A no-op (Visibility supplied matches current)
+    /// does not require the elevated scope.
+    /// </summary>
+    Visibility? Visibility = null);
+
+internal record ApproveExpertiseRequest(Visibility? Visibility = null);
+
+internal record RejectExpertiseRequest(string RejectionReason);

@@ -1,6 +1,6 @@
 namespace ExpertiseApi.Models;
 
-public enum Severity
+internal enum Severity
 {
     Info,
     Warning,

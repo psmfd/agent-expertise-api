@@ -35,7 +35,7 @@ Your output is structured guidance that the calling agent or user implements.
 
 ## Output format
 
-```
+```text
 ## Answer
 [Direct answer to the question, grounded in design document and/or source code]
 

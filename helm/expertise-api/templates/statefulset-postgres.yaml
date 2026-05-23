@@ -1,3 +1,4 @@
+{{- if .Values.postgres.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -18,14 +19,24 @@ spec:
         {{- include "expertise-api.postgresSelectorLabels" . | nindent 8 }}
     spec:
       securityContext:
+        runAsNonRoot: true
         runAsUser: 999
         runAsGroup: 999
         fsGroup: 999
         fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       terminationGracePeriodSeconds: 120
       containers:
         - name: postgres
           image: {{ .Values.postgres.image }}
+          # readOnlyRootFilesystem deferred — postgres writes to /tmp, /var/run/postgresql,
+          # and the entrypoint expects to mutate /var/lib/postgresql; tightening to ROFS
+          # requires extra emptyDir mounts and is tracked separately.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 5432
               protocol: TCP
@@ -75,6 +86,11 @@ spec:
 
         - name: pgbouncer
           image: {{ .Values.pgbouncer.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 6432
               protocol: TCP
@@ -84,6 +100,8 @@ spec:
             - name: pgbouncer-config
               mountPath: /etc/pgbouncer/pgbouncer.ini
               subPath: pgbouncer.ini
+            - name: pgbouncer-run
+              mountPath: /var/run/pgbouncer
           livenessProbe:
             exec:
               command: ["pg_isready", "-h", "127.0.0.1", "-p", "6432"]
@@ -101,6 +119,10 @@ spec:
         - name: pgbouncer-config
           configMap:
             name: {{ include "expertise-api.fullname" . }}-pgbouncer
+        # Required because pgbouncer container has readOnlyRootFilesystem=true
+        # but the daemon writes its PID file and control socket here.
+        - name: pgbouncer-run
+          emptyDir: {}
 
   volumeClaimTemplates:
     - metadata:
@@ -110,3 +132,4 @@ spec:
         resources:
           requests:
             storage: {{ .Values.postgres.storage }}
+{{- end }}

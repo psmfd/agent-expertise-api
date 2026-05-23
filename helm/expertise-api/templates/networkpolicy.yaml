@@ -1,0 +1,105 @@
+{{- if .Values.networkPolicy.enabled }}
+---
+# Restrict ingress to the API pods: ingress controller (web traffic) and the
+# Prometheus namespace (/metrics scrape). Egress to postgres on 6432 is
+# implicitly required for the API to function.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "expertise-api.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "expertise-api.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "expertise-api.apiSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Web traffic from the ingress controller.
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 12 }}
+      ports:
+        - port: {{ .Values.service.targetPort }}
+          protocol: TCP
+    # /metrics scrape from the Prometheus namespace.
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.prometheusNamespaceSelector | nindent 12 }}
+      ports:
+        - port: {{ .Values.service.targetPort }}
+          protocol: TCP
+  egress:
+    {{- if .Values.postgres.enabled }}
+    # API → pgbouncer (sidecar in the in-chart postgres pod).
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "expertise-api.postgresSelectorLabels" . | nindent 14 }}
+      ports:
+        - port: 6432
+          protocol: TCP
+    {{- else if and .Values.postgres.external .Values.postgres.external.cidr }}
+    # API → external Postgres (postgres.enabled=false).
+    # Operator supplied postgres.external.cidr; emit an ipBlock egress rule
+    # to the documented external port (defaults to 5432).
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.postgres.external.cidr | quote }}
+      ports:
+        - port: {{ .Values.postgres.external.port | default 5432 }}
+          protocol: TCP
+    {{- end }}
+    # DNS resolution.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # OIDC issuers (HTTPS to public IdPs). Cluster-egress firewalls may layer
+    # on top — this rule covers the in-cluster NetworkPolicy admission.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 443
+          protocol: TCP
+---
+{{- if .Values.postgres.enabled }}
+# Postgres pod accepts only API and migration-job traffic on 6432.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "expertise-api.fullname" . }}-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "expertise-api.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "expertise-api.postgresSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "expertise-api.apiSelectorLabels" . | nindent 14 }}
+        # Migration-hook Job pods carry the same selectorLabels as the API but
+        # add component=migrations; cover both with a single api-selector match
+        # plus an explicit migrations match.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "expertise-api.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: migrations
+      ports:
+        - port: 6432
+          protocol: TCP
+{{- end }}
+{{- end }}

@@ -1,3 +1,4 @@
+using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
 using Microsoft.EntityFrameworkCore;
 using Testcontainers.PostgreSql;
@@ -21,7 +22,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         var optionsBuilder = new DbContextOptionsBuilder<ExpertiseDbContext>()
             .UseNpgsql(ConnectionString, o => o.UseVector());
 
-        await using var db = new ExpertiseDbContext(optionsBuilder.Options);
+        await using var db = new ExpertiseDbContext(optionsBuilder.Options, new NoOpTenantContextAccessor());
         await db.Database.MigrateAsync();
     }
 

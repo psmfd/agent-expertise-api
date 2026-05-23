@@ -1,6 +1,6 @@
 namespace ExpertiseApi.Models;
 
-public enum EntryType
+internal enum EntryType
 {
     IssueFix,
     Caveat,

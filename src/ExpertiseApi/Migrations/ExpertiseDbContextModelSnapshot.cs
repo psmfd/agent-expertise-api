@@ -49,12 +49,81 @@ namespace ExpertiseApi.Migrations
                     b.ToTable("EmbeddingMetadata");
                 });
 
+            modelBuilder.Entity("ExpertiseApi.Models.ExpertiseAuditLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ActorClass")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ActorClassHeader")
+                        .HasColumnType("text");
+
+                    b.Property<string>("AfterHash")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Agent")
+                        .HasColumnType("text");
+
+                    b.Property<string>("AuthMethod")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BeforeHash")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("EntryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("IpAddress")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Principal")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Tenant")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("Timestamp")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorClass", "Timestamp");
+
+                    b.HasIndex("EntryId", "Timestamp");
+
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("EntryId", "Timestamp"), new[] { "Action" });
+
+                    b.HasIndex("Principal", "Timestamp");
+
+                    b.ToTable("ExpertiseAuditLogs");
+                });
+
             modelBuilder.Entity("ExpertiseApi.Models.ExpertiseEntry", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("AuthorAgent")
+                        .HasColumnType("text");
+
+                    b.Property<string>("AuthorPrincipal")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<string>("Body")
                         .IsRequired()
@@ -79,6 +148,22 @@ namespace ExpertiseApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("IntegrityHash")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RejectionReason")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ReviewState")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReviewedBy")
+                        .HasColumnType("text");
+
                     b.Property<NpgsqlTsVector>("SearchVector")
                         .IsRequired()
                         .ValueGeneratedOnAddOrUpdate()
@@ -101,6 +186,10 @@ namespace ExpertiseApi.Migrations
                         .IsRequired()
                         .HasColumnType("text[]");
 
+                    b.Property<string>("Tenant")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasColumnType("text");
@@ -109,6 +198,16 @@ namespace ExpertiseApi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.Property<string>("Visibility")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.HasKey("Id");
 
@@ -129,7 +228,22 @@ namespace ExpertiseApi.Migrations
 
                     NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Tags"), "gin");
 
+                    b.HasIndex("Tenant");
+
+                    b.HasIndex("Tenant", "ReviewState");
+
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("Tenant", "ReviewState"), new[] { "Id", "EntryType", "Severity" });
+
                     b.ToTable("ExpertiseEntries");
+                });
+
+            modelBuilder.Entity("ExpertiseApi.Models.ExpertiseAuditLog", b =>
+                {
+                    b.HasOne("ExpertiseApi.Models.ExpertiseEntry", null)
+                        .WithMany()
+                        .HasForeignKey("EntryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

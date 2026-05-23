@@ -1,6 +1,6 @@
 namespace ExpertiseApi.Models;
 
-public class EmbeddingMetadata
+internal class EmbeddingMetadata
 {
     public int Id { get; set; }
 

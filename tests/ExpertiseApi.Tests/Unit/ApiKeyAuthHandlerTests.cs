@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using FluentAssertions;
 
 namespace ExpertiseApi.Tests.Unit;
 
