@@ -291,6 +291,110 @@ jobs:
         if: always()
         run: docker rm -f install-smoke || true
 
+  install-smoke-macos:
+    name: install.sh end-to-end smoke (macOS / launchd / postgres-17)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    # E2 of #166 / closes #259. Sibling of install-smoke-linux above: same
+    # harness (scripts/test/test-install-smoke.sh), different OS provisioning.
+    # macOS GHA runners have no Docker daemon and no `services:` Postgres,
+    # so we install Postgres via Homebrew and run install.sh directly on
+    # the host. Unlike the Linux job, no privileged-container gate is
+    # needed — this is a regular host job and is safe for fork PRs.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup .NET
+        # The install.sh path on macOS runs `dotnet publish` against the
+        # repo's csproj, so the SDK (not just the runtime) must match
+        # global.json. Matches the Build & Test job above.
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        with:
+          global-json-file: global.json
+
+      - name: Install Postgres 17 + pgvector via Homebrew
+        # `pgvector` is a separate formula that drops the extension into
+        # every Homebrew Postgres formula's share dir, so it must be
+        # installed *after* postgresql@17 is present (brew handles the
+        # ordering when both are on the same `brew install` line).
+        # `postgresql@17` is keg-only — its bin/ is not on PATH by default.
+        run: |
+          brew update >/dev/null
+          brew install postgresql@17 pgvector
+          # Surface the keg-only PATH for every subsequent step. GITHUB_PATH
+          # is the cross-step PATH-prepend channel; exporting in this step
+          # alone would not carry to the harness run-step below.
+          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+
+      - name: Start Postgres via brew services
+        run: |
+          # macos-latest images preinstall postgresql@14 (not started by
+          # default). If a future image change starts it, our pg_isready
+          # against :5432 would succeed against the wrong cluster and the
+          # harness would create the role/db on pg14 with no pgvector.
+          # Hard-fail early if pg14 is already running.
+          if brew services list | awk '$1=="postgresql@14" && $2=="started" {found=1} END {exit !found}'; then
+            echo "::error::postgresql@14 is already running on this runner; refuse to start postgresql@17 alongside it"
+            brew services list
+            exit 1
+          fi
+          brew services start postgresql@17
+          # `brew services start` is fire-and-forget. Poll until the
+          # cluster is accepting connections. The harness also has a
+          # 30s reachability wait (start_postgres_macos), so this is
+          # defense in depth — failing fast here gives a clearer
+          # diagnostic than the harness's generic "unreachable" error.
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+              echo "postgres ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+            echo "::error::postgres did not become ready within 30s"
+            brew services info postgresql@17 || true
+            # `brew services` log paths are stable across formulas.
+            tail -n 200 "$(brew --prefix)/var/log/postgresql@17.log" 2>/dev/null || true
+            exit 1
+          fi
+          # Hard-fail if pgvector did not land in postgresql@17's sharedir.
+          # The harness's CREATE EXTENSION is warn-only, which would let a
+          # broken pgvector formula silently degrade coverage. We want a
+          # loud signal here, not a quiet pass on smoke that ships without
+          # embeddings. Run as the runner user (default brew superuser).
+          psql -h 127.0.0.1 -p 5432 -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector" \
+            -c "DROP EXTENSION vector" \
+            || { echo "::error::pgvector not installed into postgresql@17 sharedir"; exit 1; }
+
+      - name: Run install.sh smoke harness
+        # The harness's start_postgres_macos branch assumes the caller
+        # has Postgres up via brew services (which the steps above did)
+        # and that `psql` is on PATH (handled by the GITHUB_PATH export).
+        run: bash scripts/test/test-install-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          # macOS equivalent of the Linux journalctl --user dump.
+          launchctl list | grep -i expertise || true
+          launchctl print "gui/$(id -u)/com.thesemicolon.expertise-api" 2>&1 | head -200 || true
+          cat "$HOME/expertise-api/.smoke-install.log" 2>/dev/null || true
+          cat "$HOME/expertise-api/.smoke-restart.log" 2>/dev/null || true
+          cat "$HOME/expertise-api/.smoke-stop.log" 2>/dev/null || true
+          # Service stdout/stderr per the plist install.sh writes
+          # (templates/service-templates/expertise-api.plist.tmpl).
+          ls -la "$HOME/Library/Logs/expertise-api/" 2>/dev/null || true
+          tail -n 200 "$HOME/Library/Logs/expertise-api/"*.log 2>/dev/null || true
+          tail -n 200 "$(brew --prefix)/var/log/postgresql@17.log" 2>/dev/null || true
+
+      - name: Stop Postgres
+        if: always()
+        run: brew services stop postgresql@17 || true
+
   openapi-diff:
     name: OpenAPI breaking-change check
     # PR-only: a push to dev has no base to diff against (semantically the spec
