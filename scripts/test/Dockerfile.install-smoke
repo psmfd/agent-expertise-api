@@ -1,0 +1,106 @@
+# syntax=docker/dockerfile:1
+#
+# Debian 13 (Trixie) image for the install.sh end-to-end smoke test (E1 of
+# #166). Carries:
+#
+#   - systemd / dbus / dbus-user-session  — for `systemctl --user` parity
+#                                           with what real Linux installs use
+#   - postgresql-17                       — co-located on 127.0.0.1:5432 so
+#                                           the install.sh happy path needs
+#                                           no GHA `services:` plumbing
+#   - .NET 10 SDK via dotnet-install.sh   — Debian 13's apt only ships up to
+#                                           dotnet-sdk-9; we need 10
+#   - curl / ca-certificates / git        — install.sh + model download deps
+#
+# Sibling to Dockerfile.debian13 (which is intentionally minimal for the
+# apictl restart-race regression test). Kept separate so the lightweight
+# image stays small and the smoke image can evolve independently.
+#
+# Run with:
+#   docker run -d --name install-smoke --privileged \
+#     --cgroupns=host \
+#     --tmpfs /tmp --tmpfs /run --tmpfs /run/lock \
+#     -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+#     -v "$PWD:/workspace:ro" \
+#     install-smoke-debian13
+#
+# Then exec the harness inside as user `apictl`:
+#   docker exec -u apictl install-smoke bash -lc \
+#     'cp -r /workspace ~/repo && cd ~/repo && bash scripts/test/test-install-smoke.sh'
+
+FROM debian:13-slim
+
+# ---------------------------------------------------------------------------
+# Base: systemd + dbus + runtime tooling. Mirrors Dockerfile.debian13's
+# rationale (PID 1 systemd, user-session dbus for systemd --user, sudo for
+# privilege escalation inside the harness when starting postgres).
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        systemd systemd-sysv dbus dbus-user-session \
+        curl ca-certificates bash sudo git \
+        python3 xz-utils \
+        # .NET 10 ASP.NET Core runtime deps that dotnet-install.sh does not
+        # carry. libicu76 is the *runtime* package on Debian 13 trixie;
+        # libicu-dev (~30 MB) would pull headers + static data we never use.
+        libicu76 libssl3 libstdc++6 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Postgres 17 from the official PGDG feed. Debian 13's apt ships postgres-15
+# by default; we want parity with what the docker-compose stack uses (17).
+# ---------------------------------------------------------------------------
+RUN install -d /usr/share/postgresql-common/pgdg \
+    && curl --proto '=https' --tlsv1.2 -fsSL \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+https://apt.postgresql.org/pub/repos/apt trixie-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        postgresql-17 postgresql-client-17 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# .NET 10 SDK via the canonical dotnet-install.sh. Pinned to channel 10.0
+# (LTS). install.sh's bootstrap layer (#248) does the same on real hosts;
+# we shortcut here so the smoke harness need not exercise the bootstrap
+# leg (covered by tests/install/test-bootstrap-common.sh + the C2/C3
+# follow-ups #246/#247).
+# ---------------------------------------------------------------------------
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH="${PATH}:${DOTNET_ROOT}"
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
+    && chmod +x /tmp/dotnet-install.sh \
+    && /tmp/dotnet-install.sh --channel 10.0 --install-dir "${DOTNET_ROOT}" \
+    && rm -f /tmp/dotnet-install.sh \
+    && dotnet --info
+
+# ---------------------------------------------------------------------------
+# Non-root user matching the GitHub Actions runner's uid (1000) so the
+# bind-mounted workspace is readable without ownership games. Mirrors
+# Dockerfile.debian13's `apictl` user for harness symmetry.
+# ---------------------------------------------------------------------------
+RUN useradd -m -u 1000 -s /bin/bash apictl \
+    && mkdir -p /run/user/1000 \
+    && chown apictl:apictl /run/user/1000 \
+    && chmod 700 /run/user/1000 \
+    && echo 'apictl ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /bin/su, /usr/bin/pg_isready' \
+        > /etc/sudoers.d/apictl-smoke \
+    && chmod 0440 /etc/sudoers.d/apictl-smoke
+
+# Pre-enable linger so `systemctl --user` is available the moment apictl logs in.
+RUN mkdir -p /var/lib/systemd/linger \
+    && touch /var/lib/systemd/linger/apictl
+
+# Sane signals for systemd-in-container.
+STOPSIGNAL SIGRTMIN+3
+
+ENV container=docker
+
+# `/sbin/init` is the systemd-sysv-provided symlink; the recommended PID 1
+# for systemd-in-container per the upstream documentation.
+CMD ["/sbin/init"]
