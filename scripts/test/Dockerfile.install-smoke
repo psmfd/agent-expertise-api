@@ -77,7 +77,17 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL https://dot.net/v1/dotnet-install.sh -
     && chmod +x /tmp/dotnet-install.sh \
     && /tmp/dotnet-install.sh --channel 10.0 --install-dir "${DOTNET_ROOT}" \
     && rm -f /tmp/dotnet-install.sh \
-    && dotnet --info
+    && dotnet --info \
+    # ENV in the Dockerfile is inherited by `docker exec`, but a LOGIN shell
+    # (`bash -lc`) re-sources /etc/profile which on Debian resets PATH to a
+    # default that drops /usr/share/dotnet. Persist the override via
+    # /etc/profile.d/ so login shells see dotnet too. (Discovered on first
+    # CI run of the smoke job: install.sh exited 127 at dotnet publish.)
+    && printf '%s\n' \
+         'export DOTNET_ROOT=/usr/share/dotnet' \
+         'export PATH="$PATH:$DOTNET_ROOT"' \
+       > /etc/profile.d/dotnet.sh \
+    && chmod 0644 /etc/profile.d/dotnet.sh
 
 # ---------------------------------------------------------------------------
 # Non-root user matching the GitHub Actions runner's uid (1000) so the
@@ -94,7 +104,18 @@ RUN useradd -m -u 1000 -s /bin/bash apictl \
 
 # Pre-enable linger so `systemctl --user` is available the moment apictl logs in.
 RUN mkdir -p /var/lib/systemd/linger \
-    && touch /var/lib/systemd/linger/apictl
+    && touch /var/lib/systemd/linger/apictl \
+    # systemctl --user needs XDG_RUNTIME_DIR + DBUS_SESSION_BUS_ADDRESS to
+    # locate the user@1000.service's bus. A `bash -lc` login shell in
+    # `docker exec` does not inherit these from a real desktop session,
+    # so seed them from /etc/profile.d/. install.sh's systemd-user step
+    # (`systemctl --user daemon-reload`) needs both. (Discovered on first
+    # CI run: "Failed to connect to user scope bus via local transport".)
+    && printf '%s\n' \
+         'export XDG_RUNTIME_DIR="/run/user/$(id -u)"' \
+         'export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"' \
+       > /etc/profile.d/systemd-user-env.sh \
+    && chmod 0644 /etc/profile.d/systemd-user-env.sh
 
 # Sane signals for systemd-in-container.
 STOPSIGNAL SIGRTMIN+3

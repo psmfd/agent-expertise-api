@@ -220,10 +220,13 @@ if bash "${ROOT}/scripts/install.sh" \
 else
   rc=$?
   FAIL=$((FAIL + 1))
-  printf 'FAIL: install.sh exit %d\n' "$rc" >&2
-  printf '\n----- install.sh log (last 80 lines) -----\n' >&2
+  printf 'FAIL: install.sh exit %d
+' "$rc" >&2
+  # Use `--` to terminate option parsing: argv starting with `-----` would
+  # otherwise be parsed as a flag by bash's printf builtin.
+  printf -- '\n----- install.sh log (last 80 lines) -----\n' >&2
   tail -n 80 "${PREFIX}/.smoke-install.log" >&2 || true
-  printf '----- end install.sh log -----\n\n' >&2
+  printf -- '----- end install.sh log -----\n\n' >&2
 fi
 
 # ---------------------------------------------------------------------------
