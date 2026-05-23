@@ -258,8 +258,11 @@ log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR}"
 # Preserve the staged tree on failure so the failure-handler below can
 # re-run the migrate binary directly and capture its real stderr. The
 # escape hatch is a CI / debug-only env that production installs never
-# set.
+# set. Same for EXPERTISE_API_RELAXED_HARDENING (#166 / E1) which strips
+# the systemd hardening directives that require CAP_SYS_ADMIN to apply
+# (incompatible with privileged-container user-systemd).
 if EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE=1 \
+    EXPERTISE_API_RELAXED_HARDENING=1 \
     bash "${ROOT}/scripts/install.sh" \
      --skip-preflight \
      --prefix "${PREFIX}" \
