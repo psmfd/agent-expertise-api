@@ -143,9 +143,15 @@ start_postgres_macos() {
 create_postgres_role_and_db() {
   # On Linux we sudo to postgres; on macOS the brew install runs as the
   # current user so plain psql works.
+  #
+  # For the Linux leg we deliberately drop -h/-p and use the Unix socket
+  # so pg_hba.conf's `peer` auth for the postgres role lets us connect
+  # without a password. Connecting over TCP (`-h 127.0.0.1`) would route
+  # through `local all postgres md5` (no password set) and fail with
+  # FATAL: password authentication failed.
   local psql_cmd
   case "$(uname -s)" in
-    Linux)  psql_cmd=(sudo -u postgres psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}") ;;
+    Linux)  psql_cmd=(sudo -u postgres psql) ;;
     Darwin) psql_cmd=(psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -d postgres) ;;
     *)      err_exit "unsupported OS for psql dispatch: $(uname -s)" ;;
   esac
