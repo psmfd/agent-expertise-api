@@ -11,7 +11,8 @@
 # Module-private helpers (prefixed `_macos_`):
 #   _macos_require_brew, _macos_refuse_root, _macos_brew_prefix,
 #   _macos_ensure_dotnet_sdk, _macos_ensure_postgres,
-#   _macos_ensure_pgvector, _macos_ensure_database_and_role,
+#   _macos_ensure_pgvector, _macos_ensure_cosign,
+#   _macos_ensure_database_and_role,
 #   _macos_pg_psql, _macos_pg_running, _macos_pg_port,
 #   _macos_pg_installed_major
 #
@@ -243,6 +244,69 @@ _macos_ensure_pgvector() {
 }
 
 # ---------------------------------------------------------------------------
+# ensure_cosign
+#
+# Install Sigstore cosign via Homebrew. cosign is required by
+# install.sh's `--from-release` path (release-consumer.sh calls
+# `cosign verify-blob` against the manifest signature per ADR-011).
+# This is the macOS half of D4 — the Linux halves bundle with C2/C3
+# (#246, #247). The `--from-release` default-flip itself remains gated
+# on E3 (#260) per the tracker.
+#
+# bsdtar is intentionally NOT installed: macOS ships libarchive's
+# bsdtar as `/usr/bin/tar`, and release-consumer.sh::rc_select_tar
+# already detects this via `tar --version`.
+#
+# Deliberate divergence from `_macos_ensure_pgvector`: cosign has
+# multiple legitimate install channels operators use in the wild
+# (go install, asdf, direct GitHub release download, sigstore script);
+# pgvector is brew-only on macOS. So this helper adds a `command -v`
+# pre-check that honors any cosign on PATH, including under
+# `--upgrade-deps`. Do not "harmonize" the two helpers by removing the
+# pre-check — doing so would silently shadow operator-managed cosign
+# with a brew copy.
+# ---------------------------------------------------------------------------
+
+_macos_ensure_cosign() {
+  # Audit-trail token taxonomy:
+  #   cosign:skip-external  — PATH cosign present, not brew-managed (honor it)
+  #   cosign:skip           — brew-managed cosign present, UPGRADE_DEPS=0
+  #   cosign:upgraded       — brew-managed cosign present, UPGRADE_DEPS=1 (brew upgrade ran)
+  #   cosign:installed      — absent before, brew install ran
+  if command -v cosign >/dev/null 2>&1; then
+    local v
+    v="$(cosign version 2>/dev/null | awk '/GitVersion:/ { print $2; exit }')"
+    # `v` empty on schema variance (cosign v2.x sometimes elides the
+    # GitVersion line). Empty is acceptable; only used for log decoration.
+    if ! brew list --formula cosign >/dev/null 2>&1; then
+      # PATH cosign is not brew-managed (go-install / asdf / manual).
+      # Honor it under BOTH UPGRADE_DEPS=0 and UPGRADE_DEPS=1 — the
+      # operator owns the upgrade cadence for tools they manage out-
+      # of-band. `--upgrade-deps` is scoped to brew-managed deps.
+      log "cosign present on PATH (${v:-unknown version}, not brew-managed) \u2014 skip"
+      _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}cosign:skip-external"
+      return 0
+    fi
+    # Brew-managed cosign present.
+    if (( ${UPGRADE_DEPS:-0} == 1 )); then
+      log "cosign brew-managed (${v:-unknown}) \u2014 --upgrade-deps will brew-upgrade"
+      brew upgrade cosign 2>/dev/null || log "cosign already at latest (no-op upgrade)"
+      _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}cosign:upgraded"
+    else
+      log "cosign brew-managed and present (${v:-unknown version}) \u2014 skip"
+      _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}cosign:skip"
+    fi
+    return 0
+  fi
+  log "installing cosign via Homebrew"
+  brew install cosign \
+    || err "brew install cosign failed; install manually from https://docs.sigstore.dev/cosign/installation/ and re-run without --install-deps"
+  command -v cosign >/dev/null 2>&1 \
+    || err "cosign not on PATH after brew install \u2014 check 'brew doctor' and ensure /usr/local/bin or /opt/homebrew/bin is in PATH"
+  _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}cosign:installed"
+}
+
+# ---------------------------------------------------------------------------
 # ensure_database_and_role
 #
 # Idempotent:
@@ -360,6 +424,7 @@ bootstrap_macos_run() {
   log "--install-deps: macOS Homebrew bootstrap (upgrade-deps=${UPGRADE_DEPS:-0})"
   _macos_refuse_root
   _macos_require_brew
+  _macos_ensure_cosign
   _macos_ensure_dotnet_sdk
   _macos_ensure_postgres
   _macos_ensure_pgvector

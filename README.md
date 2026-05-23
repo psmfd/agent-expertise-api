@@ -550,10 +550,15 @@ Forward migrations will land behind an explicit
 ##### Dependency bootstrap (`--install-deps`, macOS)
 
 `scripts/install.sh --install-deps` installs missing host dependencies
-via Homebrew on macOS (.NET 10 SDK, PostgreSQL 17, pgvector), creates
-the `expertise` role + database, and writes a generated 192-bit
+via Homebrew on macOS (.NET 10 SDK, PostgreSQL 17, pgvector, **cosign**),
+creates the `expertise` role + database, and writes a generated 192-bit
 base64 password into `secrets.env` (mode 600). Off by default — the
 flag is opt-in for least-surprise and supply-chain safety.
+
+`cosign` is required for the `--from-release` install path (verifies
+the signed tarball manifest per ADR-011); when present already it is
+left alone. `bsdtar` is not installed because macOS ships libarchive's
+`bsdtar` as `/usr/bin/tar` already.
 
 Properties:
 
