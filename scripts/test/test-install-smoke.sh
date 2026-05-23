@@ -243,6 +243,7 @@ Auth__Mode=ApiKey
 Auth__ApiKey=smoke-api-key-not-secret
 Onnx__ModelPath=${PREFIX}/models/model.onnx
 Onnx__VocabPath=${PREFIX}/models/vocab.txt
+DOTNET_ROOT=/usr/share/dotnet
 EOF
 chmod 600 "${SECRETS_FILE}"
 assert "secrets file written with conn string" test -s "${SECRETS_FILE}"
@@ -272,6 +273,28 @@ else
   printf -- '\n----- install.sh log (last 200 lines) -----\n' >&2
   tail -n 200 "${PREFIX}/.smoke-install.log" >&2 || true
   printf -- '----- end install.sh log -----\n\n' >&2
+
+  # If install.sh died at migrate, run the binary directly to capture
+  # whatever stderr the migrate verb actually emitted. The launch wrapper
+  # exports DOTNET_ROOT / Onnx__ModelPath / ASPNETCORE_ENVIRONMENT but
+  # migrate.sh does not (#262); make them explicit here too so we get a
+  # clean diagnostic regardless.
+  if [ -x "${PREFIX}/bin.new/ExpertiseApi" ] || [ -f "${PREFIX}/bin.new/ExpertiseApi.dll" ]; then
+    printf -- '\n----- direct binary migrate retry (diagnostic) -----\n' >&2
+    (
+      set -a
+      # shellcheck disable=SC1090
+      . "${SECRETS_FILE}"
+      set +a
+      export DOTNET_ROOT="${DOTNET_ROOT:-/usr/share/dotnet}"
+      if [ -x "${PREFIX}/bin.new/ExpertiseApi" ]; then
+        "${PREFIX}/bin.new/ExpertiseApi" migrate 2>&1 || true
+      else
+        dotnet "${PREFIX}/bin.new/ExpertiseApi.dll" migrate 2>&1 || true
+      fi
+    ) >&2
+    printf -- '----- end direct binary migrate retry -----\n\n' >&2
+  fi
 fi
 
 # ---------------------------------------------------------------------------
