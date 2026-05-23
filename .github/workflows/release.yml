@@ -55,8 +55,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add helm/expertise-api/Chart.yaml
-          git commit -m "chore(helm): sync chart version + appVersion to ${NEW_VERSION} [skip ci]"
-          git push
+          # Idempotent: skip the commit if the chart is already at NEW_VERSION.
+          # This case arises during a release.yml retry after a partial-release
+          # cleanup where the v<NEW_VERSION> tag was deleted but the prior
+          # run's chart-sync commit remains on main. Without this guard,
+          # `git commit` exits 1 on "nothing to commit" and the whole job
+          # fails, gating Build & Push from ever running.
+          if git diff --cached --quiet; then
+            echo "chart already at ${NEW_VERSION}; sync is a no-op (likely a retry after partial-release cleanup)"
+          else
+            git commit -m "chore(helm): sync chart version + appVersion to ${NEW_VERSION} [skip ci]"
+            git push
+          fi
 
   build-and-push:
     name: Build & Push Docker Image
