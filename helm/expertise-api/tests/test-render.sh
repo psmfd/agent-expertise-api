@@ -387,14 +387,14 @@ fi
 
 # 38. Deployment probes: liveness uses /health/live (issue #143, T4).
 output=$(helm template test-release "$CHART" 2>&1)
-if echo "$output" | awk '/livenessProbe:/,/readinessProbe:/' | grep -qE 'path:[[:space:]]*/health/live'; then
+if echo "$output" | awk '/livenessProbe:/,/readinessProbe:/' | grep -qE 'path:[[:space:]]*"?/health/live"?'; then
     ok "probe-liveness-path" "livenessProbe.httpGet.path = /health/live"
 else
     err "probe-liveness-path" "livenessProbe.httpGet.path did not render as /health/live"
 fi
 
 # 39. Deployment probes: readiness uses /health/ready (issue #143, T4).
-if echo "$output" | awk '/readinessProbe:/,/^      volumes:/' | grep -qE 'path:[[:space:]]*/health/ready'; then
+if echo "$output" | awk '/readinessProbe:/,/^      volumes:/' | grep -qE 'path:[[:space:]]*"?/health/ready"?'; then
     ok "probe-readiness-path" "readinessProbe.httpGet.path = /health/ready"
 else
     err "probe-readiness-path" "readinessProbe.httpGet.path did not render as /health/ready"
@@ -402,10 +402,74 @@ fi
 
 # 40. Deployment probes: startup uses /health/ready so the pod isn't declared
 # started until DB, ONNX, and migration checks all pass (issue #143, T4).
-if echo "$output" | awk '/startupProbe:/,/livenessProbe:/' | grep -qE 'path:[[:space:]]*/health/ready'; then
+if echo "$output" | awk '/startupProbe:/,/livenessProbe:/' | grep -qE 'path:[[:space:]]*"?/health/ready"?'; then
     ok "probe-startup-path" "startupProbe.httpGet.path = /health/ready"
 else
     err "probe-startup-path" "startupProbe.httpGet.path did not render as /health/ready"
+fi
+
+# 41. Image tag falls back to .Chart.AppVersion when image.tag is empty/unset (issue #214).
+appver=$(awk '/^appVersion:/ {gsub(/"/,"",$2); print $2}' "$CHART/Chart.yaml")
+if echo "$output" | grep -qE "image: \"ghcr.io/thesemicolon/agent-expertise-api:${appver}\""; then
+    ok "image-tag-default-fallback" "image.tag empty falls back to chart appVersion ${appver}"
+else
+    err "image-tag-default-fallback" "default render did not produce :${appver} image tag"
+fi
+
+# 42. api.probes.*.path overrides flow through to the deployment (issue #216).
+out_override=$(helm template test-release "$CHART" \
+    --set api.probes.liveness.path=/healthz \
+    --set api.probes.readiness.path=/readyz \
+    --set api.probes.startup.path=/readyz 2>&1)
+if echo "$out_override" | awk '/livenessProbe:/,/readinessProbe:/' | grep -qE 'path:[[:space:]]*"?/healthz"?' \
+    && echo "$out_override" | awk '/readinessProbe:/,/^      volumes:/' | grep -qE 'path:[[:space:]]*"?/readyz"?' \
+    && echo "$out_override" | awk '/startupProbe:/,/livenessProbe:/' | grep -qE 'path:[[:space:]]*"?/readyz"?'; then
+    ok "probe-path-override" "api.probes.*.path values flow through to deployment"
+else
+    err "probe-path-override" "probe path overrides not honoured by deployment template"
+fi
+
+# 43. Schema rejects probe paths without a leading / (issue #216).
+out_bad_path=$(helm template test-release "$CHART" --set api.probes.liveness.path=health/live 2>&1 || true)
+# Match both helm 3.13+ ("'health/live' does not match pattern '^/.*'") and
+# older helm renderings ("api.probes.liveness.path: Does not match pattern '^/.*'")
+# which differ only in casing of "does" and the value-quoting prefix.
+if echo "$out_bad_path" | grep -qiE "does not match pattern '\^/"; then
+    ok "schema-probe-path-leading-slash" "schema rejects probe path without leading /"
+else
+    err "schema-probe-path-leading-slash" "schema accepted invalid probe path: $(echo "$out_bad_path" | tail -2 | tr '\n' ' ')"
+fi
+
+# 44. Migrations Job inherits the same image-tag default-to-appVersion fallback
+#     as the API Deployment (issue #214 — prevents migration/runtime image skew).
+appver=$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}' "$CHART/Chart.yaml")
+out_jobimg=$(helm template test-release "$CHART" 2>&1)
+if echo "$out_jobimg" | awk '/kind: Job/,/^---/' | grep -qF "image: \"ghcr.io/thesemicolon/agent-expertise-api:${appver}\""; then
+    ok "migrations-image-tag-default-fallback" "migrations Job image falls back to chart appVersion ${appver}"
+else
+    err "migrations-image-tag-default-fallback" "migrations Job image did not fall back to chart appVersion ${appver}"
+fi
+
+# 45. The `api` parent block in values.schema.json must remain permissive — the
+#     PR-232 review surfaced that an over-broad `additionalProperties: false`
+#     at this level would silently reject operator-side overlay keys. Guard
+#     against accidental re-tightening by asserting an unknown sibling key
+#     under `api` is accepted at install-time (specifically: an unknown key
+#     that is NOT under `api.probes`, which is intentionally closed).
+out_apiextra=$(helm template test-release "$CHART" --set api.unknownOverlayKey=somevalue 2>&1 || true)
+if echo "$out_apiextra" | grep -qiE "additional properties.*not allowed|does not match"; then
+    err "schema-api-block-permissive" "schema unexpectedly rejected an unknown sibling key under api (api block has been over-tightened)"
+else
+    ok "schema-api-block-permissive" "api block remains permissive for operator overlay keys (api.probes still closed)"
+fi
+
+# 46. Schema accepts SemVer prerelease tags on image.tag (issue #214 — release
+#     workflow may pin rc/beta tags during release-candidate cycles).
+out_pretag=$(helm template test-release "$CHART" --set image.tag=0.1.4-rc.1 2>&1 || true)
+if echo "$out_pretag" | grep -qF "image: \"ghcr.io/thesemicolon/agent-expertise-api:0.1.4-rc.1\""; then
+    ok "schema-image-tag-prerelease" "schema accepts SemVer prerelease tag (0.1.4-rc.1)"
+else
+    err "schema-image-tag-prerelease" "prerelease tag rejected or rendered wrong: $(echo "$out_pretag" | tail -2 | tr '\n' ' ')"
 fi
 
 echo "=================================="

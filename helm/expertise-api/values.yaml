@@ -1,7 +1,15 @@
 image:
   repository: ghcr.io/thesemicolon/agent-expertise-api
-  tag: latest
-  pullPolicy: Always
+  # Empty default falls back to .Chart.AppVersion in deployment.yaml. Override
+  # only when pinning to a maintenance/preview tag distinct from the chart's
+  # appVersion (image+chart skew is then surfaced in NOTES.txt as a warning).
+  # Setting tag: "latest" is permitted by the schema but discouraged — it
+  # defeats reproducibility and the C8 signed-digest verification story.
+  tag: ""
+  # IfNotPresent is the default. Pair pullPolicy: Always only with a
+  # mutable tag ("latest", "main"); for any pinned tag IfNotPresent saves
+  # registry round-trips on pod restart.
+  pullPolicy: IfNotPresent
 
 imagePullSecrets:
   - name: ghcr-pull-secret
@@ -109,6 +117,24 @@ api:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Probe paths and tunables. Defaults match the routes wired in Program.cs;
+  # override only when running a forked image that exposes health on
+  # different routes (e.g. behind a reverse-proxy prefix). NOTES.txt prints
+  # the resolved paths and warns when image.tag drifts from .Chart.AppVersion.
+  # See #216 / #153.
+  probes:
+    startup:
+      path: /health/ready
+      failureThreshold: 30
+      periodSeconds: 5
+    liveness:
+      path: /health/live
+      periodSeconds: 30
+      failureThreshold: 3
+    readiness:
+      path: /health/ready
+      periodSeconds: 10
+      failureThreshold: 3
 
 # In-cluster Postgres + PgBouncer (sidecar in the postgres pod).
 #
