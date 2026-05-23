@@ -60,7 +60,7 @@ https://apt.postgresql.org/pub/repos/apt trixie-pgdg main" \
         > /etc/apt/sources.list.d/pgdg.list \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        postgresql-17 postgresql-client-17 \
+        postgresql-17 postgresql-client-17 postgresql-17-pgvector \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
