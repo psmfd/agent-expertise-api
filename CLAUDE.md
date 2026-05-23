@@ -93,8 +93,10 @@ dotnet run --project src/ExpertiseApi
 curl http://localhost:5000/health
 
 # 5. Create an entry (under Hybrid mode in Development — accepts the API key from .env)
+# POSTs require an Idempotency-Key header per ADR-010 (hard-required since 2026-05-19).
 curl -X POST http://localhost:5000/expertise \
   -H "Authorization: Bearer dev-api-key-change-me" \
+  -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
   -d '{
     "domain": "shared",
@@ -134,7 +136,13 @@ AI agents (Claude Code, GitHub Copilot, Codex CLI, pi) consume this API via HTTP
 2. **Create** a new entry when discovering a fix, caveat, or pattern: `POST /expertise`
 3. **Update** an entry when information changes: `PATCH /expertise/{id}`
 
-All endpoints except `/health`, `/query`, and `/metrics` require `Authorization: Bearer <token>`.
+All endpoints except `/health`, `/query`, and `/metrics` require `Authorization: Bearer <token>`. The three POST writes (`/expertise`, `/expertise/{id}/approve`, `/expertise/{id}/reject`) additionally **require** an `Idempotency-Key` header — see [Idempotency](#idempotency-on-writes) below.
+
+### Idempotency on writes
+
+The three POST writes hard-require an `Idempotency-Key` request header as of 2026-05-19 (ADR-010 Amendment 1). Requests without one return `400 Bad Request` with a ProblemDetails body citing `draft-ietf-httpapi-idempotency-key-header-06`. The shipped skill (`scripts/lib/common.sh`'s `api_curl`) and the in-tree pi extension (`apiCall`) generate the header automatically from `uuidgen` / `crypto.randomUUID()`; ad-hoc `curl` callers must supply it themselves (`-H "Idempotency-Key: $(uuidgen)"`).
+
+Keys are scoped `(tenant, key)`, retained 24h by default, and replays return the original 2xx body plus `Idempotency-Replay: true`. A different request body under the same key returns HTTP 409. `POST /expertise/batch` is intentionally out of scope. Operators can revert to soft-require via env overlay `Idempotency:RequireKey=false`; see ADR-010 Amendment 1 for the rollback path and the post-flip observability gate.
 
 ### Skill
 

@@ -99,8 +99,11 @@ EOF
 
 ## Idempotency on writes
 
-The three POST endpoints (`/expertise`, `/expertise/{id}/approve`,
-`/expertise/{id}/reject`) honour an `Idempotency-Key` header per
+The server **requires** an `Idempotency-Key` header on every POST to the
+three target endpoints (`/expertise`, `/expertise/{id}/approve`,
+`/expertise/{id}/reject`) as of 2026-05-19 (ADR-010 Amendment 1). Missing
+keys are rejected with HTTP 400. Replays of a successful key return the
+original 2xx body per
 [ADR-010](../../../adrs/010-idempotency-key-handling.md). The `api_curl`
 helper in `scripts/lib/common.sh` injects this header automatically on
 any POST, generated from `uuidgen`. **No caller-side change is required**

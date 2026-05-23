@@ -36,29 +36,31 @@ flowchart LR
 
 ## API Surface
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/expertise` | List/filter entries by domain, tags, type, severity (Approved only) |
-| GET | `/expertise/{id}` | Get single entry (Approved only) |
-| GET | `/expertise/drafts` | List Draft + Rejected entries in caller's tenant (requires `expertise.write.approve`) |
-| POST | `/expertise` | Create entry (generates embedding, writes audit row) |
-| POST | `/expertise/batch` | Create up to 100 entries (generates embeddings, deduplicates) |
-| PATCH | `/expertise/{id}` | Update entry. Approved entries regress to Draft if caller lacks `write.approve`. Changing `visibility` requires `write.approve`. |
-| DELETE | `/expertise/{id}` | Soft delete (sets DeprecatedAt). Shared entries require `expertise.write.approve` |
-| POST | `/expertise/{id}/approve` | Transition Draft → Approved (requires `expertise.write.approve`) |
-| POST | `/expertise/{id}/reject` | Transition Draft → Rejected with required reason (requires `expertise.write.approve`) |
-| GET | `/expertise/search?q=` | Keyword full-text search (tsvector, Approved only) |
-| GET | `/expertise/search/semantic?q=` | Semantic vector search (pgvector, Approved only) |
-| GET | `/audit` | Cross-tenant audit log (cursor-paginated, requires `expertise.admin`). Supports actor-class filter: `?actorClass=human\|agent\|service` (Part D C6) |
-| GET | `/audit/{id}/raw` | Fetch a single audit row by id without response-hygiene transform (admin-only forensic escape hatch). |
-| GET | `/health/live` | Liveness — 200 while the process responds; no dependency checks. Map this to k8s `livenessProbe`. (Not used by systemd `WatchdogSec=`, which consumes `sd_notify(WATCHDOG=1)` datagrams rather than HTTP probes — the directive is intentionally disabled in the shipped unit template; see the watchdog note in the Native OS service section per #217.) No auth. |
-| GET | `/health/ready` | Readiness — 200 only when DB, ONNX model, and pending-migration checks are all healthy; 503 otherwise. Map this to k8s `readinessProbe` and load-balancer health checks. No auth. Response is cached for 2s (OutputCache policy `health-ready`) and the pending-migration signal is read from a singleton snapshot refreshed every 5 min by `MigrationStateRefresher` — per-probe DB cost is `AddDbContextCheck`'s `CanConnectAsync`, asymptotically bounded at 1 per pod per 2s regardless of incoming RPS (issue #158). |
-| GET | `/health` | Back-compat alias for `/health/ready`. No auth. |
-| GET | `/metrics` | Prometheus scrape endpoint (no auth required) |
-| GET | `/openapi/v1.json` | OpenAPI 3.x document for this deployment (anonymous, all environments). Also attached as a release asset — see ["OpenAPI discovery"](#openapi-discovery) below |
-| GET | `/query` | Interactive query page (read-only, no auth to load) |
+The three POST writes (`/expertise`, `/expertise/{id}/approve`, `/expertise/{id}/reject`) **require** an `Idempotency-Key` header per [ADR-010 Amendment 1](adrs/010-idempotency-key-handling.md#amendment-1--hard-require-flip-2026-05-19) (hard-required since 2026-05-19; operator rollback path: `Idempotency:RequireKey=false` overlay, documented in the amendment). Requests without one return `400 Bad Request`. The shipped skill and pi extension generate the header automatically; ad-hoc `curl` callers must supply it (`-H "Idempotency-Key: $(uuidgen)"`). `POST /expertise/batch` is intentionally out of scope.
 
-All endpoints except `/health`, `/health/live`, `/health/ready`, `/query`, `/metrics`, and `/openapi/v1.json` require `Authorization: Bearer <token>` — a JWT (`Auth:Mode = Oidc`) or, in Development, an API key or LocalDev token (`Auth:Mode = Hybrid`). See [SKILL.md](.claude/skills/expertise-api-design/SKILL.md) for scopes, modes, and configuration.
+| Method | Endpoint | Idempotency-Key | Purpose |
+|--------|----------|-----------------|---------|
+| GET | `/expertise` | — | List/filter entries by domain, tags, type, severity (Approved only) |
+| GET | `/expertise/{id}` | — | Get single entry (Approved only) |
+| GET | `/expertise/drafts` | — | List Draft + Rejected entries in caller's tenant (requires `expertise.write.approve`) |
+| POST | `/expertise` | **required** | Create entry (generates embedding, writes audit row) |
+| POST | `/expertise/batch` | — | Create up to 100 entries (generates embeddings, deduplicates) |
+| PATCH | `/expertise/{id}` | — | Update entry. Approved entries regress to Draft if caller lacks `write.approve`. Changing `visibility` requires `write.approve`. |
+| DELETE | `/expertise/{id}` | — | Soft delete (sets DeprecatedAt). Shared entries require `expertise.write.approve` |
+| POST | `/expertise/{id}/approve` | **required** | Transition Draft → Approved (requires `expertise.write.approve`) |
+| POST | `/expertise/{id}/reject` | **required** | Transition Draft → Rejected with required reason (requires `expertise.write.approve`) |
+| GET | `/expertise/search?q=` | — | Keyword full-text search (tsvector, Approved only) |
+| GET | `/expertise/search/semantic?q=` | — | Semantic vector search (pgvector, Approved only) |
+| GET | `/audit` | — | Cross-tenant audit log (cursor-paginated, requires `expertise.admin`). Supports actor-class filter: `?actorClass=human\|agent\|service` (Part D C6) |
+| GET | `/audit/{id}/raw` | — | Fetch a single audit row by id without response-hygiene transform (admin-only forensic escape hatch). |
+| GET | `/health/live` | — | Liveness — 200 while the process responds; no dependency checks. Map this to k8s `livenessProbe`. (Not used by systemd `WatchdogSec=`, which consumes `sd_notify(WATCHDOG=1)` datagrams rather than HTTP probes — the directive is intentionally disabled in the shipped unit template; see the watchdog note in the Native OS service section per #217.) No auth. |
+| GET | `/health/ready` | — | Readiness — 200 only when DB, ONNX model, and pending-migration checks are all healthy; 503 otherwise. Map this to k8s `readinessProbe` and load-balancer health checks. No auth. Response is cached for 2s (OutputCache policy `health-ready`) and the pending-migration signal is read from a singleton snapshot refreshed every 5 min by `MigrationStateRefresher` — per-probe DB cost is `AddDbContextCheck`'s `CanConnectAsync`, asymptotically bounded at 1 per pod per 2s regardless of incoming RPS (issue #158). |
+| GET | `/health` | — | Back-compat alias for `/health/ready`. No auth. |
+| GET | `/metrics` | — | Prometheus scrape endpoint (no auth required) |
+| GET | `/openapi/v1.json` | — | OpenAPI 3.x document for this deployment (anonymous, all environments). Also attached as a release asset — see ["OpenAPI discovery"](#openapi-discovery) below |
+| GET | `/query` | — | Interactive query page (read-only, no auth to load) |
+
+All endpoints except `/health`, `/health/live`, `/health/ready`, `/query`, `/metrics`, and `/openapi/v1.json` require `Authorization: Bearer <token>` — a JWT (`Auth:Mode = Oidc`) or, in Development, an API key or LocalDev token (`Auth:Mode = Hybrid`). See [`.agents/skills/expertise-api/references/DESIGN.md`](.agents/skills/expertise-api/references/DESIGN.md) for scopes, modes, and configuration.
 
 ### OpenAPI discovery
 
@@ -778,7 +780,7 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | File | Purpose |
 |------|---------|
 | [CLAUDE.md](CLAUDE.md) | Full build/run commands, local dev guide |
-| [.claude/skills/expertise-api-design/SKILL.md](.claude/skills/expertise-api-design/SKILL.md) | Authoritative design reference (data model, API, architecture) |
+| [.agents/skills/expertise-api/references/DESIGN.md](.agents/skills/expertise-api/references/DESIGN.md) | Authoritative design reference (data model, API, architecture) |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | Copilot agent instructions |
 
 ## Security
