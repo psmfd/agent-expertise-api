@@ -196,6 +196,23 @@ case "${OS}" in
     LABEL="com.thesemicolon.expertise-api"
     PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
     if [[ -f "${PLIST}" ]]; then
+      # Teardown sequence (#286, semantics verified on a CI macOS runner):
+      #
+      # launchd override entries are PERSISTENT: BOTH `launchctl enable` and
+      # `launchctl disable` write an entry into the LaunchDatabase that shows
+      # up in `launchctl print-disabled gui/UID`, and no launchctl subcommand
+      # removes an override entry without root. The only way to leave no
+      # stale state is to never write one — so uninstall runs no
+      # enable/disable at all, and install.sh only runs `enable` when the
+      # label is actually listed as disabled.
+      #
+      # 1. `launchctl bootout gui/UID/LABEL` — stops and unregisters the
+      #    service. Tolerates the service never having been loaded (|| true).
+      # 2. `rm -f PLIST` — after this, launchd has no path to re-load it.
+      #
+      # If a disabled-override exists (operator ran `launchctl disable` by
+      # hand), it is left in place: removing it requires root, it is harmless
+      # once the plist is gone, and install.sh clears it on the next install.
       do_action launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
       do_action rm -f "${PLIST}"
     else

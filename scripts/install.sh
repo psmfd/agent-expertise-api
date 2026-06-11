@@ -897,7 +897,19 @@ install_launchd() {
   domain="gui/$(id -u)"
   launchctl bootout "${domain}/${label}" 2>/dev/null || true
   launchctl bootstrap "${domain}" "${plist_path}"
-  launchctl enable "${domain}/${label}"
+  # `launchctl enable` writes a PERSISTENT "=> enabled" override entry into
+  # launchd's LaunchDatabase — it does NOT merely flip runtime state, and no
+  # launchctl subcommand removes an override entry without root. An
+  # unconditional `enable` here therefore leaves a stale entry in
+  # `launchctl print-disabled gui/UID` that survives uninstall forever
+  # (observed on a CI macOS runner — #286). Only run it when the label is
+  # actually disabled (recovering from a manual `launchctl disable`), so a
+  # normal install→uninstall cycle never touches the LaunchDatabase.
+  if launchctl print-disabled "${domain}" 2>/dev/null \
+      | grep -F "\"${label}\"" | grep -qw disabled; then
+    launchctl enable "${domain}/${label}"
+    log "launchd: cleared disabled-override for ${label}"
+  fi
   launchctl kickstart -k "${domain}/${label}"
   log "launchd: bootstrapped + kickstarted"
 }
