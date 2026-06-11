@@ -74,6 +74,21 @@ else
   warn "no secrets file at ${SECRETS_FILE} — relying on environment"
 fi
 
+# Mirror the launch wrapper's env exports so the migrate verb's DI graph
+# matches the runtime graph exactly. Program.cs registers IEmbeddingGenerator
+# only if File.Exists(Onnx:ModelPath) && File.Exists(Onnx:VocabPath); without
+# these exports the default ${baseDir}/models/ path is wrong for a staged or
+# installed layout, causing EmbeddingService DI validation to fail at startup
+# before any migration runs (issue #262).
+#
+# Honour any value already in the environment (allows CI or the operator to
+# override without editing this script). The fallback uses ${PREFIX}/models/
+# which matches the install layout written by install.sh's write_wrapper().
+export ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Production}"
+MODEL_DIR="${PREFIX}/models"
+export Onnx__ModelPath="${Onnx__ModelPath:-${MODEL_DIR}/model.onnx}"
+export Onnx__VocabPath="${Onnx__VocabPath:-${MODEL_DIR}/vocab.txt}"
+
 # Fail-fast guard: a missing or placeholder connection string would cause
 # the migrate verb to hang on connection-establishment (Npgsql default
 # Timeout=15s) and print a generic Npgsql error. Better to surface the

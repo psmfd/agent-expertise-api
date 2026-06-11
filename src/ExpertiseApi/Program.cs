@@ -433,6 +433,17 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 
 var app = builder.Build();
 
+// Top-level Serilog flush guard — wraps ALL post-Build() paths (one-shot CLI
+// verbs AND the long-running web host) so the Console sink's async buffer is
+// always drained before process exit. Without this outer try/finally the CLI
+// verb branches (`return;` below) bypass the web-host `finally` at the bottom
+// of this file, causing Serilog to swallow every buffered log entry when
+// stdout is not a TTY (i.e. piped output, CI, journalctl). Documented pattern:
+// https://github.com/serilog/serilog-aspnetcore#two-stage-initialization
+// Fixes issue #263.
+try
+{
+
 if (MigrateCommand.IsMigrateRequested(args))
 {
     // Surfaces a non-zero exit code so scripts/install.{sh,ps1} and
@@ -547,7 +558,9 @@ catch (Exception ex)
     Log.Fatal(ex, "Application terminated unexpectedly");
     Environment.ExitCode = 1;
 }
-finally { await Log.CloseAndFlushAsync(); }
+
+} // end outer try — web-host path
+finally { await Log.CloseAndFlushAsync(); } // outer finally — drains Serilog for ALL paths
 
 // WebApplicationFactory<Program> requires Program to be visible to the test
 // assembly via the C# type system. [InternalsVisibleTo] does not satisfy the
