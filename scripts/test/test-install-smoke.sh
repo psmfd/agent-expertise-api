@@ -649,8 +649,9 @@ case "$(uname -s)" in
       log "SMOKE_SYSTEM_SCOPE=1: attempting LaunchDaemon install at default prefix=${_sys_prefix}"
       set +e
       _sys_install_log="${TMPDIR:-/tmp}/.smoke-system-install-$$.log"
-      # shellcheck disable=SC2024 -- log path is under TMPDIR (runner-writable);
-      # the shell opens the fd before exec'ing sudo, which is correct here.
+      # SC2024: log path is under TMPDIR (runner-writable); the shell opens
+      # the fd before exec'ing sudo, which is correct here.
+      # shellcheck disable=SC2024
       sudo bash "${ROOT}/scripts/install.sh" \
         --system \
         --bind "${_sys_bind}" \
@@ -723,7 +724,8 @@ case "$(uname -s)" in
       # Teardown: uninstall.sh --system --yes --purge (default prefix, same
       # as the install above — exercises the documented operator path).
       set +e
-      # shellcheck disable=SC2024 -- same TMPDIR-writable pattern as the install step above.
+      # SC2024: same TMPDIR-writable pattern as the install step above.
+      # shellcheck disable=SC2024
       sudo bash "${ROOT}/scripts/uninstall.sh" \
         --system \
         --yes --purge \
