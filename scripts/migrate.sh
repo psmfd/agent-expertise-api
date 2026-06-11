@@ -22,14 +22,18 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: scripts/migrate.sh [--prefix DIR] [--bin-dir DIR] [--secrets-file FILE]
+                          [--migrate-timeout SECONDS]
 
 Options:
-  --prefix DIR         Install root (default: $HOME/.local/share/expertise-api)
-  --bin-dir DIR        Target binary directory directly (overrides --prefix-derived
-                       ${PREFIX}/bin). Used by install.sh during stage-then-swap
-                       to migrate against the new binaries before they go live.
-  --secrets-file FILE  Override path to secrets.env (default: $XDG_CONFIG_HOME/expertise-api/secrets.env)
-  -h, --help           Show this help
+  --prefix DIR             Install root (default: $HOME/.local/share/expertise-api)
+  --bin-dir DIR            Target binary directory directly (overrides --prefix-derived
+                           ${PREFIX}/bin). Used by install.sh during stage-then-swap
+                           to migrate against the new binaries before they go live.
+  --secrets-file FILE      Override path to secrets.env (default: $XDG_CONFIG_HOME/expertise-api/secrets.env)
+  --migrate-timeout SECS   Wall-time limit for the migrate verb (default: 300).
+                           0 disables the bound (unbounded). On timeout the script
+                           exits non-zero with a clear message.
+  -h, --help               Show this help
 
 Exit codes:
   0  success — migrations applied or none pending
@@ -41,14 +45,16 @@ EOF
 PREFIX="${HOME}/.local/share/expertise-api"
 SECRETS_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/secrets.env"
 BIN_DIR_OVERRIDE=""
+MIGRATE_TIMEOUT=300
 
 while (($#)); do
   case "$1" in
-    --prefix)        PREFIX="${2:?--prefix needs a directory}"; shift 2 ;;
-    --secrets-file)  SECRETS_FILE="${2:?--secrets-file needs a path}"; shift 2 ;;
-    --bin-dir)       BIN_DIR_OVERRIDE="${2:?--bin-dir needs a directory}"; shift 2 ;;
-    -h|--help)       usage; exit 0 ;;
-    *)               printf '[migrate] ERROR: unknown arg: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    --prefix)           PREFIX="${2:?--prefix needs a directory}"; shift 2 ;;
+    --secrets-file)     SECRETS_FILE="${2:?--secrets-file needs a path}"; shift 2 ;;
+    --bin-dir)          BIN_DIR_OVERRIDE="${2:?--bin-dir needs a directory}"; shift 2 ;;
+    --migrate-timeout)  MIGRATE_TIMEOUT="${2:?--migrate-timeout needs a number}"; shift 2 ;;
+    -h|--help)          usage; exit 0 ;;
+    *)                  printf '[migrate] ERROR: unknown arg: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
@@ -101,16 +107,50 @@ if [[ "${CONN}" == *CHANGE_ME* ]]; then
   err "ConnectionStrings__DefaultConnection still contains CHANGE_ME placeholder — edit ${SECRETS_FILE} first"
 fi
 
+# ---------------------------------------------------------------------------
+# Timeout wrapper — detect coreutils timeout (Linux) or gtimeout (macOS brew).
+# Falls back to unbounded when neither is present and MIGRATE_TIMEOUT > 0.
+# ---------------------------------------------------------------------------
+TIMEOUT_BIN=""
+if [[ "${MIGRATE_TIMEOUT}" -gt 0 ]] 2>/dev/null; then
+  if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_BIN="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_BIN="gtimeout"
+  else
+    warn "timeout / gtimeout not found — migrate will run unbounded (install coreutils via brew to enable the bound)"
+  fi
+fi
+
+# run_migrate CMD [ARGS...]: invoke the migrate command via the timeout wrapper
+# (or directly when MIGRATE_TIMEOUT=0 or no timeout binary). Uses a child
+# process rather than exec so we can inspect the exit code.
+run_migrate() {
+  local rc
+  if [[ -n "${TIMEOUT_BIN}" && "${MIGRATE_TIMEOUT}" -gt 0 ]]; then
+    log "migrate timeout: ${MIGRATE_TIMEOUT}s (via ${TIMEOUT_BIN})"
+    "${TIMEOUT_BIN}" "${MIGRATE_TIMEOUT}" "$@"
+    rc=$?
+    if [[ "${rc}" -eq 124 ]]; then
+      err "migration exceeded ${MIGRATE_TIMEOUT}s; live binaries NOT swapped; service NOT touched — check for advisory-lock contention or a runaway ALTER TABLE"
+    fi
+  else
+    "$@"
+    rc=$?
+  fi
+  return "${rc}"
+}
+
 # Prefer the SCD-published native binary when present (no `dotnet` runtime
 # required); fall back to the framework-dependent DLL.
 if [[ -x "${BIN_DIR}/ExpertiseApi" ]]; then
   log "invoking native binary: ${BIN_DIR}/ExpertiseApi migrate"
-  exec "${BIN_DIR}/ExpertiseApi" migrate
+  run_migrate "${BIN_DIR}/ExpertiseApi" migrate
 elif [[ -f "${BIN_DIR}/ExpertiseApi.dll" ]]; then
   command -v dotnet >/dev/null 2>&1 \
     || err "dotnet CLI not found in PATH (required for fdd publish layout at ${BIN_DIR})"
   log "invoking framework-dependent: dotnet ${BIN_DIR}/ExpertiseApi.dll migrate"
-  exec dotnet "${BIN_DIR}/ExpertiseApi.dll" migrate
+  run_migrate dotnet "${BIN_DIR}/ExpertiseApi.dll" migrate
 else
   err "no ExpertiseApi binary at ${BIN_DIR} — run scripts/install.sh first"
 fi

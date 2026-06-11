@@ -16,6 +16,7 @@
 #                      [--version vX.Y.Z|latest]
 #                      [--allow-downgrade] [--accept-republished-version]
 #                      [--skip-release-api-crosscheck]
+#                      [--migrate-timeout SECONDS]
 #                      [--help]
 #
 # Defaults: per-user install, fdd publish, bind 127.0.0.1:8080.
@@ -77,6 +78,10 @@
 #     (legacy) and is not auto-mutated; v1 is the current shape.
 #   * CRLF detector fails fast in preflight before any publish work;
 #     --fix-line-endings converts in place preserving mode + owner.
+#   * --migrate-timeout SECS (default 300): wall-time limit for the migrate
+#     verb. 0 disables the bound. On timeout the install exits non-zero
+#     with a clear message; live binaries are NOT swapped and the service
+#     is NOT touched. Passed through to scripts/migrate.sh unchanged.
 #
 
 set -euo pipefail
@@ -117,6 +122,7 @@ ALLOW_DOWNGRADE=0
 ACCEPT_REPUBLISHED_VERSION=0
 SKIP_RELEASE_API_CROSSCHECK=0
 ACCEPT_UNVERIFIED_SOURCE=0    # no-op in D3; mandatory after D4 default-flip
+MIGRATE_TIMEOUT=300           # wall-time limit for the migrate verb; 0 = unbounded
 
 usage() { sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -143,6 +149,7 @@ while [[ $# -gt 0 ]]; do
     --allow-downgrade)           ALLOW_DOWNGRADE=1; shift ;;
     --accept-republished-version) ACCEPT_REPUBLISHED_VERSION=1; shift ;;
     --skip-release-api-crosscheck) SKIP_RELEASE_API_CROSSCHECK=1; shift ;;
+    --migrate-timeout)   MIGRATE_TIMEOUT="${2:?--migrate-timeout needs a number}"; shift 2 ;;
     --help|-h)           usage; exit 0 ;;
     *)                   err "unknown flag: $1 (try --help)" ;;
   esac
@@ -749,7 +756,7 @@ run_migrate_staged() {
   fi
 
   log "running migrate against staged binaries (${STAGE_DIR})"
-  if ! "${SCRIPT_DIR}/migrate.sh" --bin-dir "${STAGE_DIR}" --secrets-file "${SECRETS_FILE}"; then
+  if ! "${SCRIPT_DIR}/migrate.sh" --bin-dir "${STAGE_DIR}" --secrets-file "${SECRETS_FILE}" --migrate-timeout "${MIGRATE_TIMEOUT}"; then
     err "migrate failed — live binaries NOT swapped; service NOT restarted; prior state intact. EF migrations are transactional per-migration; retry by fixing the schema/DB issue and re-running scripts/install.sh."
   fi
 }

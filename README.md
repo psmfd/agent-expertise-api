@@ -468,6 +468,15 @@ pending EF Core migrations and is idempotent (no-op when up to date).
   message.
 - The migrate scripts are safe to run standalone any time; they exit 0 on
   no-op so they're cheap to wire into other automation.
+- **`--migrate-timeout SECONDS`** (default `300`) bounds the wall-time of
+  the migrate verb on both scripts. `0` disables the bound. On timeout the
+  install exits non-zero with a clear message; live binaries are **not**
+  swapped and the service is **not** touched. On Linux and macOS with brew
+  coreutils (`timeout` / `gtimeout`) the bound is enforced; on stock macOS
+  where neither binary is present a warning is emitted and migrate runs
+  unbounded (the install does not fail for a missing optional tool).
+  The flag is accepted by `scripts/migrate.sh` directly for standalone use,
+  and by `scripts/install.sh` / `scripts/install.ps1` which pass it through.
 
 #### Upgrade safety
 
