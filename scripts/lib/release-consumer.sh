@@ -19,11 +19,14 @@
 
 # ---------------------------------------------------------------------------
 # RELEASE_REPO — the {owner}/{repo} slug that owns the release artifacts.
-# Hard-coded; forks must edit. Mirrors the COSIGN_IDENTITY constant in
+# Hard-coded; forks must edit. Mirrors the COSIGN_IDENTITIES constant in
 # scripts/verify-release.sh — if you change one without the other the
 # verification step will refuse the install with a clear error.
+# (Owner renamed TheSemicolon -> psmfd, 2026-06, #294 — the old slug only
+# worked via GitHub's 301 redirect, which survives just until the old
+# name is reclaimed.)
 # ---------------------------------------------------------------------------
-readonly RELEASE_REPO="TheSemicolon/agent-expertise-api"
+readonly RELEASE_REPO="psmfd/agent-expertise-api"
 
 # ---------------------------------------------------------------------------
 # rc_source_verify_release — load constants + helpers from verify-release.sh
@@ -664,7 +667,7 @@ rc_write_post_install_markers() {
       "$ts" "${VERIFIED_APP_VERSION:-unknown}" \
       "${VERIFIED_MANIFEST_SHA:-unknown}" \
       "$(jq -r '.artifacts.tarball.sha256 // "unknown"' "${VERIFIED_MANIFEST_PATH:-/dev/null}" 2>/dev/null || echo unknown)" \
-      "${COSIGN_IDENTITY:-unknown}" \
+      "${VERIFIED_COSIGN_IDENTITY:-unknown}" \
       "${cosign_ver:-unknown}" \
       >> "$history"
   else

@@ -326,7 +326,7 @@ Scope shorthand (`read`, `draft`, `approve`, `admin`) expands to full scope stri
 | `release.yml` | Push to main | semantic-release version bump + tag, then Docker build linux/amd64+arm64, push to GHCR (only when a new version is released) |
 | `lint-pr-title.yml` | PR to dev | Validates PR title follows Conventional Commits format |
 
-GHCR image: `ghcr.io/thesemicolon/agent-expertise-api` (multi-arch: amd64 + arm64).
+GHCR image: `ghcr.io/psmfd/agent-expertise-api` (multi-arch: amd64 + arm64).
 
 ### Pre-flight PR validator
 
