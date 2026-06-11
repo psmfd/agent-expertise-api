@@ -112,11 +112,13 @@ wait_running() {
   local i=0
   while (( i < timeout_secs * 4 )); do
     state="$(launchd_state)"
-    case "${state}" in
-      running) return 0 ;;
-      spawn|"") ;;
-      *) fail "unexpected launchd state '${state}' while waiting for running" ;;
-    esac
+    # Only `running` terminates the wait. Everything else is treated as
+    # transient: launchd surfaces short-lived intermediate states during
+    # spawn — `xpcproxy` (the exec trampoline, observed in CI), `spawn
+    # scheduled`, `spawning` — and failing fast on them races the spawn
+    # path. A genuinely wedged service is caught by the timeout below,
+    # which reports the last observed state.
+    if [[ "${state}" == "running" ]]; then return 0; fi
     sleep 0.25
     i=$(( i + 1 ))
   done
