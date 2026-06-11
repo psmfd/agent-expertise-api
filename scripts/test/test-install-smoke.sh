@@ -683,8 +683,20 @@ case "$(uname -s)" in
       else
         FAIL=$((FAIL + 1))
         printf 'FAIL: LaunchDaemon /health/live did not return 200 within 60s\n' >&2
+        printf '[diag] launchctl print:\n' >&2
         sudo launchctl print "system/com.thesemicolon.expertise-api" 2>&1 | head -60 >&2 || true
-        sudo tail -n 40 /var/log/expertise-api/stderr.log >&2 2>/dev/null || true
+        printf '[diag] path layout:\n' >&2
+        sudo ls -la "${_sys_prefix}" "${_sys_prefix}/bin" /var/log/expertise-api "${_sys_config_dir}" >&2 2>&1 || true
+        printf '[diag] stdout.log:\n' >&2
+        sudo cat /var/log/expertise-api/stdout.log >&2 2>&1 || printf '[diag] (stdout.log missing/unreadable)\n' >&2
+        printf '[diag] stderr.log:\n' >&2
+        sudo cat /var/log/expertise-api/stderr.log >&2 2>&1 || printf '[diag] (stderr.log missing/unreadable)\n' >&2
+        printf '[diag] direct wrapper run as %s (8s window):\n' "$(id -un)" >&2
+        sudo -u "$(id -un)" /bin/bash -c \
+          "'${_sys_prefix}/launch-expertise-api.sh' > '${TMPDIR:-/tmp}/.wrap-direct-$$.log' 2>&1 & _wp=\$!; sleep 8; kill \$_wp 2>/dev/null; true" || true
+        head -n 40 "${TMPDIR:-/tmp}/.wrap-direct-$$.log" >&2 2>/dev/null || printf '[diag] (no direct-run output captured)\n' >&2
+        printf '[diag] launchd unified log (last 4m, expertise lines):\n' >&2
+        sudo log show --last 4m --style compact 2>/dev/null | grep -i expertise | tail -n 25 >&2 || true
       fi
 
       # Assert the daemon plist was written with UserName and correct paths.

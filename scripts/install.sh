@@ -1028,6 +1028,15 @@ install_launchd_system() {
   chown "${service_user}:${service_group}" "${LOG_DIR}"
   chmod 755 "${LOG_DIR}"
 
+  # The secrets file in /etc/expertise-api is typically created by root, but
+  # the launch wrapper sources it AFTER launchd drops to ${service_user} — a
+  # root-owned 600 file is unreadable there and the service dies at startup.
+  # Hand ownership to the service user, keep 600.
+  if [[ -f "${SECRETS_FILE}" ]]; then
+    chown "${service_user}" "${SECRETS_FILE}"
+    chmod 600 "${SECRETS_FILE}"
+  fi
+
   launchctl bootout "system/${label}" 2>/dev/null || true
   launchctl bootstrap system "${plist_path}"
   # Only run `launchctl enable` when the label is actually listed as disabled
