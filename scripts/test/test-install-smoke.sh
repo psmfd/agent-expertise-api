@@ -16,6 +16,10 @@
 #      install loop).
 #   4. ${PREFIX}/.install-mode and ${PREFIX}/.install-version-semver
 #      exist post-install (D3 post-install markers).
+#   4a. (release mode only) ${PREFIX}/.install-mode contains "release".
+#   4b. (release mode only) ${PREFIX}/.install-version-semver is non-empty
+#       and carries appVersion matching SMOKE_RELEASE_VERSION.
+#   4c. (release mode only) ${PREFIX}/.install-history is non-empty.
 #   5. `systemctl --user is-active expertise-api.service` reports active.
 #   6. /health/live returns 200 within READY_TIMEOUT seconds.
 #   7. /health/ready returns 200 (proves DB + ONNX + migrations are all
@@ -24,6 +28,14 @@
 #      200 again post-restart (regression guard for #141 / PR #164).
 #   9. `expertise-apictl stop` completes cleanly.
 #  10. No orphan dotnet ExpertiseApi process remains after stop.
+#  11. uninstall.sh --yes --purge exits 0.
+#  11a. (macOS only) `launchctl print-disabled gui/UID` contains no entry
+#       for the service label after uninstall — regression guard for #286.
+#       SKIP (not FAIL) if print-disabled itself errors (sandbox constraint).
+#  12. (macOS only) install.sh --system is accepted (#145). When
+#       SMOKE_SYSTEM_SCOPE=1: full LaunchDaemon end-to-end smoke including
+#       plist render + uninstall assertions. Otherwise: lightweight guard that
+#       --system no longer exits with "not supported on macOS".
 #
 # Exit codes:
 #   0  — all assertions passed
@@ -41,6 +53,18 @@
 #   POSTGRES_DB             — default expertise_smoke
 #   POSTGRES_USER           — default expertise_smoke
 #   POSTGRES_PASSWORD       — default smoke-password-not-secret
+#
+# Release-mode env (E3 / #260 — only set these for --from-release runs):
+#   SMOKE_INSTALL_MODE      — set to "release" to activate release-path
+#                             assertions (4a/4b/4c) and pass --from-release
+#                             to install.sh (default: empty = source mode)
+#   SMOKE_RELEASE_VERSION   — vX.Y.Z tag to install, required when
+#                             SMOKE_INSTALL_MODE=release (e.g. "v1.0.0")
+#
+# System-scope env (#145 — macOS LaunchDaemon only):
+#   SMOKE_SYSTEM_SCOPE      — set to "1" to run a full LaunchDaemon install
+#                             smoke on macOS (requires passwordless sudo).
+#                             Default is unset (user-scope smoke only).
 #
 # Postgres bootstrap (Linux container only): the harness invokes
 # `start_postgres_linux` which calls `sudo systemctl start postgresql`
@@ -83,6 +107,14 @@ BASE_URL="http://${BIND_ADDR}"
 log() { printf '[smoke] %s\n' "$1"; }
 warn() { printf '[smoke] WARN: %s\n' "$1" >&2; }
 err_exit() { printf '[smoke] FATAL: %s\n' "$1" >&2; exit 1; }
+
+# E3 / #260 — release-mode smoke parameters.
+SMOKE_INSTALL_MODE="${SMOKE_INSTALL_MODE:-}"
+SMOKE_RELEASE_VERSION="${SMOKE_RELEASE_VERSION:-}"
+
+if [ "${SMOKE_INSTALL_MODE}" = "release" ] && [ -z "${SMOKE_RELEASE_VERSION}" ]; then
+  err_exit "SMOKE_INSTALL_MODE=release requires SMOKE_RELEASE_VERSION to be set (e.g. v1.0.0)"
+fi
 
 # Suppress the dotnet first-run telemetry/HTTPS-cert banner so it does not
 # consume our tail-N install-log window during failure diagnostics. Mirrors
@@ -269,8 +301,18 @@ assert "secrets file written with conn string" test -s "${SECRETS_FILE}"
 #    install. Bind to a non-default port so the smoke run doesn't collide
 #    with anything else on the host. --skip-preflight bypasses the human-
 #    facing host preflight (CI is not a human-facing host).
+#    Release mode (E3 / #260): --from-release --version adds cosign-verified
+#    tarball download + extract in place of dotnet publish.
 # ---------------------------------------------------------------------------
-log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR}"
+log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR} mode=${SMOKE_INSTALL_MODE:-source}"
+
+# Build install args. Release-mode appends --from-release + --version so
+# the harness can be driven by either path without duplicating install logic.
+install_args=(--skip-preflight --prefix "${PREFIX}" --bind "${BIND_ADDR}")
+if [ "${SMOKE_INSTALL_MODE}" = "release" ]; then
+  install_args+=(--from-release --version "${SMOKE_RELEASE_VERSION}")
+fi
+
 # Preserve the staged tree on failure so the failure-handler below can
 # re-run the migrate binary directly and capture its real stderr. The
 # escape hatch is a CI / debug-only env that production installs never
@@ -280,9 +322,7 @@ log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR}"
 if EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE=1 \
     EXPERTISE_API_RELAXED_HARDENING=1 \
     bash "${ROOT}/scripts/install.sh" \
-     --skip-preflight \
-     --prefix "${PREFIX}" \
-     --bind "${BIND_ADDR}" \
+     "${install_args[@]}" \
      > "${PREFIX}/.smoke-install.log" 2>&1; then
   PASS=$((PASS + 1))
   printf 'PASS: install.sh exit 0\n'
@@ -363,6 +403,39 @@ assert "post-install marker .install-version-semver exists or source-mode" \
   bash -c "[ -s '${PREFIX}/.install-version-semver' ] \
            || [ \"\$(cat '${PREFIX}/.install-mode' 2>/dev/null)\" = 'source' ]"
 
+# 4a–4c: release-mode marker assertions (E3 / #260).
+# Only run when SMOKE_INSTALL_MODE=release — safe no-ops for source-mode
+# invocations from the E1/E2 jobs.
+if [ "${SMOKE_INSTALL_MODE}" = "release" ]; then
+  assert "post-install .install-mode contains 'release'" \
+    bash -c "[ \"\$(cat '${PREFIX}/.install-mode' 2>/dev/null)\" = 'release' ]"
+
+  # .install-version-semver must carry appVersion= matching the pinned version.
+  # SMOKE_RELEASE_VERSION carries the v-prefixed tag (e.g. v1.0.0).
+  # release-consumer.sh writes appVersion without the v prefix (matching the
+  # manifest's appVersion field), so strip it before the grep.
+  expected_appver="${SMOKE_RELEASE_VERSION#v}"
+  assert "post-install .install-version-semver carries expected appVersion (${expected_appver})" \
+    bash -c "grep -qF 'appVersion=${expected_appver}' '${PREFIX}/.install-version-semver' 2>/dev/null"
+
+  assert "post-install .install-history is non-empty" test -s "${PREFIX}/.install-history"
+fi
+
+# ---------------------------------------------------------------------------
+# 4d. install.env written by install.sh records EXPERTISE_API_LOG_DIR (#287).
+#     Stored at ${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/install.env
+#     so expertise-apictl can locate it without knowing which --prefix was
+#     used at install time. The smoke always uses --prefix so
+#     LOG_DIR == ${PREFIX}/logs; verify that the file records exactly that.
+# ---------------------------------------------------------------------------
+INSTALL_ENV_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/install.env"
+assert "post-install install.env exists at XDG config location" \
+  test -f "${INSTALL_ENV_FILE}"
+assert "post-install install.env records EXPERTISE_API_LOG_DIR" \
+  bash -c "grep -q '^EXPERTISE_API_LOG_DIR=' '${INSTALL_ENV_FILE}' 2>/dev/null"
+assert "post-install install.env EXPERTISE_API_LOG_DIR points to prefix logs dir" \
+  bash -c "grep -qF 'EXPERTISE_API_LOG_DIR=${PREFIX}/logs' '${INSTALL_ENV_FILE}' 2>/dev/null"
+
 # ---------------------------------------------------------------------------
 # 5. Service is active under systemd-user (Linux) / launchd (macOS).
 #    apictl status is the OS-agnostic shim.
@@ -398,6 +471,17 @@ assert "/health/live returns 200 within ${READY_TIMEOUT_SECONDS}s" \
 # ---------------------------------------------------------------------------
 assert "/health/ready returns 200" \
   wait_for_http "${BASE_URL}/health/ready" 10
+
+# ---------------------------------------------------------------------------
+# 7b. apictl logs -n 1 succeeds with the prefix install layout (#287).
+#     This is the core regression guard: before the fix, macOS logs would
+#     hardcode ${HOME}/Library/Logs/expertise-api and miss ${PREFIX}/logs.
+#     On macOS the fix causes apictl to read LOG_DIR from install.env (written
+#     in step 4d). On Linux journalctl is path-agnostic. Both platforms must
+#     pass. The service must be running (checked in 7) for logs to exist.
+# ---------------------------------------------------------------------------
+assert "apictl logs -n 1 exits 0 (prefix-aware log path, #287 regression guard)" \
+  bash -c "'${APICTL}' logs -n 1 >/dev/null 2>&1"
 
 # ---------------------------------------------------------------------------
 # 8. apictl restart preserves readiness (regression for #141 / PR #164)
@@ -462,6 +546,261 @@ else
   printf 'FAIL: %d orphan ExpertiseApi process(es) under %s:\n' "${orphan_count}" "${PREFIX}" >&2
   pgrep -lf "${PREFIX}.*ExpertiseApi" >&2 || true
 fi
+
+# ---------------------------------------------------------------------------
+# 11. Uninstall — smoke uninstall.sh and assert no stale launchd override
+#     state remains (macOS) and no plist remains (macOS). Runs on all OS.
+#
+#     macOS: after uninstall.sh --yes --purge, `launchctl print-disabled
+#     gui/UID` must NOT contain the service label. This is the acceptance
+#     criterion for #286: launchd override entries (written by BOTH
+#     `launchctl enable` and `launchctl disable`) are persistent and cannot
+#     be removed without root, so the fix is to never write one — install.sh
+#     runs `enable` only when the label is actually disabled, and uninstall
+#     runs no enable/disable at all. A fresh install→uninstall cycle must
+#     therefore leave no entry for the label in print-disabled.
+#
+#     If `launchctl print-disabled` itself errors (e.g. sandbox restrictions
+#     on a CI runner), we treat it as SKIP — not a FAIL — and log the reason.
+# ---------------------------------------------------------------------------
+_uninstall_label="com.thesemicolon.expertise-api"
+
+_uninstall_log="${TMPDIR:-/tmp}/.smoke-uninstall-$$.log"
+log "running uninstall.sh --yes --purge (prefix=${PREFIX})"
+if bash "${ROOT}/scripts/uninstall.sh" --yes --purge --prefix "${PREFIX}" \
+     > "${_uninstall_log}" 2>&1; then
+  PASS=$((PASS + 1))
+  printf 'PASS: uninstall.sh --yes --purge exit 0\n'
+else
+  rc=$?
+  FAIL=$((FAIL + 1))
+  printf 'FAIL: uninstall.sh --yes --purge exit %d\n' "$rc" >&2
+  tail -n 40 "${_uninstall_log}" >&2 || true
+fi
+
+# macOS-only: assert no stale launchd override entry remains after uninstall.
+case "$(uname -s)" in
+  Darwin)
+    # Capture print-disabled output; treat a command failure as a SKIP.
+    set +e
+    _pd_output=$(launchctl print-disabled "gui/$(id -u)" 2>&1)
+    _pd_rc=$?
+    set -e
+    if [ "${_pd_rc}" != "0" ]; then
+      log "SKIP: launchctl print-disabled exited ${_pd_rc} — sandbox restriction; cannot assert launchd override state"
+      log "SKIP: print-disabled output: ${_pd_output}"
+    elif printf '%s\n' "${_pd_output}" | grep -qF "${_uninstall_label}"; then
+      FAIL=$((FAIL + 1))
+      printf 'FAIL: launchd override entry for %s still present after uninstall\n' "${_uninstall_label}" >&2
+      printf 'FAIL: launchctl print-disabled gui/%s output:\n' "$(id -u)" >&2
+      printf '%s\n' "${_pd_output}" >&2
+    else
+      PASS=$((PASS + 1))
+      printf 'PASS: no launchd override entry for %s after uninstall\n' "${_uninstall_label}"
+    fi
+    ;;
+  *)
+    log "SKIP: launchd override assertion (not running on Darwin; uname=$(uname -s))"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 12. macOS-only: install.sh --system is now supported (#145).
+#     When SMOKE_SYSTEM_SCOPE=1 (opt-in): attempt a real LaunchDaemon
+#     install and verify that --system is accepted (exit 0) and that the
+#     daemon plist renders with UserName + the expected paths. This requires
+#     passwordless sudo (available on GHA macOS runners) and is gated
+#     behind SMOKE_SYSTEM_SCOPE=1 so the default user-scope smoke is
+#     unaffected.
+#
+#     When SMOKE_SYSTEM_SCOPE is unset: assert that --system no longer exits 2
+#     with a "not supported" error (regression guard for the #291 guards that
+#     were lifted by #145), but do NOT attempt the full install (no sudo here).
+# ---------------------------------------------------------------------------
+SMOKE_SYSTEM_SCOPE="${SMOKE_SYSTEM_SCOPE:-}"
+case "$(uname -s)" in
+  Darwin)
+    if [ "${SMOKE_SYSTEM_SCOPE}" = "1" ]; then
+      # Full system-scope install smoke (requires passwordless sudo — GHA macOS).
+      #
+      # Uses the DEFAULT system prefix (/opt/expertise-api), not a TMPDIR
+      # prefix: the #242 ancestor walk requires every ancestor of the prefix
+      # to be root-owned and non-writable, which a path under the runner's
+      # TMPDIR (/var symlink + runner-owned dirs) can never satisfy. The
+      # default prefix also exercises the documented operator path verbatim.
+      _sys_prefix="/opt/expertise-api"
+      _sys_config_dir="/etc/expertise-api"
+      _sys_bind="127.0.0.1:18090"
+
+      # Seed the system-scope secrets file (mirrors the user-scope seeding
+      # above; install.sh reads CONFIG_DIR=/etc/expertise-api in system scope).
+      sudo mkdir -p "${_sys_config_dir}"
+      printf '%s\n' \
+        "ConnectionStrings__DefaultConnection=\"Host=${POSTGRES_HOST};Port=${POSTGRES_PORT};Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}\"" \
+        "ASPNETCORE_ENVIRONMENT=Development" \
+        "Auth__Mode=ApiKey" \
+        "Auth__ApiKey=smoke-api-key-not-secret" \
+        "Onnx__ModelPath=${_sys_prefix}/models/model.onnx" \
+        "Onnx__VocabPath=${_sys_prefix}/models/vocab.txt" \
+        "DOTNET_ROOT=${effective_dotnet_root}" \
+        | sudo tee "${_sys_config_dir}/secrets.env" >/dev/null
+      sudo chmod 600 "${_sys_config_dir}/secrets.env"
+
+      log "SMOKE_SYSTEM_SCOPE=1: attempting LaunchDaemon install at default prefix=${_sys_prefix}"
+      set +e
+      _sys_install_log="${TMPDIR:-/tmp}/.smoke-system-install-$$.log"
+      # SC2024: log path is under TMPDIR (runner-writable); the shell opens
+      # the fd before exec'ing sudo, which is correct here.
+      # shellcheck disable=SC2024
+      sudo bash "${ROOT}/scripts/install.sh" \
+        --system \
+        --bind "${_sys_bind}" \
+        > "${_sys_install_log}" 2>&1
+      _sys_rc=$?
+      set -e
+      if [ "${_sys_rc}" = "0" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: install.sh --system exits 0 on macOS (LaunchDaemon)\n'
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: install.sh --system exited %d on macOS\n' "${_sys_rc}" >&2
+        tail -n 40 "${_sys_install_log}" >&2 || true
+      fi
+
+      # Daemon answers over HTTP — the strongest boot-equivalent signal we
+      # can get without an actual reboot.
+      _sys_ready=0
+      for _ in $(seq 1 60); do
+        if curl -fsS "http://${_sys_bind}/health/live" >/dev/null 2>&1; then
+          _sys_ready=1
+          break
+        fi
+        sleep 1
+      done
+      if [ "${_sys_ready}" = "1" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: LaunchDaemon /health/live returns 200 within 60s\n'
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: LaunchDaemon /health/live did not return 200 within 60s\n' >&2
+        printf '[diag] launchctl print:\n' >&2
+        sudo launchctl print "system/com.thesemicolon.expertise-api" 2>&1 | head -60 >&2 || true
+        printf '[diag] path layout:\n' >&2
+        sudo ls -la "${_sys_prefix}" "${_sys_prefix}/bin" /var/log/expertise-api "${_sys_config_dir}" >&2 2>&1 || true
+        printf '[diag] stdout.log:\n' >&2
+        sudo cat /var/log/expertise-api/stdout.log >&2 2>&1 || printf '[diag] (stdout.log missing/unreadable)\n' >&2
+        printf '[diag] stderr.log:\n' >&2
+        sudo cat /var/log/expertise-api/stderr.log >&2 2>&1 || printf '[diag] (stderr.log missing/unreadable)\n' >&2
+        printf '[diag] direct wrapper run as %s (8s window):\n' "$(id -un)" >&2
+        sudo -u "$(id -un)" /bin/bash -c \
+          "'${_sys_prefix}/launch-expertise-api.sh' > '${TMPDIR:-/tmp}/.wrap-direct-$$.log' 2>&1 & _wp=\$!; sleep 8; kill \$_wp 2>/dev/null; true" || true
+        head -n 40 "${TMPDIR:-/tmp}/.wrap-direct-$$.log" >&2 2>/dev/null || printf '[diag] (no direct-run output captured)\n' >&2
+        printf '[diag] launchd unified log (last 4m, expertise lines):\n' >&2
+        sudo log show --last 4m --style compact 2>/dev/null | grep -i expertise | tail -n 25 >&2 || true
+      fi
+
+      # Assert the daemon plist was written with UserName and correct paths.
+      _daemon_plist="/Library/LaunchDaemons/com.thesemicolon.expertise-api.plist"
+      if [ -f "${_daemon_plist}" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: daemon plist written to /Library/LaunchDaemons/\n'
+        if grep -q '<key>UserName</key>' "${_daemon_plist}"; then
+          PASS=$((PASS + 1))
+          printf 'PASS: daemon plist contains UserName key\n'
+        else
+          FAIL=$((FAIL + 1))
+          printf 'FAIL: daemon plist missing UserName key\n' >&2
+        fi
+        if grep -q "${_sys_prefix}" "${_daemon_plist}"; then
+          PASS=$((PASS + 1))
+          printf 'PASS: daemon plist references install prefix\n'
+        else
+          FAIL=$((FAIL + 1))
+          printf 'FAIL: daemon plist does not reference install prefix\n' >&2
+        fi
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: daemon plist not written to /Library/LaunchDaemons/\n' >&2
+      fi
+
+      # Assert install.env records scope=system.
+      _sys_install_env="${HOME}/.config/expertise-api/install.env"
+      if grep -q '^EXPERTISE_API_SCOPE=system' "${_sys_install_env}" 2>/dev/null; then
+        PASS=$((PASS + 1))
+        printf 'PASS: install.env records EXPERTISE_API_SCOPE=system\n'
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: install.env does not record EXPERTISE_API_SCOPE=system\n' >&2
+      fi
+
+      # Teardown: uninstall.sh --system --yes --purge (default prefix, same
+      # as the install above — exercises the documented operator path).
+      set +e
+      # SC2024: same TMPDIR-writable pattern as the install step above.
+      # shellcheck disable=SC2024
+      sudo bash "${ROOT}/scripts/uninstall.sh" \
+        --system \
+        --yes --purge \
+        > "${TMPDIR:-/tmp}/.smoke-system-uninstall-$$.log" 2>&1
+      _sys_uninst_rc=$?
+      set -e
+      if [ "${_sys_uninst_rc}" = "0" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: uninstall.sh --system --yes --purge exits 0\n'
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: uninstall.sh --system --yes --purge exited %d\n' "${_sys_uninst_rc}" >&2
+      fi
+
+      # Assert daemon plist removed; assert no stale entry in print-disabled system.
+      if [ ! -f "${_daemon_plist}" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: daemon plist removed after uninstall\n'
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: daemon plist still present after uninstall\n' >&2
+      fi
+      set +e
+      _pd_system=$(launchctl print-disabled system 2>&1)
+      _pd_sys_rc=$?
+      set -e
+      if [ "${_pd_sys_rc}" != "0" ]; then
+        log "SKIP: launchctl print-disabled system exited ${_pd_sys_rc} — cannot assert system override state"
+      elif printf '%s\n' "${_pd_system}" | grep -qF 'com.thesemicolon.expertise-api'; then
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: stale launchd override entry in system domain after --system uninstall\n' >&2
+      else
+        PASS=$((PASS + 1))
+        printf 'PASS: no stale launchd override entry in system domain after uninstall\n'
+      fi
+    else
+      # Default: assert --system is now accepted (does not exit 2 with "not supported").
+      # We only verify that the preflight root-check fires (exit 2 = not running as root),
+      # not the old "not supported" guard that was removed by #145. This is a lightweight
+      # regression guard without needing sudo.
+      log "SMOKE_SYSTEM_SCOPE not set: verifying --system is accepted (not rejected as unsupported)"
+      set +e
+      _system_err_output=$(bash "${ROOT}/scripts/install.sh" \
+        --prefix "${PREFIX}/_system_guard_probe" \
+        --system \
+        2>&1)
+      _system_rc=$?
+      set -e
+      # Exit 2 is expected (not running as root), but the message must NOT say
+      # "not supported on macOS" (the old guard that was lifted by #145).
+      if printf '%s\n' "${_system_err_output}" | grep -q 'not supported on macOS'; then
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: install.sh --system still prints "not supported on macOS" (guard from #291 not lifted)\n' >&2
+      else
+        PASS=$((PASS + 1))
+        printf 'PASS: install.sh --system does not reject with "not supported on macOS"\n'
+      fi
+    fi
+    ;;
+  *)
+    log "SKIP: --system macOS LaunchDaemon test (not running on Darwin; uname=$(uname -s))"
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Summary

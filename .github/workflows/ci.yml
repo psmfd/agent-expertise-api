@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
         with:
           global-json-file: global.json
 
@@ -149,6 +149,45 @@ jobs:
       - name: Run generate-manifest unit tests
         run: bash tests/install/test-generate-manifest.sh
 
+  semver-comparator:
+    name: semver comparator unit tests (#257)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Regression coverage for _rc_semver_lt in scripts/lib/release-consumer.sh.
+    # Validates the §11-aware comparator that replaced the sort -V / tactical
+    # prerelease-rejection approach from D3. Runs on every PR; no external
+    # tools required (bash only).
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run semver comparator unit tests
+        run: bash tests/install/test-semver-compare.sh
+
+  install-script-guards:
+    name: install/uninstall script guard tests (#242)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Bash-only unit suites for the install/uninstall safety machinery:
+    # the --system ancestor-walk TOCTOU guard (#242) and the migrate
+    # wall-time bound (#152, added by PR #302 but left unwired in CI).
+    # Linux runner deliberately: the ancestor-walk black-box test uses
+    # --system (Linux path); macOS --system end-to-end is covered by the
+    # install-smoke-macos-system job (#145).
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run prefix-ancestor TOCTOU guard tests
+        run: bash tests/uninstall/test-prefix-ancestors.sh
+
+      - name: Run migrate-timeout tests
+        run: bash tests/install/test-migrate-timeout.sh
+
   apictl-restart-race-macos:
     name: apictl restart race regression (macOS)
     runs-on: macos-latest
@@ -160,6 +199,22 @@ jobs:
 
       - name: Run apictl restart race regression test
         run: bash scripts/test/test-apictl-restart.sh
+
+  apictl-stop-start-macos:
+    name: apictl stop→start lifecycle (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 5
+    # Validates fix for #284: cmd_stop used launchctl bootout (unregisters
+    # service) so cmd_start's kickstart failed. Now cmd_stop uses
+    # launchctl kill SIGTERM (leaves service registered) so stop→start
+    # round-trips correctly.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run apictl stop→start lifecycle test
+        run: bash scripts/test/test-apictl-stop-start-macos.sh
 
   apictl-restart-race-debian13:
     name: apictl restart race regression (Debian 13 / systemd)
@@ -310,7 +365,7 @@ jobs:
         # The install.sh path on macOS runs `dotnet publish` against the
         # repo's csproj, so the SDK (not just the runtime) must match
         # global.json. Matches the Build & Test job above.
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
         with:
           global-json-file: global.json
 
@@ -395,6 +450,70 @@ jobs:
         if: always()
         run: brew services stop postgresql@17 || true
 
+  install-smoke-macos-system:
+    name: install.sh end-to-end smoke (macOS / LaunchDaemon / system scope / #145)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    # System-scope LaunchDaemon smoke (#145). GHA macOS runners have passwordless
+    # sudo, so a real root install is exercisable here. Gated behind
+    # SMOKE_SYSTEM_SCOPE=1 so the harness selects the LaunchDaemon path.
+    # Mirrors install-smoke-macos provisioning (Postgres via Homebrew, .NET SDK
+    # from global.json). No privileged-container restriction needed (host job).
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+        with:
+          global-json-file: global.json
+
+      - name: Install Postgres 17 + pgvector via Homebrew
+        run: |
+          brew update >/dev/null
+          brew install postgresql@17 pgvector
+          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+
+      - name: Start Postgres via brew services
+        run: |
+          if brew services list | awk '$1=="postgresql@14" && $2=="started" {found=1} END {exit !found}'; then
+            echo "::error::postgresql@14 is already running on this runner"
+            brew services list
+            exit 1
+          fi
+          brew services start postgresql@17
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+              echo "postgres ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+            echo "::error::postgres did not become ready within 30s"
+            exit 1
+          fi
+
+      - name: Run install.sh smoke harness (system scope)
+        env:
+          SMOKE_SYSTEM_SCOPE: "1"
+        run: bash scripts/test/test-install-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          launchctl list | grep -i expertise || true
+          sudo launchctl print "system/com.thesemicolon.expertise-api" 2>&1 | head -200 || true
+          cat "${TMPDIR:-/tmp}/.smoke-system-install-"*.log 2>/dev/null || true
+          for f in /Library/LaunchDaemons/*expertise*; do [ -f "$f" ] && ls -la "$f" && cat "$f"; done 2>/dev/null || true
+          ls -la /var/log/expertise-api/ 2>/dev/null || true
+          tail -n 200 /var/log/expertise-api/*.log 2>/dev/null || true
+
+      - name: Stop Postgres
+        if: always()
+        run: brew services stop postgresql@17 || true
+
   openapi-diff:
     name: OpenAPI breaking-change check
     # PR-only: a push to dev has no base to diff against (semantically the spec
@@ -426,7 +545,7 @@ jobs:
           path: base
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
         with:
           global-json-file: head/global.json
 

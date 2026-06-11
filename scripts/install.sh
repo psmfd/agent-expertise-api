@@ -16,6 +16,7 @@
 #                      [--version vX.Y.Z|latest]
 #                      [--allow-downgrade] [--accept-republished-version]
 #                      [--skip-release-api-crosscheck]
+#                      [--migrate-timeout SECONDS]
 #                      [--help]
 #
 # Defaults: per-user install, fdd publish, bind 127.0.0.1:8080.
@@ -77,6 +78,10 @@
 #     (legacy) and is not auto-mutated; v1 is the current shape.
 #   * CRLF detector fails fast in preflight before any publish work;
 #     --fix-line-endings converts in place preserving mode + owner.
+#   * --migrate-timeout SECS (default 300): wall-time limit for the migrate
+#     verb. 0 disables the bound. On timeout the install exits non-zero
+#     with a clear message; live binaries are NOT swapped and the service
+#     is NOT touched. Passed through to scripts/migrate.sh unchanged.
 #
 
 set -euo pipefail
@@ -117,6 +122,7 @@ ALLOW_DOWNGRADE=0
 ACCEPT_REPUBLISHED_VERSION=0
 SKIP_RELEASE_API_CROSSCHECK=0
 ACCEPT_UNVERIFIED_SOURCE=0    # no-op in D3; mandatory after D4 default-flip
+MIGRATE_TIMEOUT=300           # wall-time limit for the migrate verb; 0 = unbounded
 
 usage() { sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -143,6 +149,7 @@ while [[ $# -gt 0 ]]; do
     --allow-downgrade)           ALLOW_DOWNGRADE=1; shift ;;
     --accept-republished-version) ACCEPT_REPUBLISHED_VERSION=1; shift ;;
     --skip-release-api-crosscheck) SKIP_RELEASE_API_CROSSCHECK=1; shift ;;
+    --migrate-timeout)   MIGRATE_TIMEOUT="${2:?--migrate-timeout needs a number}"; shift 2 ;;
     --help|-h)           usage; exit 0 ;;
     *)                   err "unknown flag: $1 (try --help)" ;;
   esac
@@ -250,6 +257,27 @@ RID="${EXPLICIT_RID:-$(detect_rid)}"
 # sources verify-release.sh (via rc_source_verify_release) on first use.
 # shellcheck source=lib/release-consumer.sh disable=SC1091
 . "${SCRIPT_DIR}/lib/release-consumer.sh"
+# ---------------------------------------------------------------------------
+# macOS --system gate (#145). Top-level — NOT inside preflight() — so
+# --skip-preflight cannot bypass it: the SUDO_USER value below feeds a
+# root-context tilde-expansion eval (write_install_env) and the daemon
+# plist UserName key, so the validation must be unskippable.
+# ---------------------------------------------------------------------------
+if [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
+  if [[ "$(id -u)" != "0" ]]; then
+    printf '[install] ERROR: --system on macOS requires root (run: sudo scripts/install.sh --system ...).\n' >&2
+    exit 2
+  fi
+  if [[ -z "${SUDO_USER:-}" ]]; then
+    printf '[install] ERROR: --system on macOS must be run via sudo (SUDO_USER not set). The service will run as the invoking user; SUDO_USER identifies that user.\n' >&2
+    exit 2
+  fi
+  if ! printf '%s' "${SUDO_USER}" | grep -Eq '^[A-Za-z_][A-Za-z0-9._-]*$'; then
+    printf '[install] ERROR: SUDO_USER %q contains unexpected characters — refusing --system install.\n' "${SUDO_USER}" >&2
+    exit 2
+  fi
+fi
+
 if [[ -n "${PREFIX_OVERRIDE}" ]]; then
   PREFIX_OVERRIDE="$(normalize_prefix "${PREFIX_OVERRIDE}")"
   validate_prefix "${PREFIX_OVERRIDE}"
@@ -265,6 +293,12 @@ if [[ -n "${PREFIX_OVERRIDE}" ]]; then
   # can set XDG_* explicitly before invoking install.sh.
   LOG_DIR="${PREFIX}/logs"
   CONFIG_DIR="${PREFIX}"
+elif [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
+  # macOS --system (LaunchDaemon): root-owned paths, mirrors Linux system-scope.
+  # Log dir is NOT under any user home (the service may start before login).
+  PREFIX="/opt/expertise-api"
+  LOG_DIR="/var/log/expertise-api"
+  CONFIG_DIR="/etc/expertise-api"
 elif [[ "${OS}" == "macos" ]]; then
   PREFIX="${HOME}/Library/Application Support/expertise-api"
   LOG_DIR="${HOME}/Library/Logs/expertise-api"
@@ -292,6 +326,19 @@ WRAPPER_SCRIPT="${PREFIX}/launch-expertise-api.sh"
 WRAPPER_LEGACY="${PREFIX}/bin/launch-expertise-api.sh"
 VERSION_MARKER="${PREFIX}/.install-version"
 LOCK_DIR="${PREFIX}/.install.lock"
+
+# ---------------------------------------------------------------------------
+# Ancestor-walk TOCTOU guard (--system only, issue #242 / #145)
+#
+# Mirror of the guard in uninstall.sh: for system-scope installs (both
+# Linux and macOS LaunchDaemon), walk every ancestor of PREFIX and refuse
+# if any ancestor is non-root-owned, group/world-writable without sticky,
+# or a symlink. User-mode operators own $HOME — the check is unnecessary
+# there and would fire on any user install.
+# ---------------------------------------------------------------------------
+if [[ "${INSTALL_SCOPE}" == "system" ]]; then
+  validate_prefix_ancestors "${PREFIX}"
+fi
 
 # ---------------------------------------------------------------------------
 # Cleanup / trap — staged STAGE variable drives rollback granularity
@@ -391,6 +438,10 @@ release_lock() {
 preflight() {
   STAGE="preflight"
   log "pre-flight: OS=${OS} RID=${RID} scope=${INSTALL_SCOPE} mode=${PUBLISH_MODE}"
+
+  # macOS --system root/SUDO_USER gate lives at TOP LEVEL (after lib sourcing),
+  # not here — preflight() is skippable via --skip-preflight and the gate
+  # must not be (#145).
 
   if [[ "${PUBLISH_MODE}" == "fdd" ]]; then
     command -v dotnet >/dev/null 2>&1 \
@@ -542,6 +593,52 @@ write_install_version_marker() {
 }
 
 # ---------------------------------------------------------------------------
+# Install-env marker — records resolved path layout so expertise-apictl can
+# discover prefix-aware paths (e.g. LOG_DIR) without re-deriving them.
+#
+# Written to a STABLE, non-prefix-dependent location so apictl can probe it
+# without knowing which --prefix was used at install time:
+#   ${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/install.env
+#
+# For a single-user install (the only supported mode) there is one active
+# install at a time, so the "last install wins" property is correct.
+#
+# File contains plain key=value assignments (no quoting, no subshells).
+# apictl reads it with grep+sed, not source, so no shell-execution risk.
+# chmod 644: no secrets — paths only.
+# ---------------------------------------------------------------------------
+write_install_env() {
+  # For --system installs on macOS (LaunchDaemon path), the XDG config dir
+  # is under SUDO_USER's home, not root's. resolve_install_env_dir() picks
+  # the right location based on scope.
+  local xdg_config_dir env_dir env_file
+  if [[ "${INSTALL_SCOPE}" == "system" && "${OS}" == "macos" && -n "${SUDO_USER:-}" ]]; then
+    # Write under the invoking user's config dir so apictl (running as that
+    # user) can find the install.env without sudo.
+    xdg_config_dir="$(eval printf '%s' "~${SUDO_USER}/.config")"
+  else
+    xdg_config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  fi
+  env_dir="${xdg_config_dir}/expertise-api"
+  env_file="${env_dir}/install.env"
+  mkdir -p "${env_dir}"
+  if [[ -L "${env_file}" ]]; then
+    err "${env_file} exists as a symlink — refusing to write"
+  fi
+  printf 'EXPERTISE_API_LOG_DIR=%s\n' "${LOG_DIR}"       > "${env_file}.tmp"
+  printf 'EXPERTISE_API_PREFIX=%s\n'  "${PREFIX}"        >> "${env_file}.tmp"
+  printf 'EXPERTISE_API_SCOPE=%s\n'   "${INSTALL_SCOPE}" >> "${env_file}.tmp"
+  mv -f -- "${env_file}.tmp" "${env_file}"
+  chmod 644 "${env_file}"
+  # For --system on macOS the file was written as root; chown it to SUDO_USER
+  # so apictl (running as that user) can read it without sudo.
+  if [[ "${INSTALL_SCOPE}" == "system" && "${OS}" == "macos" && -n "${SUDO_USER:-}" ]]; then
+    chown "${SUDO_USER}" "${env_file}" 2>/dev/null || true
+  fi
+  log "install-env: ${env_file}"
+}
+
+# ---------------------------------------------------------------------------
 # Publish (staged)
 # ---------------------------------------------------------------------------
 publish_app_staged() {
@@ -644,6 +741,25 @@ detect_secrets_schema_version() {
 # so the atomic swap of ${BIN_DIR} does not destroy it.
 # ---------------------------------------------------------------------------
 write_wrapper() {
+  # Resolve dotnet to an ABSOLUTE path at install time. The service manager's
+  # environment (launchd path_helper PATH on macOS, systemd user units on
+  # Linux) does not include non-standard dotnet roots — e.g. ~/.dotnet from
+  # dotnet-install.sh / actions/setup-dotnet, or the brew formula layout —
+  # so a bare `exec dotnet` works in the install shell but fails at service
+  # start for the FDD/portable layout (#288; caught by the E3 from-release
+  # smoke, where the portable tarball has no apphost). Preflight already
+  # requires dotnet on PATH for FDD installs, so an empty resolution here
+  # only happens on SCD installs, where the apphost branch runs instead.
+  local dotnet_bin dotnet_real dotnet_root=""
+  dotnet_bin="$(command -v dotnet 2>/dev/null || true)"
+  if [[ -n "${dotnet_bin}" ]]; then
+    # DOTNET_ROOT is the directory of the REAL muxer binary — follow the
+    # cask's /usr/local/bin/dotnet -> /usr/local/share/dotnet/dotnet symlink.
+    # readlink -f exists on macOS 13+ (the .NET 10 floor) and all Linux
+    # targets; fall back to the unresolved path if it is unavailable.
+    dotnet_real="$(readlink -f "${dotnet_bin}" 2>/dev/null || printf '%s' "${dotnet_bin}")"
+    dotnet_root="$(dirname "${dotnet_real}")"
+  fi
   cat > "${WRAPPER_SCRIPT}.tmp" <<EOF
 #!/usr/bin/env bash
 # launch-expertise-api.sh — service entrypoint.
@@ -652,6 +768,7 @@ set -euo pipefail
 
 SECRETS_FILE="${SECRETS_FILE}"
 BIN_DIR="${BIN_DIR}"
+DOTNET_BIN="${dotnet_bin}"
 
 if [[ -f "\${SECRETS_FILE}" ]]; then
   set -a
@@ -669,7 +786,16 @@ export Onnx__VocabPath="${MODEL_DIR}/vocab.txt"
 
 if [[ -x "\${BIN_DIR}/ExpertiseApi" ]]; then
   exec "\${BIN_DIR}/ExpertiseApi"
+elif [[ -n "\${DOTNET_BIN}" && -x "\${DOTNET_BIN}" ]]; then
+  # Absolute path baked at install time: the service manager's PATH
+  # (launchd path_helper, systemd user units) does not include
+  # non-standard dotnet roots, so bare \`dotnet\` is not resolvable here.
+  if [[ -n "${dotnet_root}" ]]; then
+    export DOTNET_ROOT="\${DOTNET_ROOT:-${dotnet_root}}"
+  fi
+  exec "\${DOTNET_BIN}" "\${BIN_DIR}/ExpertiseApi.dll"
 else
+  # Last resort: PATH lookup (pre-existing behavior).
   exec dotnet "\${BIN_DIR}/ExpertiseApi.dll"
 fi
 EOF
@@ -710,7 +836,7 @@ run_migrate_staged() {
   fi
 
   log "running migrate against staged binaries (${STAGE_DIR})"
-  if ! "${SCRIPT_DIR}/migrate.sh" --bin-dir "${STAGE_DIR}" --secrets-file "${SECRETS_FILE}"; then
+  if ! "${SCRIPT_DIR}/migrate.sh" --bin-dir "${STAGE_DIR}" --secrets-file "${SECRETS_FILE}" --migrate-timeout "${MIGRATE_TIMEOUT}"; then
     err "migrate failed — live binaries NOT swapped; service NOT restarted; prior state intact. EF migrations are transactional per-migration; retry by fixing the schema/DB issue and re-running scripts/install.sh."
   fi
 }
@@ -790,10 +916,25 @@ install_systemd_user() {
     log "systemd: enabled + started"
   fi
 
-  # Lingering — service survives logout
+  # Lingering — service survives logout (#145).
+  # Attempt `loginctl enable-linger` so the --user unit activates at boot
+  # without requiring an interactive login session. The call is idempotent:
+  # if linger is already on it is a no-op. It can fail under polkit
+  # restrictions (e.g. some container / CI environments, or deployments
+  # where the admin has restricted lingering). On failure, fall back to a
+  # warning so the install still completes.
   if command -v loginctl >/dev/null 2>&1; then
-    if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q 'Linger=yes'; then
-      warn "user lingering not enabled — service stops at logout. Enable with: sudo loginctl enable-linger \$USER"
+    if loginctl show-user "$(id -un)" 2>/dev/null | grep -q 'Linger=yes'; then
+      log "linger: already enabled for $(id -un) — service survives logout"
+    else
+      log "linger: attempting loginctl enable-linger $(id -un)"
+      if loginctl enable-linger "$(id -un)" 2>/dev/null; then
+        log "linger: enabled — user sessions persist after logout (service survives reboot)"
+        log "linger: note: all user processes for $(id -un) will persist after logout"
+      else
+        warn "linger: loginctl enable-linger failed (polkit restriction?) — service will stop at logout"
+        warn "linger: to enable manually: sudo loginctl enable-linger $(id -un)"
+      fi
     fi
   fi
 }
@@ -820,9 +961,107 @@ install_launchd() {
   domain="gui/$(id -u)"
   launchctl bootout "${domain}/${label}" 2>/dev/null || true
   launchctl bootstrap "${domain}" "${plist_path}"
-  launchctl enable "${domain}/${label}"
+  # `launchctl enable` writes a PERSISTENT "=> enabled" override entry into
+  # launchd's LaunchDatabase — it does NOT merely flip runtime state, and no
+  # launchctl subcommand removes an override entry without root. An
+  # unconditional `enable` here therefore leaves a stale entry in
+  # `launchctl print-disabled gui/UID` that survives uninstall forever
+  # (observed on a CI macOS runner — #286). Only run it when the label is
+  # actually disabled (recovering from a manual `launchctl disable`), so a
+  # normal install→uninstall cycle never touches the LaunchDatabase.
+  if launchctl print-disabled "${domain}" 2>/dev/null \
+      | grep -F "\"${label}\"" | grep -qw disabled; then
+    launchctl enable "${domain}/${label}"
+    log "launchd: cleared disabled-override for ${label}"
+  fi
   launchctl kickstart -k "${domain}/${label}"
   log "launchd: bootstrapped + kickstarted"
+}
+
+install_launchd_system() {
+  # macOS --system: LaunchDaemon in /Library/LaunchDaemons/ (#145).
+  # Runs as root. The service drops privileges to SUDO_USER via the UserName
+  # plist key — root only spawns the process, the OS then sets uid/gid before
+  # exec so the service never runs as root.
+  #
+  # launchctl override caveat (#301): only run `launchctl enable` when the
+  # label is actually listed as disabled in the system domain, to avoid
+  # writing a persistent override entry that survives uninstall.
+  local label="com.thesemicolon.expertise-api"
+  local plist_dir="/Library/LaunchDaemons"
+  local plist_path="${plist_dir}/${label}.plist"
+  mkdir -p "${plist_dir}"
+
+  local tpl="${SCRIPT_DIR}/service-templates/expertise-api-daemon.plist.tmpl"
+  [[ -f "${tpl}" ]] || err "missing template: ${tpl}"
+
+  # Resolve the uid/gid of the service user (the original invoker, not root).
+  local service_user service_uid service_gid service_group
+  service_user="${SUDO_USER}"
+  service_uid="$(id -u "${service_user}" 2>/dev/null || true)"
+  [[ -n "${service_uid}" ]] || err "cannot resolve uid for user '${service_user}'"
+  service_gid="$(id -g "${service_user}" 2>/dev/null || true)"
+  [[ -n "${service_gid}" ]] || err "cannot resolve gid for user '${service_user}'"
+  # Lookup group name: `id -gn` works on both macOS and Linux.
+  service_group="$(id -gn "${service_user}" 2>/dev/null || true)"
+  [[ -n "${service_group}" ]] || err "cannot resolve group name for user '${service_user}'"
+
+  sed \
+    -e "s|@@LABEL@@|${label}|g" \
+    -e "s|@@WRAPPER@@|${WRAPPER_SCRIPT}|g" \
+    -e "s|@@WORKDIR@@|${PREFIX}|g" \
+    -e "s|@@LOG_DIR@@|${LOG_DIR}|g" \
+    -e "s|@@SERVICE_USER@@|${service_user}|g" \
+    -e "s|@@SERVICE_GROUP@@|${service_group}|g" \
+    "${tpl}" > "${plist_path}.tmp"
+  # Root must own the plist (launchd requires it for daemons).
+  chown root:wheel "${plist_path}.tmp"
+  chmod 644 "${plist_path}.tmp"
+  mv -f -- "${plist_path}.tmp" "${plist_path}"
+  log "launchd daemon plist: ${plist_path}"
+  log "launchd daemon: service will run as ${service_user}:${service_group} (uid=${service_uid})"
+
+  # Ensure log dir is owned by the service user (the daemon writes stdout/stderr
+  # there via the plist; creating it as root then running the process as another
+  # user would cause write failures).
+  mkdir -p "${LOG_DIR}"
+  chown "${service_user}:${service_group}" "${LOG_DIR}"
+  chmod 755 "${LOG_DIR}"
+
+  # The secrets file in /etc/expertise-api is typically created by root, but
+  # the launch wrapper sources it AFTER launchd drops to ${service_user} — a
+  # root-owned 600 file is unreadable there and the service dies at startup.
+  # Hand ownership to the service user, keep 600.
+  if [[ -f "${SECRETS_FILE}" ]]; then
+    chown "${service_user}" "${SECRETS_FILE}"
+    chmod 600 "${SECRETS_FILE}"
+  fi
+
+  # The user-scope install hardening leaves PREFIX, bin/, models/, and
+  # CONFIG_DIR at mode 700 — correct when the owner IS the service user,
+  # fatal here: after the UserName privilege drop the service cannot even
+  # chdir into WorkingDirectory (launchd: "Unable to set current working
+  # directory ... Permission denied", exit 78 crash-loop — caught by the
+  # system-scope CI smoke). Daemon layout follows the /usr/local model:
+  # root OWNS the tree (tamper resistance — the service user cannot modify
+  # binaries), everyone may read+traverse, and the only protected object is
+  # the secrets file (600, service-user-owned, in a 755 root-owned /etc dir
+  # — same pattern as /etc/ssh).
+  chmod 755 "${PREFIX}"
+  chmod -R go+rX "${PREFIX}/bin" "${MODEL_DIR}" 2>/dev/null || true
+  chmod 755 "${CONFIG_DIR}" 2>/dev/null || true
+
+  launchctl bootout "system/${label}" 2>/dev/null || true
+  launchctl bootstrap system "${plist_path}"
+  # Only run `launchctl enable` when the label is actually listed as disabled
+  # in the system domain — same pattern as the user LaunchAgent path (#301).
+  if launchctl print-disabled system 2>/dev/null \
+      | grep -F "\"${label}\"" | grep -qw disabled; then
+    launchctl enable "system/${label}"
+    log "launchd: cleared disabled-override for system/${label}"
+  fi
+  launchctl kickstart -k "system/${label}"
+  log "launchd daemon: bootstrapped + kickstarted (survives reboot)"
 }
 
 install_service() {
@@ -832,7 +1071,11 @@ install_service() {
         || err "--system install not yet supported by this script (use systemd unit at /etc/systemd/system/ manually)"
       install_systemd_user ;;
     macos)
-      install_launchd ;;
+      if [[ "${INSTALL_SCOPE}" == "system" ]]; then
+        install_launchd_system
+      else
+        install_launchd
+      fi ;;
   esac
 }
 
@@ -890,6 +1133,7 @@ main() {
   atomic_swap
   install_service
   write_install_version_marker
+  write_install_env
   # D3 (#249) — post-swap mode/semver/history markers. Written AFTER
   # atomic_swap so they only reflect committed installs (a rollback path
   # that runs cleanup() before SUCCESS=1 will not have touched them).

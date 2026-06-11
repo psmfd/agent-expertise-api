@@ -1,0 +1,264 @@
+name: Install smoke (--from-release)
+
+# E3 of #166 — gates D4 default-flip (#249).
+#
+# Runs install.sh --from-release against the latest cosign-signed release
+# tarball on both Linux (systemd-user, Debian 13 container) and macOS
+# (launchd, Homebrew Postgres). Reuses scripts/test/test-install-smoke.sh
+# exactly as the --from-source jobs do; SMOKE_INSTALL_MODE=release activates
+# the extra marker assertions added for this wave (4a/4b/4c).
+#
+# Trigger: path-filtered to the release-consumer chain. Avoids burning
+# GH API + cosign verification on every PR that doesn't touch install paths.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/verify-release.sh'
+      - 'scripts/lib/release-consumer.sh'
+      - 'scripts/test/test-install-smoke.sh'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/install-smoke-from-release.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/verify-release.sh'
+      - 'scripts/lib/release-consumer.sh'
+      - 'scripts/test/test-install-smoke.sh'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/install-smoke-from-release.yml'
+
+permissions:
+  contents: read
+
+# Cancel queued PR runs when a new push lands on the same PR ref. Don't
+# cancel push-to-dev runs — mirrors the concurrency policy in ci.yml.
+concurrency:
+  group: install-smoke-from-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  install-smoke-linux-from-release:
+    name: install.sh --from-release smoke (Linux / systemd-user / postgres-17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Privileged container; restrict to same-repo PRs and pushes. Mirrors the
+    # gate used by install-smoke-linux in ci.yml — fork PRs cannot run
+    # privileged containers safely but still get source-mode coverage there.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install cosign
+        # Verification (cosign verify-blob) does not require id-token:write —
+        # that is only needed for signing. The verifier contacts Rekor over
+        # HTTPS using its public read API.
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+
+      - name: Resolve latest release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # gh release list emits the most-recent release first when --limit 1
+        # and --exclude-drafts/--exclude-pre-releases keep the set to stable
+        # releases only. The tag is passed to the smoke harness via
+        # SMOKE_RELEASE_VERSION so the harness can assert appVersion matches.
+        run: |
+          tag=$(gh release list \
+                  --repo "${{ github.repository }}" \
+                  --limit 1 \
+                  --exclude-drafts \
+                  --exclude-pre-releases \
+                  --json tagName \
+                  --jq '.[0].tagName')
+          if [ -z "$tag" ]; then
+            echo "::error::No stable release found — cannot run --from-release smoke. Publish a release first."
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Resolved latest release tag: ${tag}"
+
+      - name: Build install-smoke image (debian13 + systemd + postgres17 + dotnet-sdk-10)
+        # The release path downloads a pre-built tarball and does not compile
+        # the project, but dotnet runtime is still required for the migrate
+        # step (rc_check_aspnetcore_runtime_floor + binary migrate verb).
+        # The install-smoke image already bundles dotnet-sdk-10 (sdk ⊇ runtime)
+        # so no image change is needed.
+        run: |
+          sdk_version=$(jq -r '.sdk.version' global.json)
+          docker build \
+            --build-arg "DOTNET_SDK_VERSION=${sdk_version}" \
+            -t install-smoke-debian13 \
+            -f scripts/test/Dockerfile.install-smoke \
+            scripts/test
+
+      - name: Start container (systemd as PID 1)
+        run: |
+          # Mount the host's cosign (static Go binary, same amd64 arch) into
+          # the container — verify-release.sh runs INSIDE the container and
+          # hard-errors without cosign (ADR-011). cosign-installer only
+          # provisions the host runner.
+          docker run -d --name install-smoke-release \
+            --privileged \
+            --cgroupns=host \
+            --tmpfs /tmp --tmpfs /run --tmpfs /run/lock \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/workspace:ro" \
+            -v "$(command -v cosign):/usr/local/bin/cosign:ro" \
+            install-smoke-debian13
+          sleep 2
+          docker ps -a --filter name=install-smoke-release
+          docker logs install-smoke-release || true
+          for _ in $(seq 1 30); do
+            if docker exec install-smoke-release systemctl is-system-running --wait 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec install-smoke-release systemctl --no-pager status >/dev/null || true
+
+      - name: Run install.sh --from-release smoke harness (in container, as user 'apictl')
+        env:
+          SMOKE_TAG: ${{ steps.release.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # GH_TOKEN is forwarded via -e so release-consumer.sh's API calls
+        # use the authenticated 5000/h rate limit rather than the unauthenticated
+        # 60/h limit. The token is read-only (contents:read) and scoped to this
+        # job's ephemeral runner.
+        run: |
+          docker exec \
+            -e SMOKE_INSTALL_MODE=release \
+            -e SMOKE_RELEASE_VERSION="${SMOKE_TAG}" \
+            -e GH_TOKEN="${GH_TOKEN}" \
+            -u apictl install-smoke-release bash -lc '
+              cp -r /workspace /home/apictl/repo &&
+              cd /home/apictl/repo &&
+              bash scripts/test/test-install-smoke.sh
+            '
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker logs install-smoke-release || true
+          docker exec install-smoke-release journalctl --no-pager -n 400 || true
+          docker exec -u apictl install-smoke-release bash -lc 'cat ~/expertise-api/.smoke-install.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke-release bash -lc 'cat ~/expertise-api/.smoke-restart.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke-release bash -lc 'cat ~/expertise-api/.smoke-stop.log 2>/dev/null || true'
+          docker exec -u apictl install-smoke-release bash -lc \
+            'cat ~/expertise-api/.install-mode 2>/dev/null || true'
+          docker exec -u apictl install-smoke-release bash -lc \
+            'cat ~/expertise-api/.install-version-semver 2>/dev/null || true'
+          docker exec -u apictl install-smoke-release bash -lc \
+            'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status expertise-api.service --no-pager -l || true'
+          docker exec -u apictl install-smoke-release bash -lc \
+            'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u expertise-api --no-pager -n 200 || true'
+
+      - name: Tear down container
+        if: always()
+        run: docker rm -f install-smoke-release || true
+
+  install-smoke-macos-from-release:
+    name: install.sh --from-release smoke (macOS / launchd / postgres-17)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    # macOS GHA runners have no Docker daemon. Unlike the Linux job there is
+    # no privileged-container requirement so no fork-PR guard is needed —
+    # this job is safe for fork PRs. Mirrors install-smoke-macos in ci.yml.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup .NET
+        # The --from-release path does not compile the project (the tarball
+        # ships the pre-built binary), but dotnet runtime is still required
+        # for the migrate step. The SDK (sdk ⊇ runtime) is installed so
+        # rc_check_aspnetcore_runtime_floor passes and the migrate verb runs.
+        # Matches the setup used by install-smoke-macos in ci.yml.
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+        with:
+          global-json-file: global.json
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+
+      - name: Resolve latest release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(gh release list \
+                  --repo "${{ github.repository }}" \
+                  --limit 1 \
+                  --exclude-drafts \
+                  --exclude-pre-releases \
+                  --json tagName \
+                  --jq '.[0].tagName')
+          if [ -z "$tag" ]; then
+            echo "::error::No stable release found — cannot run --from-release smoke. Publish a release first."
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Resolved latest release tag: ${tag}"
+
+      - name: Install Postgres 17 + pgvector via Homebrew
+        run: |
+          brew update >/dev/null
+          brew install postgresql@17 pgvector
+          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+
+      - name: Start Postgres via brew services
+        run: |
+          if brew services list | awk '$1=="postgresql@14" && $2=="started" {found=1} END {exit !found}'; then
+            echo "::error::postgresql@14 is already running on this runner; refuse to start postgresql@17 alongside it"
+            brew services list
+            exit 1
+          fi
+          brew services start postgresql@17
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+              echo "postgres ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+            echo "::error::postgres did not become ready within 30s"
+            brew services info postgresql@17 || true
+            tail -n 200 "$(brew --prefix)/var/log/postgresql@17.log" 2>/dev/null || true
+            exit 1
+          fi
+          psql -h 127.0.0.1 -p 5432 -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector" \
+            -c "DROP EXTENSION vector" \
+            || { echo "::error::pgvector not installed into postgresql@17 sharedir"; exit 1; }
+
+      - name: Run install.sh --from-release smoke harness
+        env:
+          SMOKE_INSTALL_MODE: release
+          SMOKE_RELEASE_VERSION: ${{ steps.release.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/test/test-install-smoke.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          launchctl list | grep -i expertise || true
+          launchctl print "gui/$(id -u)/com.thesemicolon.expertise-api" 2>&1 | head -200 || true
+          cat "$HOME/expertise-api/.smoke-install.log" 2>/dev/null || true
+          cat "$HOME/expertise-api/.smoke-restart.log" 2>/dev/null || true
+          cat "$HOME/expertise-api/.smoke-stop.log" 2>/dev/null || true
+          cat "$HOME/expertise-api/.install-mode" 2>/dev/null || true
+          cat "$HOME/expertise-api/.install-version-semver" 2>/dev/null || true
+          ls -la "$HOME/Library/Logs/expertise-api/" 2>/dev/null || true
+          tail -n 200 "$HOME/Library/Logs/expertise-api/"*.log 2>/dev/null || true
+          tail -n 200 "$(brew --prefix)/var/log/postgresql@17.log" 2>/dev/null || true
+
+      - name: Stop Postgres
+        if: always()
+        run: brew services stop postgresql@17 || true

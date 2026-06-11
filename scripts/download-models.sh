@@ -84,7 +84,13 @@ download_file() {
   log "Downloading ${display_name}..."
   local tmpfile
   tmpfile=$(mktemp "${dest}.XXXXXX")
-  curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors "${url}" -o "${tmpfile}" \
+  # No --retry-delay: a fixed delay makes curl IGNORE the server's
+  # Retry-After header, so Hugging Face 429 rate-limits burned all four
+  # attempts in ~15s and failed three CI smoke runs on 2026-06-11 (#295).
+  # Without it curl uses exponential backoff (1,2,4,... s) AND honors
+  # Retry-After on 429/503. --retry-max-time caps the worst case so a
+  # hard outage cannot stall the install indefinitely.
+  curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors "${url}" -o "${tmpfile}" \
     || { rm -f "${tmpfile}"; err "Failed to download ${filename} from ${url}"; }
   mv "${tmpfile}" "${dest}"
 

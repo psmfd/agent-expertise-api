@@ -1,7 +1,7 @@
 # agent-expertise-api
 
-[![CI](https://github.com/TheSemicolon/agent-expertise-api/actions/workflows/ci.yml/badge.svg)](https://github.com/TheSemicolon/agent-expertise-api/actions/workflows/ci.yml)
-[![Release](https://github.com/TheSemicolon/agent-expertise-api/actions/workflows/release.yml/badge.svg)](https://github.com/TheSemicolon/agent-expertise-api/actions/workflows/release.yml)
+[![CI](https://github.com/psmfd/agent-expertise-api/actions/workflows/ci.yml/badge.svg)](https://github.com/psmfd/agent-expertise-api/actions/workflows/ci.yml)
+[![Release](https://github.com/psmfd/agent-expertise-api/actions/workflows/release.yml/badge.svg)](https://github.com/psmfd/agent-expertise-api/actions/workflows/release.yml)
 
 Self-hosted .NET 10 REST API for storing and serving expertise entries consumed by AI agents. Entries are a running log of issues/fixes, workarounds, caveats, and requirements — either domain-specific or shared across agent domains.
 
@@ -74,13 +74,13 @@ The document advertises the JWT Bearer security scheme (`components.securitySche
 
 Responses are cached for 5 minutes via `OutputCache` (policy `openapi-discovery`, vary-by-host) so anonymous spec-fetch loops cannot drive sustained CPU through repeated schema generation.
 
-A version-pinned copy is also attached as a release asset (`openapi.json` + `openapi.json.sha256`) on every GitHub Release for offline consumers and codegen pipelines that need byte-stable input. See the [release page](https://github.com/TheSemicolon/agent-expertise-api/releases) and Part D C8 in `docs/security/integration-threat-model.md`. The interactive Scalar UI remains gated to Development (`/scalar/v1`) because the in-browser bearer-token storage pattern carries the same XSS exposure as `/query` (issue #124).
+A version-pinned copy is also attached as a release asset (`openapi.json` + `openapi.json.sha256`) on every GitHub Release for offline consumers and codegen pipelines that need byte-stable input. See the [release page](https://github.com/psmfd/agent-expertise-api/releases) and Part D C8 in `docs/security/integration-threat-model.md`. The interactive Scalar UI remains gated to Development (`/scalar/v1`) because the in-browser bearer-token storage pattern carries the same XSS exposure as `/query` (issue #124).
 
 ### Calling from agent harnesses
 
 This API distinguishes agent-mediated traffic from interactive human callers for audit fidelity (Part D C6, [ADR-008](adrs/008-response-hygiene-and-actor-class.md)). The contract is one header plus one OIDC scope.
 
-**Header:** `X-Actor-Class: agent` set by any caller running inside an LLM-agent loop — the [#147](https://github.com/TheSemicolon/agent-expertise-api/issues/147) skill+curl pattern, the [#148](https://github.com/TheSemicolon/agent-expertise-api/issues/148) in-tree pi extension, or any future agent-mediated client. Interactive human callers (browser, ad-hoc terminal `curl`) omit the header.
+**Header:** `X-Actor-Class: agent` set by any caller running inside an LLM-agent loop — the [#147](https://github.com/psmfd/agent-expertise-api/issues/147) skill+curl pattern, the [#148](https://github.com/psmfd/agent-expertise-api/issues/148) in-tree pi extension, or any future agent-mediated client. Interactive human callers (browser, ad-hoc terminal `curl`) omit the header.
 
 **Scope:** the JWT must carry the `expertise.agent` scope. This is the IdP-signed signal; the header without the scope is treated as an unverified hint, logged as a warning, and the audit row falls back to `actorClass=Human` (the raw header is still persisted to the audit row's `actorClassHeader` column for forensic recovery).
 
@@ -337,15 +337,15 @@ ConnectionStrings__DefaultConnection=Host={server}.postgres.database.azure.com;P
 Docker images are published to GHCR when a release is cut from `main`:
 
 ```text
-ghcr.io/thesemicolon/agent-expertise-api:latest          # most recent stable release
-ghcr.io/thesemicolon/agent-expertise-api:v1.2.3          # immutable SemVer tag
-ghcr.io/thesemicolon/agent-expertise-api:1.2             # tracks the latest 1.2.x
+ghcr.io/psmfd/agent-expertise-api:latest          # most recent stable release
+ghcr.io/psmfd/agent-expertise-api:v1.2.3          # immutable SemVer tag
+ghcr.io/psmfd/agent-expertise-api:1.2             # tracks the latest 1.2.x
 ```
 
 The Helm chart is also published as an OCI artifact on every release:
 
 ```bash
-helm install expertise-api oci://ghcr.io/thesemicolon/charts/expertise-api \
+helm install expertise-api oci://ghcr.io/psmfd/charts/expertise-api \
   --version X.Y.Z \
   --namespace expertise-api --create-namespace \
   -f my-values.yaml
@@ -359,25 +359,25 @@ The image, the chart artifact, the `openapi.json` release asset, and the Archety
 
 ```bash
 # Verify image
-cosign verify ghcr.io/thesemicolon/agent-expertise-api:vX.Y.Z \
-  --certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
+cosign verify ghcr.io/psmfd/agent-expertise-api:vX.Y.Z \
+  --certificate-identity 'https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # Verify chart artifact
-cosign verify ghcr.io/thesemicolon/charts/expertise-api:X.Y.Z \
-  --certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
+cosign verify ghcr.io/psmfd/charts/expertise-api:X.Y.Z \
+  --certificate-identity 'https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # Verify openapi.json (download .sig + .pem alongside it from the release page)
 cosign verify-blob \
-  --certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
+  --certificate-identity 'https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --signature openapi.json.sig \
   --certificate openapi.json.pem \
   openapi.json
 
 # Verify the Archetype A2 release tarball via its signed manifest (ADR-011).
-# Download expertise-api-vX.Y.Z-portable.tar.gz, expertise-api-vX.Y.Z.manifest.json,
+# Download expertise-api-X.Y.Z-portable.tar.gz, expertise-api-X.Y.Z.manifest.json,
 # .manifest.json.sig, .manifest.json.pem from the release page.
 # The leading `set -euo pipefail` is load-bearing — without it an operator
 # copy-pasting this block would see cosign verify-blob fail with non-zero
@@ -385,19 +385,21 @@ cosign verify-blob \
 # against an unverified manifest and could match attacker-coordinated bytes.
 set -euo pipefail
 cosign verify-blob \
-  --certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
+  --certificate-identity 'https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --signature expertise-api-vX.Y.Z.manifest.json.sig \
-  --certificate expertise-api-vX.Y.Z.manifest.json.pem \
-  expertise-api-vX.Y.Z.manifest.json
+  --signature expertise-api-X.Y.Z.manifest.json.sig \
+  --certificate expertise-api-X.Y.Z.manifest.json.pem \
+  expertise-api-X.Y.Z.manifest.json
 
 # Manifest's artifacts.tarball.sha256 transitively binds the tarball.
-expected=$(jq -r .artifacts.tarball.sha256 expertise-api-vX.Y.Z.manifest.json)
-actual=$(sha256sum expertise-api-vX.Y.Z-portable.tar.gz | awk '{print $1}')
+expected=$(jq -r .artifacts.tarball.sha256 expertise-api-X.Y.Z.manifest.json)
+actual=$(sha256sum expertise-api-X.Y.Z-portable.tar.gz | awk '{print $1}')
 [ "$expected" = "$actual" ] || { echo 'TARBALL TAMPERED' >&2; exit 1; }
 ```
 
-All three recipes use `--certificate-identity` (exact match) rather than `--certificate-identity-regexp`. Cosign evaluates `--certificate-identity-regexp` with Go's `regexp.MatchString`, which is **unanchored** — a pattern ending `release.yml@refs/heads/main` substring-matches a malicious `release.yml@refs/heads/main-evil` cert SAN. Exact match removes that bypass surface; there is exactly one legitimate signing identity for this repo and exact match expresses it precisely. If [#138](https://github.com/TheSemicolon/agent-expertise-api/issues/138) introduces maintenance release branches, all three recipes broaden together — with right-anchored regexps (`...@refs/heads/(main|release/.*)$`) or repeated `--certificate-identity` flags, not unanchored patterns.
+**Pre-rename releases:** the repository owner was renamed `TheSemicolon` → `psmfd` in June 2026 (#294). Releases signed before the rename — v1.0.0 and earlier — carry the old workflow path in their Fulcio certificate, so verifying those assets requires `--certificate-identity 'https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main'` instead. `scripts/verify-release.sh` and `install.sh --from-release` try both identities automatically (exact match each, first hit wins).
+
+All three recipes use `--certificate-identity` (exact match) rather than `--certificate-identity-regexp`. Cosign evaluates `--certificate-identity-regexp` with Go's `regexp.MatchString`, which is **unanchored** — a pattern ending `release.yml@refs/heads/main` substring-matches a malicious `release.yml@refs/heads/main-evil` cert SAN. Exact match removes that bypass surface; the legitimate signing identities for this repo form a tiny closed set (the current one, plus the pre-rename one for old releases) and exact match expresses that precisely. If [#138](https://github.com/psmfd/agent-expertise-api/issues/138) introduces maintenance release branches, all three recipes broaden together — with right-anchored regexps (`...@refs/heads/(main|release/.*)$`) or repeated `--certificate-identity` flags, not unanchored patterns.
 
 A missing or invalid signature exits non-zero — wire it into your deploy pipeline as a hard gate.
 
@@ -412,9 +414,26 @@ as a native OS service:
 
 - **Linux**: systemd `--user` unit, `Type=notify`, sandboxed
   (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp`, etc.)
-- **macOS**: launchd `LaunchAgent` (per-user), `KeepAlive { Crashed = true }`
+- **macOS**: launchd `LaunchAgent` (per-user, default), or `LaunchDaemon`
+  with `--system` (boot-time, opt-in — see below)
 - **Windows**: Windows Service via `sc.exe` with Virtual Account
   `NT SERVICE\expertise-api`, failure recovery 5s/5s/30s
+
+#### Survives reboot?
+
+| OS | Mode | Survives reboot? | Notes |
+| -- | ---- | ---------------- | ----- |
+| Linux | systemd `--user` unit (default) | Yes (with linger) | `install.sh` automatically calls `loginctl enable-linger` so the unit activates at boot. If polkit blocks the call, a warning is printed and the unit stops at logout. Enable manually: `sudo loginctl enable-linger $USER`. |
+| macOS | LaunchAgent (default, omit `--system`) | No — login only | The agent loads when the user logs in. For headless/server use, prefer `--system`. |
+| macOS | LaunchDaemon (`--system`) | Yes — boot | Requires `sudo scripts/install.sh --system`. The daemon starts before any login and runs as the invoking user (via `UserName` plist key). See trade-offs below. |
+| Windows | Windows Service | Yes | Always a true service; no extra steps. |
+
+**macOS `--system` trade-offs:**
+
+- The install must be run as root (`sudo scripts/install.sh --system`). The install root is `/opt/expertise-api`; logs go to `/var/log/expertise-api`.
+- The service process drops privileges to the invoking user (via the `UserName` + `GroupName` keys in the plist) before exec, so the API never runs as root.
+- Lifecycle operations (`launchctl bootout`, `bootstrap`) require `sudo`. `scripts/expertise-apictl` does not support the system domain and will print a clear error with the equivalent manual `launchctl` commands.
+- Uninstall: `sudo scripts/uninstall.sh --system [--yes] [--purge]`.
 
 **Graceful stop budgets** (#142): the host configures
 `HostOptions.ShutdownTimeout = 30s` to drain in-flight HTTP, close the
@@ -466,6 +485,15 @@ pending EF Core migrations and is idempotent (no-op when up to date).
   message.
 - The migrate scripts are safe to run standalone any time; they exit 0 on
   no-op so they're cheap to wire into other automation.
+- **`--migrate-timeout SECONDS`** (default `300`) bounds the wall-time of
+  the migrate verb on both scripts. `0` disables the bound. On timeout the
+  install exits non-zero with a clear message; live binaries are **not**
+  swapped and the service is **not** touched. On Linux and macOS with brew
+  coreutils (`timeout` / `gtimeout`) the bound is enforced; on stock macOS
+  where neither binary is present a warning is emitted and migrate runs
+  unbounded (the install does not fail for a missing optional tool).
+  The flag is accepted by `scripts/migrate.sh` directly for standalone use,
+  and by `scripts/install.sh` / `scripts/install.ps1` which pass it through.
 
 #### Upgrade safety
 
@@ -625,7 +653,7 @@ Under `--from-release` the installer:
 3. Downloads the tarball + manifest + cosign signature + Fulcio cert
    over hardened curl (TLS ≥1.2, `--proto =https`, bounded retries).
 4. `cosign verify-blob`s the manifest with exact-match identity
-   `https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main`
+   `https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main`
    and the Sigstore public Rekor (`https://rekor.sigstore.dev`).
 5. Strict-checks `manifest.schemaVersion` (refuses unknown shapes; never silently forward-compat).
 6. Cross-checks `sha256sum(tarball) == manifest.artifacts.tarball.sha256`
@@ -633,7 +661,9 @@ Under `--from-release` the installer:
 7. Enforces downgrade defense vs `${PREFIX}/.install-version-semver`
    (refuses older + refuses same-version-different-manifest-sha).
 8. Checks the ASP.NET Core runtime floor via `dotnet --list-runtimes`
-   (semver compare, prereleases excluded).
+   (§11-aware semver compare; prerelease runtimes are excluded as candidates
+   because the .NET host does not roll-forward onto them without explicit
+   `rollForwardToPreRelease`).
 9. Two-phase extract: bsdtar to `${STAGE_DIR}.unpack`, post-extract
    inspector (refuses symlinks / setuid / case-folding collisions /
    over-long paths), atomic rename into `${STAGE_DIR}`.
@@ -647,10 +677,10 @@ recipe cannot drift via copy-paste.
 
 ```bash
 scripts/verify-release.sh \
-  --tarball     expertise-api-vX.Y.Z-portable.tar.gz \
-  --manifest    expertise-api-vX.Y.Z.manifest.json \
-  --signature   expertise-api-vX.Y.Z.manifest.json.sig \
-  --certificate expertise-api-vX.Y.Z.manifest.json.pem
+  --tarball     expertise-api-X.Y.Z-portable.tar.gz \
+  --manifest    expertise-api-X.Y.Z.manifest.json \
+  --signature   expertise-api-X.Y.Z.manifest.json.sig \
+  --certificate expertise-api-X.Y.Z.manifest.json.pem
 ```
 
 Deferred to follow-ups: `--tarball-url` mirror flag for air-gapped
@@ -698,12 +728,18 @@ The uninstaller defends against destructive `--prefix` mistakes:
     `/usr/{bin,sbin,lib,libexec,share,include}`, `/var/lib`, `/snap`,
     ...) and blocks every descendant unconditionally —
     `--allow-system-prefix` does *not* relax this.
-- Under `--system` mode the prefix directory itself may not be a
-  symlink (TOCTOU defense for multi-user hosts). **Caveat:** the
-  uninstaller does not currently verify that *ancestors* of the prefix
-  are owned by root — if you operate a multi-user host, ensure
-  `/opt/<your-parent>/` is root-owned and not group-writable. Tracking
-  in [#242](https://github.com/TheSemicolon/agent-expertise-api/issues/242).
+- Under `--system` mode the uninstaller enforces a multi-user-safety
+  contract on the whole path (TOCTOU defense, #242): the prefix
+  directory itself may not be a symlink, and **every ancestor** of the
+  prefix (from `/` down to its parent) must be owned by root, must not
+  be a symlink, and must not be group- or world-writable unless the
+  sticky bit is set (`/tmp`-style `1777` is acceptable; `0775` is not).
+  A violation aborts before any deletion is planned. Rationale: POSIX
+  pathname resolution follows symlinks in intermediate components, so a
+  non-root-owned or other-writable ancestor can be swapped for a symlink
+  between validation and `rm -rf`, redirecting the deletion to an
+  attacker-chosen path. Operators on multi-user hosts should install
+  under a root-owned chain such as `/opt/expertise-api`.
 - `--dry-run` forces a non-destructive run even with `--yes` and is the
   primary safety hook used by `tests/uninstall/test-prefix-guard.sh`.
   The plan reflects host state at dry-run invocation time; if the
@@ -744,7 +780,7 @@ when the workload becomes multi-process.
 Design rationale, footgun catalog (systemd `MemoryDenyWriteExecute`,
 launchd `EnvironmentVariables` secret-leak, Windows Virtual Account
 rationale, etc.) is captured in the synthesis doc at
-[`TheSemicolon/pi_config:notes/agent-expertise-api-hosting.md`](https://github.com/TheSemicolon/pi_config/blob/main/notes/agent-expertise-api-hosting.md).
+[`psmfd/pi_config:notes/agent-expertise-api-hosting.md`](https://github.com/psmfd/pi_config/blob/main/notes/agent-expertise-api-hosting.md).
 
 ## Testing
 

@@ -19,9 +19,18 @@
 .PARAMETER SecretsFile
   Path to secrets.env. Default: $env:ProgramData\ExpertiseApi\config\secrets.env.
 
+.PARAMETER MigrateTimeout
+  Wall-time limit in seconds for the migrate verb (default: 300). 0 disables
+  the bound. On timeout the script stops the migrate job, kills the dotnet
+  process tree, and exits non-zero with a clear message.
+
 .EXAMPLE
   PS> scripts\migrate.ps1
   Applies pending migrations using the default install paths.
+
+.EXAMPLE
+  PS> scripts\migrate.ps1 -MigrateTimeout 0
+  Applies pending migrations with no wall-time bound.
 
 .NOTES
   Exit codes:
@@ -31,9 +40,10 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$InstallPrefix = "$env:ProgramFiles\ExpertiseApi",
-    [string]$DataPrefix    = "$env:ProgramData\ExpertiseApi",
-    [string]$SecretsFile
+    [string]$InstallPrefix  = "$env:ProgramFiles\ExpertiseApi",
+    [string]$DataPrefix     = "$env:ProgramData\ExpertiseApi",
+    [string]$SecretsFile,
+    [int]$MigrateTimeout    = 300
 )
 
 $ErrorActionPreference = 'Stop'
@@ -97,21 +107,92 @@ if (-not $env:Onnx__VocabPath) {
     $env:Onnx__VocabPath = Join-Path $DataPrefix 'models\vocab.txt'
 }
 
-# ---- Invoke the migrate verb -------------------------------------------
+# ---- Resolve binary -----------------------------------------------------
 $exe = Join-Path $BinDir 'ExpertiseApi.exe'
 $dll = Join-Path $BinDir 'ExpertiseApi.dll'
 
+$migrateCmd    = $null
+$migrateCmdArg = $null
+
 if (Test-Path $exe) {
     Write-Log "invoking native binary: $exe migrate"
-    & $exe migrate
-    exit $LASTEXITCODE
+    $migrateCmd    = $exe
+    $migrateCmdArg = 'migrate'
 } elseif (Test-Path $dll) {
     if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
         Write-Err "dotnet CLI not found in PATH (required for fdd publish layout at $BinDir)"
     }
     Write-Log "invoking framework-dependent: dotnet $dll migrate"
-    & dotnet $dll migrate
-    exit $LASTEXITCODE
+    $migrateCmd    = 'dotnet'
+    $migrateCmdArg = "$dll migrate"
 } else {
     Write-Err "no ExpertiseApi binary at $BinDir — run scripts/install.ps1 first"
+}
+
+# ---- Invoke with optional wall-time bound --------------------------------
+# Capture current env into a hashtable so the background job can inherit it.
+# PowerShell background jobs run in a child process that does NOT inherit the
+# calling process's environment modifications (Set-Item env:* changes) — we
+# must pass them explicitly.
+$envSnapshot = @{}
+foreach ($entry in [System.Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+    $envSnapshot[$entry.Key] = $entry.Value
+}
+
+if ($MigrateTimeout -gt 0) {
+    Write-Log "migrate timeout: ${MigrateTimeout}s"
+
+    # Write the exit code to a temp file from inside the job; that is the
+    # only reliable way to surface $LASTEXITCODE across a job boundary.
+    $rcFile = [System.IO.Path]::GetTempFileName()
+
+    $job = Start-Job -ScriptBlock {
+        param($cmd, $arg, $envMap, $rcPath)
+        # Restore environment inside the job process.
+        foreach ($k in $envMap.Keys) {
+            [System.Environment]::SetEnvironmentVariable($k, $envMap[$k], 'Process')
+        }
+        if ($arg -eq 'migrate') {
+            & $cmd 'migrate'
+        } else {
+            # Framework-dependent: cmd=dotnet, arg="path\ExpertiseApi.dll migrate"
+            $parts = $arg -split ' ', 2
+            & $cmd $parts[0] $parts[1]
+        }
+        [System.IO.File]::WriteAllText($rcPath, "$LASTEXITCODE")
+    } -ArgumentList $migrateCmd, $migrateCmdArg, $envSnapshot, $rcFile
+
+    $finished = Wait-Job -Job $job -Timeout $MigrateTimeout
+    Receive-Job -Job $job | ForEach-Object { Write-Host $_ }
+
+    if (-not $finished) {
+        Stop-Job -Job $job
+        # Best-effort: kill dotnet / ExpertiseApi processes spawned by the job.
+        $jobStart = $job.PSBeginTime
+        Get-Process -Name 'dotnet', 'ExpertiseApi' -ErrorAction SilentlyContinue |
+            Where-Object { $_.StartTime -ge $jobStart } |
+            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+        Remove-Job -Job $job -Force
+        Remove-Item -Path $rcFile -Force -ErrorAction SilentlyContinue
+        Write-Host "[migrate] ERROR: migration exceeded ${MigrateTimeout}s; live binaries NOT swapped; service NOT touched — check for advisory-lock contention or a runaway ALTER TABLE" -ForegroundColor Red
+        exit 1
+    }
+
+    Remove-Job -Job $job -Force
+    $rc = 1
+    if (Test-Path $rcFile) {
+        $rcStr = (Get-Content -LiteralPath $rcFile -Raw).Trim()
+        if ($rcStr -match '^\d+$') { $rc = [int]$rcStr }
+        Remove-Item -Path $rcFile -Force -ErrorAction SilentlyContinue
+    }
+    exit $rc
+} else {
+    # No timeout bound — run directly so output streams through normally.
+    if ($migrateCmdArg -eq 'migrate') {
+        & $migrateCmd 'migrate'
+    } else {
+        $parts = $migrateCmdArg -split ' ', 2
+        & $migrateCmd $parts[0] $parts[1]
+    }
+    exit $LASTEXITCODE
 }

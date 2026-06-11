@@ -41,6 +41,88 @@ detect_os() {
 
 OS="$(detect_os)"
 
+# ---------------------------------------------------------------------------
+# Detect install scope from install.env. When scope=system on macOS the
+# LaunchDaemon runs under launchd's system domain, which requires root for
+# lifecycle operations. apictl does not support this transparently (it would
+# need sudo + a different launchctl domain). Fail clearly so the operator
+# knows to use the system launchctl commands directly.
+# ---------------------------------------------------------------------------
+_detect_install_scope() {
+  local xdg_config install_env recorded
+  xdg_config="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  install_env="${xdg_config}/expertise-api/install.env"
+  if [[ -f "${install_env}" ]]; then
+    recorded=$(grep -m1 '^EXPERTISE_API_SCOPE=' "${install_env}" \
+               | sed 's/^EXPERTISE_API_SCOPE=//' 2>/dev/null || true)
+    printf '%s' "${recorded}"
+  else
+    printf 'user'
+  fi
+}
+
+if [[ "${OS}" == "macos" ]]; then
+  _recorded_scope="$(_detect_install_scope)"
+  if [[ "${_recorded_scope}" == "system" ]]; then
+    cat >&2 <<'SYSTEM_SCOPE_MSG'
+[expertise-apictl] ERROR: this install was configured with --system (LaunchDaemon).
+Full apictl support for the system domain is a planned follow-up.
+Use the equivalent system-domain launchctl commands directly (requires sudo):
+
+  sudo launchctl print   system/com.thesemicolon.expertise-api
+  sudo launchctl kickstart -k system/com.thesemicolon.expertise-api   # restart
+  sudo launchctl bootout system/com.thesemicolon.expertise-api        # stop
+  sudo launchctl bootstrap system /Library/LaunchDaemons/com.thesemicolon.expertise-api.plist  # start
+SYSTEM_SCOPE_MSG
+    exit 2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# resolve_log_dir — determine the log directory for the current install.
+#
+# Precedence (highest to lowest):
+#   1. EXPERTISE_API_LOG_DIR env var (explicit override, cheapest escape hatch)
+#   2. ${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/install.env written
+#      by install.sh at install time (recorded-at-install; correct for
+#      --prefix installs where log dir diverges from the OS default path)
+#   3. OS-default path (backward-compat fallback for pre-existing installs
+#      that predate the install.env file)
+#
+# The install.env file is written to a stable, non-prefix-dependent XDG
+# config location so apictl can probe it without knowing which --prefix was
+# used at install time. It contains plain key=value lines (no quoting, no
+# subshells). We read it with grep+sed — never `source` — so we do not
+# execute arbitrary shell from disk.
+# ---------------------------------------------------------------------------
+resolve_log_dir() {
+  # Layer 1: explicit env override
+  if [[ -n "${EXPERTISE_API_LOG_DIR:-}" ]]; then
+    printf '%s' "${EXPERTISE_API_LOG_DIR}"
+    return 0
+  fi
+
+  # Layer 2: recorded-at-install value from the stable XDG config location.
+  local xdg_config install_env recorded
+  xdg_config="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  install_env="${xdg_config}/expertise-api/install.env"
+  if [[ -f "${install_env}" ]]; then
+    recorded=$(grep -m1 '^EXPERTISE_API_LOG_DIR=' "${install_env}" \
+               | sed 's/^EXPERTISE_API_LOG_DIR=//' 2>/dev/null || true)
+    if [[ -n "${recorded}" ]]; then
+      printf '%s' "${recorded}"
+      return 0
+    fi
+  fi
+
+  # Layer 3: OS default (preserves behaviour for installs without the file)
+  case "${OS}" in
+    macos)          printf '%s' "${HOME}/Library/Logs/expertise-api" ;;
+    linux)          printf '%s' "${XDG_STATE_HOME:-${HOME}/.local/state}/expertise-api" ;;
+    wsl_to_windows) printf '%s' "${HOME}/.local/state/expertise-api" ;;
+  esac
+}
+
 cmd_start() {
   case "${OS}" in
     linux)          systemctl --user start "${SERVICE}.service" ;;
@@ -52,7 +134,21 @@ cmd_start() {
 cmd_stop() {
   case "${OS}" in
     linux)          systemctl --user stop "${SERVICE}.service" ;;
-    macos)          launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true ;;
+    macos)
+      # Use `launchctl kill SIGTERM` rather than `launchctl bootout`.
+      # bootout UNREGISTERS the service from the launchd domain, causing
+      # `kickstart` in cmd_start to fail with "No such process" (#284).
+      #
+      # kill SIGTERM signals the running process while leaving the service
+      # registered. ASP.NET Core handles SIGTERM gracefully and exits 0.
+      # The plist's KeepAlive dict has SuccessfulExit=false, so launchd
+      # does NOT respawn after a clean exit — the service stays stopped
+      # until an explicit `kickstart`. The subsequent cmd_start `kickstart`
+      # therefore works because the registration is still live.
+      #
+      # If the service is not currently running, kill returns a non-zero
+      # exit, which we swallow (same || true behaviour as the old bootout).
+      launchctl kill SIGTERM "gui/$(id -u)/${LABEL}" 2>/dev/null || true ;;
     wsl_to_windows) sc.exe stop "${SERVICE}" ;;
   esac
 }
@@ -133,7 +229,9 @@ cmd_logs() {
         journalctl --user -u "${SERVICE}.service" -n "${lines}" --no-pager
       fi ;;
     macos)
-      local logfile="${HOME}/Library/Logs/expertise-api/stdout.log"
+      local log_dir logfile
+      log_dir="$(resolve_log_dir)"
+      logfile="${log_dir}/stdout.log"
       [[ -f "${logfile}" ]] || err "no log file at ${logfile}"
       if (( follow == 1 )); then
         tail -n "${lines}" -f "${logfile}"
