@@ -414,9 +414,26 @@ as a native OS service:
 
 - **Linux**: systemd `--user` unit, `Type=notify`, sandboxed
   (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp`, etc.)
-- **macOS**: launchd `LaunchAgent` (per-user), `KeepAlive { Crashed = true }`
+- **macOS**: launchd `LaunchAgent` (per-user, default), or `LaunchDaemon`
+  with `--system` (boot-time, opt-in — see below)
 - **Windows**: Windows Service via `sc.exe` with Virtual Account
   `NT SERVICE\expertise-api`, failure recovery 5s/5s/30s
+
+#### Survives reboot?
+
+| OS | Mode | Survives reboot? | Notes |
+| -- | ---- | ---------------- | ----- |
+| Linux | systemd `--user` unit (default) | Yes (with linger) | `install.sh` automatically calls `loginctl enable-linger` so the unit activates at boot. If polkit blocks the call, a warning is printed and the unit stops at logout. Enable manually: `sudo loginctl enable-linger $USER`. |
+| macOS | LaunchAgent (default, omit `--system`) | No — login only | The agent loads when the user logs in. For headless/server use, prefer `--system`. |
+| macOS | LaunchDaemon (`--system`) | Yes — boot | Requires `sudo scripts/install.sh --system`. The daemon starts before any login and runs as the invoking user (via `UserName` plist key). See trade-offs below. |
+| Windows | Windows Service | Yes | Always a true service; no extra steps. |
+
+**macOS `--system` trade-offs:**
+
+- The install must be run as root (`sudo scripts/install.sh --system`). The install root is `/opt/expertise-api`; logs go to `/var/log/expertise-api`.
+- The service process drops privileges to the invoking user (via the `UserName` + `GroupName` keys in the plist) before exec, so the API never runs as root.
+- Lifecycle operations (`launchctl bootout`, `bootstrap`) require `sudo`. `scripts/expertise-apictl` does not support the system domain and will print a clear error with the equivalent manual `launchctl` commands.
+- Uninstall: `sudo scripts/uninstall.sh --system [--yes] [--purge]`.
 
 **Graceful stop budgets** (#142): the host configures
 `HostOptions.ShutdownTimeout = 30s` to drain in-flight HTTP, close the

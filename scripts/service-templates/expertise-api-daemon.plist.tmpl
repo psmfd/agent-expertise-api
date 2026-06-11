@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@@LABEL@@</string>
+
+  <!-- Wrapper script sources secrets.env then exec's the API binary.
+       The service drops from root to @@SERVICE_USER@@:@@SERVICE_GROUP@@
+       via the UserName + GroupName keys below before the program is
+       spawned, so the API process never runs as root. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@WRAPPER@@</string>
+  </array>
+
+  <!-- Drop privileges to the invoking user. launchd applies UserName/
+       GroupName before exec — the service process inherits the reduced
+       uid/gid. Requires that the install paths (PREFIX, LOG_DIR) are
+       writable by this user. install.sh chowns LOG_DIR to this user. -->
+  <key>UserName</key>
+  <string>@@SERVICE_USER@@</string>
+  <key>GroupName</key>
+  <string>@@SERVICE_GROUP@@</string>
+
+  <key>WorkingDirectory</key>
+  <string>@@WORKDIR@@</string>
+
+  <!-- Run at boot, before any user logs in. This is the key difference
+       from a LaunchAgent (which loads at login only). -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+    <key>Crashed</key><true/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <!-- Stop budget. Must exceed HostOptions.ShutdownTimeout (30s) configured
+       in src/ExpertiseApi/Program.cs. launchd default is 20s, which would
+       SIGKILL the .NET host mid-drain under load. 45s = 30s app drain + 15s
+       OS-level dispose / log flush. See #142. -->
+  <key>ExitTimeOut</key>
+  <integer>45</integer>
+
+  <!-- Adaptive: gets interactive CPU/I/O priority while handling requests
+       and drops to background priority when idle. Background would be
+       appropriate for a daemon that only runs when explicitly triggered;
+       a REST API that responds to user requests benefits from Adaptive's
+       burst-capable scheduling. Consistent with the LaunchAgent template. -->
+  <key>ProcessType</key>
+  <string>Adaptive</string>
+
+  <!-- Log paths under /var/log/expertise-api (set by install.sh for system
+       scope). This directory is owned by @@SERVICE_USER@@ so the service
+       can write to it after privilege drop. -->
+  <key>StandardOutPath</key>
+  <string>@@LOG_DIR@@/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@LOG_DIR@@/stderr.log</string>
+
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key><integer>4096</integer>
+  </dict>
+</dict>
+</plist>

@@ -71,13 +71,13 @@ case "$(uname -s)" in
   *)      err "unsupported OS: $(uname -s) — use uninstall.ps1 on Windows" ;;
 esac
 
-# Guard: macOS system-scope is not yet implemented. LaunchDaemon support
-# (root-owned /Library/LaunchDaemons/) is tracked by #145. Hard-error here
-# so uninstall.sh --system cannot silently target the wrong service path.
-# Exit 2 = precondition failure per scripts/script-output-conventions.md.
+# macOS --system (LaunchDaemon): implemented by #145.
+# Requires root for teardown (the plist lives in /Library/LaunchDaemons/).
 if [ "${OS}" = "macos" ] && [ "${INSTALL_SCOPE}" = "system" ]; then
-  printf '[uninstall] ERROR: --system is not supported on macOS (see #145 for LaunchDaemon support). Use the default user-LaunchAgent mode (omit --system).\n' >&2
-  exit 2
+  if [ "$(id -u)" != "0" ]; then
+    printf '[uninstall] ERROR: --system on macOS requires root (run: sudo scripts/uninstall.sh --system ...).\n' >&2
+    exit 2
+  fi
 fi
 
 # ----------------------------------------------------------------------------
@@ -100,7 +100,10 @@ fi
 # Path layout (must mirror install.sh)
 if [[ -n "${PREFIX_OVERRIDE}" ]]; then
   PREFIX="${PREFIX_OVERRIDE}"
-  if [[ "${OS}" == "macos" ]]; then
+  if [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
+    LOG_DIR="/var/log/expertise-api"
+    CONFIG_DIR="/etc/expertise-api"
+  elif [[ "${OS}" == "macos" ]]; then
     LOG_DIR="${HOME}/Library/Logs/expertise-api"
     CONFIG_DIR="${PREFIX}"
   elif [[ "${INSTALL_SCOPE}" == "system" ]]; then
@@ -110,6 +113,10 @@ if [[ -n "${PREFIX_OVERRIDE}" ]]; then
     LOG_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/expertise-api"
     CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api"
   fi
+elif [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
+  PREFIX="/opt/expertise-api"
+  LOG_DIR="/var/log/expertise-api"
+  CONFIG_DIR="/etc/expertise-api"
 elif [[ "${OS}" == "macos" ]]; then
   PREFIX="${HOME}/Library/Application Support/expertise-api"
   LOG_DIR="${HOME}/Library/Logs/expertise-api"
@@ -213,29 +220,49 @@ case "${OS}" in
     fi ;;
   macos)
     LABEL="com.thesemicolon.expertise-api"
-    PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
-    if [[ -f "${PLIST}" ]]; then
-      # Teardown sequence (#286, semantics verified on a CI macOS runner):
+    if [[ "${INSTALL_SCOPE}" == "system" ]]; then
+      # macOS --system: LaunchDaemon teardown (#145).
       #
-      # launchd override entries are PERSISTENT: BOTH `launchctl enable` and
-      # `launchctl disable` write an entry into the LaunchDatabase that shows
-      # up in `launchctl print-disabled gui/UID`, and no launchctl subcommand
-      # removes an override entry without root. The only way to leave no
-      # stale state is to never write one — so uninstall runs no
-      # enable/disable at all, and install.sh only runs `enable` when the
-      # label is actually listed as disabled.
+      # Teardown sequence — launchd override entries are PERSISTENT (#301):
+      # never run `launchctl enable` or `launchctl disable`. Only bootout
+      # (stops + unregisters) and plist removal. No enable/disable call so
+      # `launchctl print-disabled system` stays clean after uninstall.
       #
-      # 1. `launchctl bootout gui/UID/LABEL` — stops and unregisters the
-      #    service. Tolerates the service never having been loaded (|| true).
-      # 2. `rm -f PLIST` — after this, launchd has no path to re-load it.
-      #
-      # If a disabled-override exists (operator ran `launchctl disable` by
-      # hand), it is left in place: removing it requires root, it is harmless
-      # once the plist is gone, and install.sh clears it on the next install.
-      do_action launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
-      do_action rm -f "${PLIST}"
+      # 1. `launchctl bootout system/LABEL` — stops and unregisters the daemon.
+      # 2. `rm -f PLIST` — after this, launchd cannot re-load it.
+      PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+      if [[ -f "${PLIST}" ]]; then
+        do_action launchctl bootout "system/${LABEL}" 2>/dev/null || true
+        do_action rm -f "${PLIST}"
+      else
+        log "launchd daemon plist not present — skipping service teardown"
+      fi
     else
-      log "launchd plist not present — skipping service teardown"
+      # macOS user scope: LaunchAgent teardown (#286).
+      PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+      if [[ -f "${PLIST}" ]]; then
+        # Teardown sequence (#286, semantics verified on a CI macOS runner):
+        #
+        # launchd override entries are PERSISTENT: BOTH `launchctl enable` and
+        # `launchctl disable` write an entry into the LaunchDatabase that shows
+        # up in `launchctl print-disabled gui/UID`, and no launchctl subcommand
+        # removes an override entry without root. The only way to leave no
+        # stale state is to never write one — so uninstall runs no
+        # enable/disable at all, and install.sh only runs `enable` when the
+        # label is actually listed as disabled.
+        #
+        # 1. `launchctl bootout gui/UID/LABEL` — stops and unregisters the
+        #    service. Tolerates the service never having been loaded (|| true).
+        # 2. `rm -f PLIST` — after this, launchd has no path to re-load it.
+        #
+        # If a disabled-override exists (operator ran `launchctl disable` by
+        # hand), it is left in place: removing it requires root, it is harmless
+        # once the plist is gone, and install.sh clears it on the next install.
+        do_action launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+        do_action rm -f "${PLIST}"
+      else
+        log "launchd plist not present — skipping service teardown"
+      fi
     fi ;;
 esac
 
