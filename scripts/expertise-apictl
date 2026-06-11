@@ -42,6 +42,43 @@ detect_os() {
 OS="$(detect_os)"
 
 # ---------------------------------------------------------------------------
+# Detect install scope from install.env. When scope=system on macOS the
+# LaunchDaemon runs under launchd's system domain, which requires root for
+# lifecycle operations. apictl does not support this transparently (it would
+# need sudo + a different launchctl domain). Fail clearly so the operator
+# knows to use the system launchctl commands directly.
+# ---------------------------------------------------------------------------
+_detect_install_scope() {
+  local xdg_config install_env recorded
+  xdg_config="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  install_env="${xdg_config}/expertise-api/install.env"
+  if [[ -f "${install_env}" ]]; then
+    recorded=$(grep -m1 '^EXPERTISE_API_SCOPE=' "${install_env}" \
+               | sed 's/^EXPERTISE_API_SCOPE=//' 2>/dev/null || true)
+    printf '%s' "${recorded}"
+  else
+    printf 'user'
+  fi
+}
+
+if [[ "${OS}" == "macos" ]]; then
+  _recorded_scope="$(_detect_install_scope)"
+  if [[ "${_recorded_scope}" == "system" ]]; then
+    cat >&2 <<'SYSTEM_SCOPE_MSG'
+[expertise-apictl] ERROR: this install was configured with --system (LaunchDaemon).
+Full apictl support for the system domain is a planned follow-up.
+Use the equivalent system-domain launchctl commands directly (requires sudo):
+
+  sudo launchctl print   system/com.thesemicolon.expertise-api
+  sudo launchctl kickstart -k system/com.thesemicolon.expertise-api   # restart
+  sudo launchctl bootout system/com.thesemicolon.expertise-api        # stop
+  sudo launchctl bootstrap system /Library/LaunchDaemons/com.thesemicolon.expertise-api.plist  # start
+SYSTEM_SCOPE_MSG
+    exit 2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # resolve_log_dir — determine the log directory for the current install.
 #
 # Precedence (highest to lowest):

@@ -272,6 +272,12 @@ if [[ -n "${PREFIX_OVERRIDE}" ]]; then
   # can set XDG_* explicitly before invoking install.sh.
   LOG_DIR="${PREFIX}/logs"
   CONFIG_DIR="${PREFIX}"
+elif [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
+  # macOS --system (LaunchDaemon): root-owned paths, mirrors Linux system-scope.
+  # Log dir is NOT under any user home (the service may start before login).
+  PREFIX="/opt/expertise-api"
+  LOG_DIR="/var/log/expertise-api"
+  CONFIG_DIR="/etc/expertise-api"
 elif [[ "${OS}" == "macos" ]]; then
   PREFIX="${HOME}/Library/Application Support/expertise-api"
   LOG_DIR="${HOME}/Library/Logs/expertise-api"
@@ -299,6 +305,19 @@ WRAPPER_SCRIPT="${PREFIX}/launch-expertise-api.sh"
 WRAPPER_LEGACY="${PREFIX}/bin/launch-expertise-api.sh"
 VERSION_MARKER="${PREFIX}/.install-version"
 LOCK_DIR="${PREFIX}/.install.lock"
+
+# ---------------------------------------------------------------------------
+# Ancestor-walk TOCTOU guard (--system only, issue #242 / #145)
+#
+# Mirror of the guard in uninstall.sh: for system-scope installs (both
+# Linux and macOS LaunchDaemon), walk every ancestor of PREFIX and refuse
+# if any ancestor is non-root-owned, group/world-writable without sticky,
+# or a symlink. User-mode operators own $HOME — the check is unnecessary
+# there and would fire on any user install.
+# ---------------------------------------------------------------------------
+if [[ "${INSTALL_SCOPE}" == "system" ]]; then
+  validate_prefix_ancestors "${PREFIX}"
+fi
 
 # ---------------------------------------------------------------------------
 # Cleanup / trap — staged STAGE variable drives rollback granularity
@@ -399,14 +418,24 @@ preflight() {
   STAGE="preflight"
   log "pre-flight: OS=${OS} RID=${RID} scope=${INSTALL_SCOPE} mode=${PUBLISH_MODE}"
 
-  # Guard: macOS system-scope is not yet implemented. LaunchDaemon support
-  # (root-owned /Library/LaunchDaemons/, reboot survival) is tracked by #145.
-  # Hard-error here — before any filesystem mutation — so no partial install
-  # artifacts exist when this exit path is taken. Exit 2 = precondition
-  # failure per scripts/script-output-conventions.md.
+  # macOS --system: LaunchDaemon install. Requires root (must be run via sudo).
+  # Implemented by #145. Default behavior (omit --system) is still LaunchAgent.
   if [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
-    printf '[install] ERROR: --system is not supported on macOS (see #145 for LaunchDaemon support). Use the default user-LaunchAgent mode (omit --system).\n' >&2
-    exit 2
+    if [[ "$(id -u)" != "0" ]]; then
+      printf '[install] ERROR: --system on macOS requires root (run: sudo scripts/install.sh --system ...).\n' >&2
+      exit 2
+    fi
+    if [[ -z "${SUDO_USER:-}" ]]; then
+      printf '[install] ERROR: --system on macOS must be run via sudo (SUDO_USER not set). The service will run as the invoking user; SUDO_USER identifies that user.\n' >&2
+      exit 2
+    fi
+    # SUDO_USER feeds a root-context tilde-expansion eval (write_install_env)
+    # and the plist UserName key — restrict it to safe username characters so
+    # a hostile value cannot inject shell syntax or plist structure.
+    if ! printf '%s' "${SUDO_USER}" | grep -Eq '^[A-Za-z_][A-Za-z0-9._-]*$'; then
+      printf '[install] ERROR: SUDO_USER %q contains unexpected characters — refusing --system install.\n' "${SUDO_USER}" >&2
+      exit 2
+    fi
   fi
 
   if [[ "${PUBLISH_MODE}" == "fdd" ]]; then
@@ -574,18 +603,33 @@ write_install_version_marker() {
 # chmod 644: no secrets — paths only.
 # ---------------------------------------------------------------------------
 write_install_env() {
+  # For --system installs on macOS (LaunchDaemon path), the XDG config dir
+  # is under SUDO_USER's home, not root's. resolve_install_env_dir() picks
+  # the right location based on scope.
   local xdg_config_dir env_dir env_file
-  xdg_config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  if [[ "${INSTALL_SCOPE}" == "system" && "${OS}" == "macos" && -n "${SUDO_USER:-}" ]]; then
+    # Write under the invoking user's config dir so apictl (running as that
+    # user) can find the install.env without sudo.
+    xdg_config_dir="$(eval printf '%s' "~${SUDO_USER}/.config")"
+  else
+    xdg_config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  fi
   env_dir="${xdg_config_dir}/expertise-api"
   env_file="${env_dir}/install.env"
   mkdir -p "${env_dir}"
   if [[ -L "${env_file}" ]]; then
     err "${env_file} exists as a symlink — refusing to write"
   fi
-  printf 'EXPERTISE_API_LOG_DIR=%s\n' "${LOG_DIR}" > "${env_file}.tmp"
-  printf 'EXPERTISE_API_PREFIX=%s\n'  "${PREFIX}"  >> "${env_file}.tmp"
+  printf 'EXPERTISE_API_LOG_DIR=%s\n' "${LOG_DIR}"       > "${env_file}.tmp"
+  printf 'EXPERTISE_API_PREFIX=%s\n'  "${PREFIX}"        >> "${env_file}.tmp"
+  printf 'EXPERTISE_API_SCOPE=%s\n'   "${INSTALL_SCOPE}" >> "${env_file}.tmp"
   mv -f -- "${env_file}.tmp" "${env_file}"
   chmod 644 "${env_file}"
+  # For --system on macOS the file was written as root; chown it to SUDO_USER
+  # so apictl (running as that user) can read it without sudo.
+  if [[ "${INSTALL_SCOPE}" == "system" && "${OS}" == "macos" && -n "${SUDO_USER:-}" ]]; then
+    chown "${SUDO_USER}" "${env_file}" 2>/dev/null || true
+  fi
   log "install-env: ${env_file}"
 }
 
@@ -867,10 +911,25 @@ install_systemd_user() {
     log "systemd: enabled + started"
   fi
 
-  # Lingering — service survives logout
+  # Lingering — service survives logout (#145).
+  # Attempt `loginctl enable-linger` so the --user unit activates at boot
+  # without requiring an interactive login session. The call is idempotent:
+  # if linger is already on it is a no-op. It can fail under polkit
+  # restrictions (e.g. some container / CI environments, or deployments
+  # where the admin has restricted lingering). On failure, fall back to a
+  # warning so the install still completes.
   if command -v loginctl >/dev/null 2>&1; then
-    if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q 'Linger=yes'; then
-      warn "user lingering not enabled — service stops at logout. Enable with: sudo loginctl enable-linger \$USER"
+    if loginctl show-user "$(id -un)" 2>/dev/null | grep -q 'Linger=yes'; then
+      log "linger: already enabled for $(id -un) — service survives logout"
+    else
+      log "linger: attempting loginctl enable-linger $(id -un)"
+      if loginctl enable-linger "$(id -un)" 2>/dev/null; then
+        log "linger: enabled — user sessions persist after logout (service survives reboot)"
+        log "linger: note: all user processes for $(id -un) will persist after logout"
+      else
+        warn "linger: loginctl enable-linger failed (polkit restriction?) — service will stop at logout"
+        warn "linger: to enable manually: sudo loginctl enable-linger $(id -un)"
+      fi
     fi
   fi
 }
@@ -914,6 +973,69 @@ install_launchd() {
   log "launchd: bootstrapped + kickstarted"
 }
 
+install_launchd_system() {
+  # macOS --system: LaunchDaemon in /Library/LaunchDaemons/ (#145).
+  # Runs as root. The service drops privileges to SUDO_USER via the UserName
+  # plist key — root only spawns the process, the OS then sets uid/gid before
+  # exec so the service never runs as root.
+  #
+  # launchctl override caveat (#301): only run `launchctl enable` when the
+  # label is actually listed as disabled in the system domain, to avoid
+  # writing a persistent override entry that survives uninstall.
+  local label="com.thesemicolon.expertise-api"
+  local plist_dir="/Library/LaunchDaemons"
+  local plist_path="${plist_dir}/${label}.plist"
+  mkdir -p "${plist_dir}"
+
+  local tpl="${SCRIPT_DIR}/service-templates/expertise-api-daemon.plist.tmpl"
+  [[ -f "${tpl}" ]] || err "missing template: ${tpl}"
+
+  # Resolve the uid/gid of the service user (the original invoker, not root).
+  local service_user service_uid service_gid service_group
+  service_user="${SUDO_USER}"
+  service_uid="$(id -u "${service_user}" 2>/dev/null || true)"
+  [[ -n "${service_uid}" ]] || err "cannot resolve uid for user '${service_user}'"
+  service_gid="$(id -g "${service_user}" 2>/dev/null || true)"
+  [[ -n "${service_gid}" ]] || err "cannot resolve gid for user '${service_user}'"
+  # Lookup group name: `id -gn` works on both macOS and Linux.
+  service_group="$(id -gn "${service_user}" 2>/dev/null || true)"
+  [[ -n "${service_group}" ]] || err "cannot resolve group name for user '${service_user}'"
+
+  sed \
+    -e "s|@@LABEL@@|${label}|g" \
+    -e "s|@@WRAPPER@@|${WRAPPER_SCRIPT}|g" \
+    -e "s|@@WORKDIR@@|${PREFIX}|g" \
+    -e "s|@@LOG_DIR@@|${LOG_DIR}|g" \
+    -e "s|@@SERVICE_USER@@|${service_user}|g" \
+    -e "s|@@SERVICE_GROUP@@|${service_group}|g" \
+    "${tpl}" > "${plist_path}.tmp"
+  # Root must own the plist (launchd requires it for daemons).
+  chown root:wheel "${plist_path}.tmp"
+  chmod 644 "${plist_path}.tmp"
+  mv -f -- "${plist_path}.tmp" "${plist_path}"
+  log "launchd daemon plist: ${plist_path}"
+  log "launchd daemon: service will run as ${service_user}:${service_group} (uid=${service_uid})"
+
+  # Ensure log dir is owned by the service user (the daemon writes stdout/stderr
+  # there via the plist; creating it as root then running the process as another
+  # user would cause write failures).
+  mkdir -p "${LOG_DIR}"
+  chown "${service_user}:${service_group}" "${LOG_DIR}"
+  chmod 755 "${LOG_DIR}"
+
+  launchctl bootout "system/${label}" 2>/dev/null || true
+  launchctl bootstrap system "${plist_path}"
+  # Only run `launchctl enable` when the label is actually listed as disabled
+  # in the system domain — same pattern as the user LaunchAgent path (#301).
+  if launchctl print-disabled system 2>/dev/null \
+      | grep -F "\"${label}\"" | grep -qw disabled; then
+    launchctl enable "system/${label}"
+    log "launchd: cleared disabled-override for system/${label}"
+  fi
+  launchctl kickstart -k "system/${label}"
+  log "launchd daemon: bootstrapped + kickstarted (survives reboot)"
+}
+
 install_service() {
   case "${OS}" in
     linux|wsl)
@@ -921,7 +1043,11 @@ install_service() {
         || err "--system install not yet supported by this script (use systemd unit at /etc/systemd/system/ manually)"
       install_systemd_user ;;
     macos)
-      install_launchd ;;
+      if [[ "${INSTALL_SCOPE}" == "system" ]]; then
+        install_launchd_system
+      else
+        install_launchd
+      fi ;;
   esac
 }
 
