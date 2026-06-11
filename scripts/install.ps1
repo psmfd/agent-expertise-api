@@ -26,9 +26,15 @@
 .PARAMETER SkipPreflight
   Skip pre-flight checks (.NET runtime, port, postgres, disk).
 
+.PARAMETER MigrateTimeout
+  Wall-time limit in seconds for the migrate step (default: 300). 0 disables
+  the bound. On timeout the install exits non-zero; the service is NOT started
+  and the prior service state is untouched. Passed through to migrate.ps1.
+
 .EXAMPLE
   .\install.ps1
   .\install.ps1 -PublishMode scd -Bind 'http://127.0.0.1:9090'
+  .\install.ps1 -MigrateTimeout 0   # unbounded migrate
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -38,7 +44,8 @@ param(
     [ValidateSet('fdd', 'scd')]
     [string]$PublishMode   = 'fdd',
     [string]$Bind          = 'http://127.0.0.1:8080',
-    [switch]$SkipPreflight
+    [switch]$SkipPreflight,
+    [int]$MigrateTimeout   = 300
 )
 
 $ErrorActionPreference = 'Stop'
@@ -239,7 +246,8 @@ function Invoke-Migrate {
     & (Join-Path $PSScriptRoot 'migrate.ps1') `
         -InstallPrefix $InstallPrefix `
         -DataPrefix $DataPrefix `
-        -SecretsFile $SecretsFile
+        -SecretsFile $SecretsFile `
+        -MigrateTimeout $MigrateTimeout
     if ($LASTEXITCODE -ne 0) {
         Write-Err "migrate failed — service NOT started; prior state intact. Inspect the output above, fix the schema/DB issue, then re-run scripts/install.ps1."
     }
