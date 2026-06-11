@@ -257,6 +257,27 @@ RID="${EXPLICIT_RID:-$(detect_rid)}"
 # sources verify-release.sh (via rc_source_verify_release) on first use.
 # shellcheck source=lib/release-consumer.sh disable=SC1091
 . "${SCRIPT_DIR}/lib/release-consumer.sh"
+# ---------------------------------------------------------------------------
+# macOS --system gate (#145). Top-level — NOT inside preflight() — so
+# --skip-preflight cannot bypass it: the SUDO_USER value below feeds a
+# root-context tilde-expansion eval (write_install_env) and the daemon
+# plist UserName key, so the validation must be unskippable.
+# ---------------------------------------------------------------------------
+if [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
+  if [[ "$(id -u)" != "0" ]]; then
+    printf '[install] ERROR: --system on macOS requires root (run: sudo scripts/install.sh --system ...).\n' >&2
+    exit 2
+  fi
+  if [[ -z "${SUDO_USER:-}" ]]; then
+    printf '[install] ERROR: --system on macOS must be run via sudo (SUDO_USER not set). The service will run as the invoking user; SUDO_USER identifies that user.\n' >&2
+    exit 2
+  fi
+  if ! printf '%s' "${SUDO_USER}" | grep -Eq '^[A-Za-z_][A-Za-z0-9._-]*$'; then
+    printf '[install] ERROR: SUDO_USER %q contains unexpected characters — refusing --system install.\n' "${SUDO_USER}" >&2
+    exit 2
+  fi
+fi
+
 if [[ -n "${PREFIX_OVERRIDE}" ]]; then
   PREFIX_OVERRIDE="$(normalize_prefix "${PREFIX_OVERRIDE}")"
   validate_prefix "${PREFIX_OVERRIDE}"
@@ -418,25 +439,9 @@ preflight() {
   STAGE="preflight"
   log "pre-flight: OS=${OS} RID=${RID} scope=${INSTALL_SCOPE} mode=${PUBLISH_MODE}"
 
-  # macOS --system: LaunchDaemon install. Requires root (must be run via sudo).
-  # Implemented by #145. Default behavior (omit --system) is still LaunchAgent.
-  if [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
-    if [[ "$(id -u)" != "0" ]]; then
-      printf '[install] ERROR: --system on macOS requires root (run: sudo scripts/install.sh --system ...).\n' >&2
-      exit 2
-    fi
-    if [[ -z "${SUDO_USER:-}" ]]; then
-      printf '[install] ERROR: --system on macOS must be run via sudo (SUDO_USER not set). The service will run as the invoking user; SUDO_USER identifies that user.\n' >&2
-      exit 2
-    fi
-    # SUDO_USER feeds a root-context tilde-expansion eval (write_install_env)
-    # and the plist UserName key — restrict it to safe username characters so
-    # a hostile value cannot inject shell syntax or plist structure.
-    if ! printf '%s' "${SUDO_USER}" | grep -Eq '^[A-Za-z_][A-Za-z0-9._-]*$'; then
-      printf '[install] ERROR: SUDO_USER %q contains unexpected characters — refusing --system install.\n' "${SUDO_USER}" >&2
-      exit 2
-    fi
-  fi
+  # macOS --system root/SUDO_USER gate lives at TOP LEVEL (after lib sourcing),
+  # not here — preflight() is skippable via --skip-preflight and the gate
+  # must not be (#145).
 
   if [[ "${PUBLISH_MODE}" == "fdd" ]]; then
     command -v dotnet >/dev/null 2>&1 \

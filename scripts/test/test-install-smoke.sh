@@ -622,17 +622,38 @@ case "$(uname -s)" in
   Darwin)
     if [ "${SMOKE_SYSTEM_SCOPE}" = "1" ]; then
       # Full system-scope install smoke (requires passwordless sudo — GHA macOS).
-      # We use a custom --prefix so the test is self-contained and purge-able.
-      _sys_prefix="${TMPDIR:-/tmp}/expertise-api-system-smoke"
-      log "SMOKE_SYSTEM_SCOPE=1: attempting LaunchDaemon install at prefix=${_sys_prefix}"
+      #
+      # Uses the DEFAULT system prefix (/opt/expertise-api), not a TMPDIR
+      # prefix: the #242 ancestor walk requires every ancestor of the prefix
+      # to be root-owned and non-writable, which a path under the runner's
+      # TMPDIR (/var symlink + runner-owned dirs) can never satisfy. The
+      # default prefix also exercises the documented operator path verbatim.
+      _sys_prefix="/opt/expertise-api"
+      _sys_config_dir="/etc/expertise-api"
+      _sys_bind="127.0.0.1:18090"
+
+      # Seed the system-scope secrets file (mirrors the user-scope seeding
+      # above; install.sh reads CONFIG_DIR=/etc/expertise-api in system scope).
+      sudo mkdir -p "${_sys_config_dir}"
+      printf '%s\n' \
+        "ConnectionStrings__DefaultConnection=\"Host=${POSTGRES_HOST};Port=${POSTGRES_PORT};Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}\"" \
+        "ASPNETCORE_ENVIRONMENT=Development" \
+        "Auth__Mode=ApiKey" \
+        "Auth__ApiKey=smoke-api-key-not-secret" \
+        "Onnx__ModelPath=${_sys_prefix}/models/model.onnx" \
+        "Onnx__VocabPath=${_sys_prefix}/models/vocab.txt" \
+        "DOTNET_ROOT=${effective_dotnet_root}" \
+        | sudo tee "${_sys_config_dir}/secrets.env" >/dev/null
+      sudo chmod 600 "${_sys_config_dir}/secrets.env"
+
+      log "SMOKE_SYSTEM_SCOPE=1: attempting LaunchDaemon install at default prefix=${_sys_prefix}"
       set +e
       _sys_install_log="${TMPDIR:-/tmp}/.smoke-system-install-$$.log"
       # shellcheck disable=SC2024 -- log path is under TMPDIR (runner-writable);
       # the shell opens the fd before exec'ing sudo, which is correct here.
       sudo bash "${ROOT}/scripts/install.sh" \
-        --prefix "${_sys_prefix}" \
         --system \
-        --skip-preflight \
+        --bind "${_sys_bind}" \
         > "${_sys_install_log}" 2>&1
       _sys_rc=$?
       set -e
@@ -643,6 +664,26 @@ case "$(uname -s)" in
         FAIL=$((FAIL + 1))
         printf 'FAIL: install.sh --system exited %d on macOS\n' "${_sys_rc}" >&2
         tail -n 40 "${_sys_install_log}" >&2 || true
+      fi
+
+      # Daemon answers over HTTP — the strongest boot-equivalent signal we
+      # can get without an actual reboot.
+      _sys_ready=0
+      for _ in $(seq 1 60); do
+        if curl -fsS "http://${_sys_bind}/health/live" >/dev/null 2>&1; then
+          _sys_ready=1
+          break
+        fi
+        sleep 1
+      done
+      if [ "${_sys_ready}" = "1" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: LaunchDaemon /health/live returns 200 within 60s\n'
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: LaunchDaemon /health/live did not return 200 within 60s\n' >&2
+        sudo launchctl print "system/com.thesemicolon.expertise-api" 2>&1 | head -60 >&2 || true
+        sudo tail -n 40 /var/log/expertise-api/stderr.log >&2 2>/dev/null || true
       fi
 
       # Assert the daemon plist was written with UserName and correct paths.
@@ -679,11 +720,11 @@ case "$(uname -s)" in
         printf 'FAIL: install.env does not record EXPERTISE_API_SCOPE=system\n' >&2
       fi
 
-      # Teardown: uninstall.sh --system --yes --purge.
+      # Teardown: uninstall.sh --system --yes --purge (default prefix, same
+      # as the install above — exercises the documented operator path).
       set +e
       # shellcheck disable=SC2024 -- same TMPDIR-writable pattern as the install step above.
       sudo bash "${ROOT}/scripts/uninstall.sh" \
-        --prefix "${_sys_prefix}" \
         --system \
         --yes --purge \
         > "${TMPDIR:-/tmp}/.smoke-system-uninstall-$$.log" 2>&1
