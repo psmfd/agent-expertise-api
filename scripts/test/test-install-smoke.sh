@@ -545,9 +545,12 @@ fi
 #
 #     macOS: after uninstall.sh --yes --purge, `launchctl print-disabled
 #     gui/UID` must NOT contain the service label. This is the acceptance
-#     criterion for #286: the old code ran only `bootout`, leaving a stale
-#     disabled-override; the fix runs `enable` (clears any override) before
-#     `bootout` so the label disappears from print-disabled entirely.
+#     criterion for #286: launchd override entries (written by BOTH
+#     `launchctl enable` and `launchctl disable`) are persistent and cannot
+#     be removed without root, so the fix is to never write one — install.sh
+#     runs `enable` only when the label is actually disabled, and uninstall
+#     runs no enable/disable at all. A fresh install→uninstall cycle must
+#     therefore leave no entry for the label in print-disabled.
 #
 #     If `launchctl print-disabled` itself errors (e.g. sandbox restrictions
 #     on a CI runner), we treat it as SKIP — not a FAIL — and log the reason.

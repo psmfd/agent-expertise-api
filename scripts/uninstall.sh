@@ -196,31 +196,23 @@ case "${OS}" in
     LABEL="com.thesemicolon.expertise-api"
     PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
     if [[ -f "${PLIST}" ]]; then
-      # Teardown sequence (man launchctl):
+      # Teardown sequence (#286, semantics verified on a CI macOS runner):
       #
-      # 1. `launchctl enable gui/UID/LABEL` — clears any disabled-override the
-      #    service may have accumulated in launchd's LaunchDatabase. Without this
-      #    step, a subsequent reinstall would write a new plist but launchd would
-      #    refuse to start the service because the stale disabled-override
-      #    persists even after the plist is gone.
+      # launchd override entries are PERSISTENT: BOTH `launchctl enable` and
+      # `launchctl disable` write an entry into the LaunchDatabase that shows
+      # up in `launchctl print-disabled gui/UID`, and no launchctl subcommand
+      # removes an override entry without root. The only way to leave no
+      # stale state is to never write one — so uninstall runs no
+      # enable/disable at all, and install.sh only runs `enable` when the
+      # label is actually listed as disabled.
       #
-      #    Note: we do NOT run `disable` here. Running `disable` during uninstall
-      #    ADDS a persistent disabled-override entry that shows up in
-      #    `launchctl print-disabled gui/UID` forever — exactly the stale-state
-      #    this fix targets. The documented way to clear an override entry is
-      #    `enable` (which either removes the disabled-override or marks it
-      #    enabled, both of which satisfy `print-disabled` not listing the label
-      #    for a non-existent service on modern macOS).
+      # 1. `launchctl bootout gui/UID/LABEL` — stops and unregisters the
+      #    service. Tolerates the service never having been loaded (|| true).
+      # 2. `rm -f PLIST` — after this, launchd has no path to re-load it.
       #
-      # 2. `launchctl bootout gui/UID/LABEL` — unregisters and stops the service.
-      #    Tolerates the service never having been loaded (|| true).
-      #
-      # 3. `rm -f PLIST` — removes the plist file. After this, launchd has no
-      #    path to re-load the service, and no override entry remains.
-      #
-      # This mirrors the symmetry with install_launchd (install.sh) which runs:
-      #   bootout (idempotent) → bootstrap → enable → kickstart
-      do_action launchctl enable "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+      # If a disabled-override exists (operator ran `launchctl disable` by
+      # hand), it is left in place: removing it requires root, it is harmless
+      # once the plist is gone, and install.sh clears it on the next install.
       do_action launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
       do_action rm -f "${PLIST}"
     else
