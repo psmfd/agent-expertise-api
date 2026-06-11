@@ -64,7 +64,14 @@ readonly COSIGN_MIN_VERSION='2.2.0'
 # refuses unknown values rather than silently forward-compatting (a
 # compromised future release could ship schemaVersion=2 with fields a
 # stale parser would miss).
-readonly SUPPORTED_MANIFEST_SCHEMA_VERSIONS=('1')
+#
+# Space-separated scalar, NOT an array: this file is sourced inside a
+# function (rc_source_verify_release, SOURCE_ONLY=1) and on macOS bash 3.2
+# a `readonly arr=(...)` compound assignment in function scope creates a
+# FUNCTION-LOCAL array that vanishes when the sourcing function returns —
+# while readonly scalars stay global. The later "${arr[@]}" reference then
+# aborts under set -u (caught by the first E3 from-release smoke, #260).
+readonly SUPPORTED_MANIFEST_SCHEMA_VERSIONS='1'
 
 # ---------------------------------------------------------------------------
 # Logging helpers (style matches scripts/install.sh)
@@ -164,11 +171,13 @@ vr_validate_manifest_schema() {
 
   local ok=0
   local v
-  for v in "${SUPPORTED_MANIFEST_SCHEMA_VERSIONS[@]}"; do
+  # Intentionally unquoted: scalar word-split into the supported values
+  # (see the constant's declaration for why this is not an array).
+  for v in ${SUPPORTED_MANIFEST_SCHEMA_VERSIONS}; do
     if [ "$schema" = "$v" ]; then ok=1; break; fi
   done
   if [ "$ok" = "0" ]; then
-    vr_die "unsupported manifest schemaVersion='${schema}' (supported: ${SUPPORTED_MANIFEST_SCHEMA_VERSIONS[*]}).
+    vr_die "unsupported manifest schemaVersion='${schema}' (supported: ${SUPPORTED_MANIFEST_SCHEMA_VERSIONS}).
   This usually means install.sh is older than the release. Upgrade install.sh
   to a version that supports schemaVersion=${schema}, or fetch an older
   release whose manifest schemaVersion is supported." 1

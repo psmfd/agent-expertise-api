@@ -16,6 +16,10 @@
 #      install loop).
 #   4. ${PREFIX}/.install-mode and ${PREFIX}/.install-version-semver
 #      exist post-install (D3 post-install markers).
+#   4a. (release mode only) ${PREFIX}/.install-mode contains "release".
+#   4b. (release mode only) ${PREFIX}/.install-version-semver is non-empty
+#       and carries appVersion matching SMOKE_RELEASE_VERSION.
+#   4c. (release mode only) ${PREFIX}/.install-history is non-empty.
 #   5. `systemctl --user is-active expertise-api.service` reports active.
 #   6. /health/live returns 200 within READY_TIMEOUT seconds.
 #   7. /health/ready returns 200 (proves DB + ONNX + migrations are all
@@ -41,6 +45,13 @@
 #   POSTGRES_DB             — default expertise_smoke
 #   POSTGRES_USER           — default expertise_smoke
 #   POSTGRES_PASSWORD       — default smoke-password-not-secret
+#
+# Release-mode env (E3 / #260 — only set these for --from-release runs):
+#   SMOKE_INSTALL_MODE      — set to "release" to activate release-path
+#                             assertions (4a/4b/4c) and pass --from-release
+#                             to install.sh (default: empty = source mode)
+#   SMOKE_RELEASE_VERSION   — vX.Y.Z tag to install, required when
+#                             SMOKE_INSTALL_MODE=release (e.g. "v1.0.0")
 #
 # Postgres bootstrap (Linux container only): the harness invokes
 # `start_postgres_linux` which calls `sudo systemctl start postgresql`
@@ -83,6 +94,14 @@ BASE_URL="http://${BIND_ADDR}"
 log() { printf '[smoke] %s\n' "$1"; }
 warn() { printf '[smoke] WARN: %s\n' "$1" >&2; }
 err_exit() { printf '[smoke] FATAL: %s\n' "$1" >&2; exit 1; }
+
+# E3 / #260 — release-mode smoke parameters.
+SMOKE_INSTALL_MODE="${SMOKE_INSTALL_MODE:-}"
+SMOKE_RELEASE_VERSION="${SMOKE_RELEASE_VERSION:-}"
+
+if [ "${SMOKE_INSTALL_MODE}" = "release" ] && [ -z "${SMOKE_RELEASE_VERSION}" ]; then
+  err_exit "SMOKE_INSTALL_MODE=release requires SMOKE_RELEASE_VERSION to be set (e.g. v1.0.0)"
+fi
 
 # Suppress the dotnet first-run telemetry/HTTPS-cert banner so it does not
 # consume our tail-N install-log window during failure diagnostics. Mirrors
@@ -269,8 +288,18 @@ assert "secrets file written with conn string" test -s "${SECRETS_FILE}"
 #    install. Bind to a non-default port so the smoke run doesn't collide
 #    with anything else on the host. --skip-preflight bypasses the human-
 #    facing host preflight (CI is not a human-facing host).
+#    Release mode (E3 / #260): --from-release --version adds cosign-verified
+#    tarball download + extract in place of dotnet publish.
 # ---------------------------------------------------------------------------
-log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR}"
+log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR} mode=${SMOKE_INSTALL_MODE:-source}"
+
+# Build install args. Release-mode appends --from-release + --version so
+# the harness can be driven by either path without duplicating install logic.
+install_args=(--skip-preflight --prefix "${PREFIX}" --bind "${BIND_ADDR}")
+if [ "${SMOKE_INSTALL_MODE}" = "release" ]; then
+  install_args+=(--from-release --version "${SMOKE_RELEASE_VERSION}")
+fi
+
 # Preserve the staged tree on failure so the failure-handler below can
 # re-run the migrate binary directly and capture its real stderr. The
 # escape hatch is a CI / debug-only env that production installs never
@@ -280,9 +309,7 @@ log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR}"
 if EXPERTISE_API_PRESERVE_STAGE_ON_FAILURE=1 \
     EXPERTISE_API_RELAXED_HARDENING=1 \
     bash "${ROOT}/scripts/install.sh" \
-     --skip-preflight \
-     --prefix "${PREFIX}" \
-     --bind "${BIND_ADDR}" \
+     "${install_args[@]}" \
      > "${PREFIX}/.smoke-install.log" 2>&1; then
   PASS=$((PASS + 1))
   printf 'PASS: install.sh exit 0\n'
@@ -362,6 +389,24 @@ assert "post-install marker .install-mode exists" test -s "${PREFIX}/.install-mo
 assert "post-install marker .install-version-semver exists or source-mode" \
   bash -c "[ -s '${PREFIX}/.install-version-semver' ] \
            || [ \"\$(cat '${PREFIX}/.install-mode' 2>/dev/null)\" = 'source' ]"
+
+# 4a–4c: release-mode marker assertions (E3 / #260).
+# Only run when SMOKE_INSTALL_MODE=release — safe no-ops for source-mode
+# invocations from the E1/E2 jobs.
+if [ "${SMOKE_INSTALL_MODE}" = "release" ]; then
+  assert "post-install .install-mode contains 'release'" \
+    bash -c "[ \"\$(cat '${PREFIX}/.install-mode' 2>/dev/null)\" = 'release' ]"
+
+  # .install-version-semver must carry appVersion= matching the pinned version.
+  # SMOKE_RELEASE_VERSION carries the v-prefixed tag (e.g. v1.0.0).
+  # release-consumer.sh writes appVersion without the v prefix (matching the
+  # manifest's appVersion field), so strip it before the grep.
+  expected_appver="${SMOKE_RELEASE_VERSION#v}"
+  assert "post-install .install-version-semver carries expected appVersion (${expected_appver})" \
+    bash -c "grep -qF 'appVersion=${expected_appver}' '${PREFIX}/.install-version-semver' 2>/dev/null"
+
+  assert "post-install .install-history is non-empty" test -s "${PREFIX}/.install-history"
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Service is active under systemd-user (Linux) / launchd (macOS).

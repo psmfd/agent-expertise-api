@@ -39,7 +39,9 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         systemd systemd-sysv dbus dbus-user-session \
         curl ca-certificates bash sudo git \
-        python3 xz-utils \
+        # jq: required in-container by release-consumer.sh's release-api
+        # cross-check on the --from-release path (E3, #260).
+        python3 xz-utils jq \
         # .NET 10 ASP.NET Core runtime deps that dotnet-install.sh does not
         # carry. libicu76 is the *runtime* package on Debian 13 trixie;
         # libicu-dev (~30 MB) would pull headers + static data we never use.
