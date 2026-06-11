@@ -644,6 +644,25 @@ detect_secrets_schema_version() {
 # so the atomic swap of ${BIN_DIR} does not destroy it.
 # ---------------------------------------------------------------------------
 write_wrapper() {
+  # Resolve dotnet to an ABSOLUTE path at install time. The service manager's
+  # environment (launchd path_helper PATH on macOS, systemd user units on
+  # Linux) does not include non-standard dotnet roots — e.g. ~/.dotnet from
+  # dotnet-install.sh / actions/setup-dotnet, or the brew formula layout —
+  # so a bare `exec dotnet` works in the install shell but fails at service
+  # start for the FDD/portable layout (#288; caught by the E3 from-release
+  # smoke, where the portable tarball has no apphost). Preflight already
+  # requires dotnet on PATH for FDD installs, so an empty resolution here
+  # only happens on SCD installs, where the apphost branch runs instead.
+  local dotnet_bin dotnet_real dotnet_root=""
+  dotnet_bin="$(command -v dotnet 2>/dev/null || true)"
+  if [[ -n "${dotnet_bin}" ]]; then
+    # DOTNET_ROOT is the directory of the REAL muxer binary — follow the
+    # cask's /usr/local/bin/dotnet -> /usr/local/share/dotnet/dotnet symlink.
+    # readlink -f exists on macOS 13+ (the .NET 10 floor) and all Linux
+    # targets; fall back to the unresolved path if it is unavailable.
+    dotnet_real="$(readlink -f "${dotnet_bin}" 2>/dev/null || printf '%s' "${dotnet_bin}")"
+    dotnet_root="$(dirname "${dotnet_real}")"
+  fi
   cat > "${WRAPPER_SCRIPT}.tmp" <<EOF
 #!/usr/bin/env bash
 # launch-expertise-api.sh — service entrypoint.
@@ -652,6 +671,7 @@ set -euo pipefail
 
 SECRETS_FILE="${SECRETS_FILE}"
 BIN_DIR="${BIN_DIR}"
+DOTNET_BIN="${dotnet_bin}"
 
 if [[ -f "\${SECRETS_FILE}" ]]; then
   set -a
@@ -669,7 +689,16 @@ export Onnx__VocabPath="${MODEL_DIR}/vocab.txt"
 
 if [[ -x "\${BIN_DIR}/ExpertiseApi" ]]; then
   exec "\${BIN_DIR}/ExpertiseApi"
+elif [[ -n "\${DOTNET_BIN}" && -x "\${DOTNET_BIN}" ]]; then
+  # Absolute path baked at install time: the service manager's PATH
+  # (launchd path_helper, systemd user units) does not include
+  # non-standard dotnet roots, so bare \`dotnet\` is not resolvable here.
+  if [[ -n "${dotnet_root}" ]]; then
+    export DOTNET_ROOT="\${DOTNET_ROOT:-${dotnet_root}}"
+  fi
+  exec "\${DOTNET_BIN}" "\${BIN_DIR}/ExpertiseApi.dll"
 else
+  # Last resort: PATH lookup (pre-existing behavior).
   exec dotnet "\${BIN_DIR}/ExpertiseApi.dll"
 fi
 EOF
