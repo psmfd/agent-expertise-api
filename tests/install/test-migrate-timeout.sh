@@ -110,12 +110,14 @@ if [[ -z "${TIMEOUT_BIN}" ]]; then
 else
   make_slow_stub 20
 
+  # `|| rc=$?` (not `|| true` then `rc=$?` — that reads the exit code of
+  # `true` and is always 0).
+  rc=0
   out=$("${MIGRATE}" \
     --bin-dir "${BIN_DIR}" \
     --secrets-file "${SECRETS}" \
     --migrate-timeout 2 \
-    2>&1) || true
-  rc=$?
+    2>&1) || rc=$?
 
   assert "slow-stub-times-out: exits non-zero" [ "${rc}" -ne 0 ]
   assert_contains "slow-stub-times-out: timeout message present" "${out}" "migration exceeded"

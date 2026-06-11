@@ -711,12 +711,18 @@ The uninstaller defends against destructive `--prefix` mistakes:
     `/usr/{bin,sbin,lib,libexec,share,include}`, `/var/lib`, `/snap`,
     ...) and blocks every descendant unconditionally —
     `--allow-system-prefix` does *not* relax this.
-- Under `--system` mode the prefix directory itself may not be a
-  symlink (TOCTOU defense for multi-user hosts). **Caveat:** the
-  uninstaller does not currently verify that *ancestors* of the prefix
-  are owned by root — if you operate a multi-user host, ensure
-  `/opt/<your-parent>/` is root-owned and not group-writable. Tracking
-  in [#242](https://github.com/psmfd/agent-expertise-api/issues/242).
+- Under `--system` mode the uninstaller enforces a multi-user-safety
+  contract on the whole path (TOCTOU defense, #242): the prefix
+  directory itself may not be a symlink, and **every ancestor** of the
+  prefix (from `/` down to its parent) must be owned by root, must not
+  be a symlink, and must not be group- or world-writable unless the
+  sticky bit is set (`/tmp`-style `1777` is acceptable; `0775` is not).
+  A violation aborts before any deletion is planned. Rationale: POSIX
+  pathname resolution follows symlinks in intermediate components, so a
+  non-root-owned or other-writable ancestor can be swapped for a symlink
+  between validation and `rm -rf`, redirecting the deletion to an
+  attacker-chosen path. Operators on multi-user hosts should install
+  under a root-owned chain such as `/opt/expertise-api`.
 - `--dry-run` forces a non-destructive run even with `--yes` and is the
   primary safety hook used by `tests/uninstall/test-prefix-guard.sh`.
   The plan reflects host state at dry-run invocation time; if the

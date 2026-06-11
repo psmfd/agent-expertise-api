@@ -166,6 +166,27 @@ jobs:
       - name: Run semver comparator unit tests
         run: bash tests/install/test-semver-compare.sh
 
+  install-script-guards:
+    name: install/uninstall script guard tests (#242)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Bash-only unit suites for the install/uninstall safety machinery:
+    # the --system ancestor-walk TOCTOU guard (#242) and the migrate
+    # wall-time bound (#152, added by PR #302 but left unwired in CI).
+    # Linux runner deliberately: the black-box layer of the ancestor test
+    # needs --system, which macOS rejects at preflight until #145.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run prefix-ancestor TOCTOU guard tests
+        run: bash tests/uninstall/test-prefix-ancestors.sh
+
+      - name: Run migrate-timeout tests
+        run: bash tests/install/test-migrate-timeout.sh
+
   apictl-restart-race-macos:
     name: apictl restart race regression (macOS)
     runs-on: macos-latest

@@ -127,16 +127,19 @@ fi
 # process rather than exec so we can inspect the exit code.
 run_migrate() {
   local rc
+  # `|| rc=$?` keeps a non-zero child exit from tripping `set -e` before we
+  # can inspect it — without the guard, exit 124 aborted the script here and
+  # the timeout diagnostic below was never printed (caught by CI on #242's
+  # wiring of this test suite).
+  rc=0
   if [[ -n "${TIMEOUT_BIN}" && "${MIGRATE_TIMEOUT}" -gt 0 ]]; then
     log "migrate timeout: ${MIGRATE_TIMEOUT}s (via ${TIMEOUT_BIN})"
-    "${TIMEOUT_BIN}" "${MIGRATE_TIMEOUT}" "$@"
-    rc=$?
+    "${TIMEOUT_BIN}" "${MIGRATE_TIMEOUT}" "$@" || rc=$?
     if [[ "${rc}" -eq 124 ]]; then
       err "migration exceeded ${MIGRATE_TIMEOUT}s; live binaries NOT swapped; service NOT touched — check for advisory-lock contention or a runaway ALTER TABLE"
     fi
   else
-    "$@"
-    rc=$?
+    "$@" || rc=$?
   fi
   return "${rc}"
 }
