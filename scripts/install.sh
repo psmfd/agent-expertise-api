@@ -1037,6 +1037,20 @@ install_launchd_system() {
     chmod 600 "${SECRETS_FILE}"
   fi
 
+  # The user-scope install hardening leaves PREFIX, bin/, models/, and
+  # CONFIG_DIR at mode 700 — correct when the owner IS the service user,
+  # fatal here: after the UserName privilege drop the service cannot even
+  # chdir into WorkingDirectory (launchd: "Unable to set current working
+  # directory ... Permission denied", exit 78 crash-loop — caught by the
+  # system-scope CI smoke). Daemon layout follows the /usr/local model:
+  # root OWNS the tree (tamper resistance — the service user cannot modify
+  # binaries), everyone may read+traverse, and the only protected object is
+  # the secrets file (600, service-user-owned, in a 755 root-owned /etc dir
+  # — same pattern as /etc/ssh).
+  chmod 755 "${PREFIX}"
+  chmod -R go+rX "${PREFIX}/bin" "${MODEL_DIR}" 2>/dev/null || true
+  chmod 755 "${CONFIG_DIR}" 2>/dev/null || true
+
   launchctl bootout "system/${label}" 2>/dev/null || true
   launchctl bootstrap system "${plist_path}"
   # Only run `launchctl enable` when the label is actually listed as disabled
