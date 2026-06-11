@@ -173,8 +173,12 @@ rc_crosscheck_release_api() {
   # asset listing — defends against a partial-asset swap (e.g. attacker
   # uploads a tarball but not the manifest, hoping the operator silently
   # falls back to source mode).
-  local expected_tarball="expertise-api-v${version}-portable.tar.gz"
-  local expected_manifest="expertise-api-v${version}.manifest.json"
+  # Asset names carry the BARE version (no leading v) — release.yml names
+  # them from NEW_VERSION ("expertise-api-1.0.0-portable.tar.gz") per the
+  # generate-manifest.sh contract. Only the git tag itself is v-prefixed.
+  # Caught by the first E3 CI run against v1.0.0 (#260).
+  local expected_tarball="expertise-api-${version}-portable.tar.gz"
+  local expected_manifest="expertise-api-${version}.manifest.json"
   local missing=""
   local name
   for name in "$expected_tarball" \
@@ -209,8 +213,9 @@ rc_download_release_artifacts() {
   local dest_dir=$1 version=$2
   mkdir -p "$dest_dir"
   local base="https://github.com/${RELEASE_REPO}/releases/download/v${version}"
-  local tarball="expertise-api-v${version}-portable.tar.gz"
-  local manifest="expertise-api-v${version}.manifest.json"
+  # Bare version in asset names; v-prefix only on the tag path segment above.
+  local tarball="expertise-api-${version}-portable.tar.gz"
+  local manifest="expertise-api-${version}.manifest.json"
 
   rc_curl_https "${dest_dir}/${tarball}"        "${base}/${tarball}"
   rc_curl_https "${dest_dir}/${tarball}.sha256" "${base}/${tarball}.sha256"

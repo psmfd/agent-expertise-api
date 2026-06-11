@@ -99,12 +99,17 @@ jobs:
 
       - name: Start container (systemd as PID 1)
         run: |
+          # Mount the host's cosign (static Go binary, same amd64 arch) into
+          # the container — verify-release.sh runs INSIDE the container and
+          # hard-errors without cosign (ADR-011). cosign-installer only
+          # provisions the host runner.
           docker run -d --name install-smoke-release \
             --privileged \
             --cgroupns=host \
             --tmpfs /tmp --tmpfs /run --tmpfs /run/lock \
             -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
             -v "$PWD:/workspace:ro" \
+            -v "$(command -v cosign):/usr/local/bin/cosign:ro" \
             install-smoke-debian13
           sleep 2
           docker ps -a --filter name=install-smoke-release
