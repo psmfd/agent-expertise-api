@@ -128,6 +128,25 @@ BIN_DIR="${PREFIX}/bin"
 MODEL_DIR="${PREFIX}/models"
 
 # ----------------------------------------------------------------------------
+# Ancestor-walk TOCTOU guard (--system only, issue #242)
+#
+# validate_prefix already rejects a symlinked PREFIX itself. This guard
+# extends coverage to every ANCESTOR of PREFIX: a non-root-owned or
+# group/world-writable-without-sticky ancestor can be swapped for a
+# symlink between validation and rm -rf, redirecting the deletion to an
+# attacker-chosen path. POSIX pathname resolution follows symlinks in
+# intermediate components; only symlinks INSIDE a recursively-deleted
+# tree are removed without following.
+#
+# User-mode operators own $HOME and control their entire ancestor chain —
+# the check is unnecessary there and would fire on any user install under
+# a home directory not owned by root.
+# ----------------------------------------------------------------------------
+if [[ "${INSTALL_SCOPE}" == "system" ]]; then
+  validate_prefix_ancestors "${PREFIX}"
+fi
+
+# ----------------------------------------------------------------------------
 # Action helper
 #
 # Direct argv invocation (no `eval`). Callers attach `|| true` and
