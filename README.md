@@ -635,7 +635,9 @@ Under `--from-release` the installer:
 7. Enforces downgrade defense vs `${PREFIX}/.install-version-semver`
    (refuses older + refuses same-version-different-manifest-sha).
 8. Checks the ASP.NET Core runtime floor via `dotnet --list-runtimes`
-   (semver compare, prereleases excluded).
+   (§11-aware semver compare; prerelease runtimes are excluded as candidates
+   because the .NET host does not roll-forward onto them without explicit
+   `rollForwardToPreRelease`).
 9. Two-phase extract: bsdtar to `${STAGE_DIR}.unpack`, post-extract
    inspector (refuses symlinks / setuid / case-folding collisions /
    over-long paths), atomic rename into `${STAGE_DIR}`.
