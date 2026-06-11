@@ -34,8 +34,12 @@
   <key>ExitTimeOut</key>
   <integer>45</integer>
 
+  <!-- Adaptive: gets interactive CPU/I/O priority while handling requests and
+       drops to background priority when idle. Interactive would hold foreground
+       priority continuously, burning unnecessary CPU budget on a background REST
+       API and increasing thermal pressure on laptops. -->
   <key>ProcessType</key>
-  <string>Interactive</string>
+  <string>Adaptive</string>
 
   <key>StandardOutPath</key>
   <string>@@LOG_DIR@@/stdout.log</string>
