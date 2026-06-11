@@ -464,6 +464,51 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 11. macOS-only: install.sh --system must hard-error exit 2 (preflight
+#     guard for #285) and print the expected ERROR line naming #145.
+#     This assertion is macOS-specific; on Linux --system errors at a
+#     different stage (install_service, exit 1) — that behavior is not
+#     the subject of this fix and is tested separately.
+# ---------------------------------------------------------------------------
+case "$(uname -s)" in
+  Darwin)
+    # Do NOT pass --skip-preflight: the guard lives in preflight() and must
+    # fire before --skip-preflight would bypass it. The guard is the FIRST
+    # check in preflight(), so no real host probes run on this code path.
+    # Use a sub-directory of ${PREFIX} (which contains "expertise-api" as a
+    # path component) so prefix-validation passes without --allow-system-prefix.
+    #
+    # Capture stdout+stderr WITHOUT || true so that $? reflects install.sh's
+    # exit code, not `true`. set +e / set -e wraps the subshell to prevent
+    # the outer set -u pipeline from aborting on the expected non-zero exit.
+    set +e
+    _system_err_output=$(bash "${ROOT}/scripts/install.sh" \
+      --prefix "${PREFIX}/_system_guard_probe" \
+      --system \
+      2>&1)
+    _system_rc=$?
+    set -e
+    if [ "${_system_rc}" = "2" ]; then
+      PASS=$((PASS + 1))
+      printf 'PASS: install.sh --system exits 2 on macOS\n'
+    else
+      FAIL=$((FAIL + 1))
+      printf 'FAIL: install.sh --system exited %d on macOS (expected 2)\n' "${_system_rc}" >&2
+    fi
+    if printf '%s\n' "${_system_err_output}" | grep -qF '#145'; then
+      PASS=$((PASS + 1))
+      printf 'PASS: install.sh --system error output names #145\n'
+    else
+      FAIL=$((FAIL + 1))
+      printf 'FAIL: install.sh --system error output did not mention #145 (got: %s)\n' "${_system_err_output}" >&2
+    fi
+    ;;
+  *)
+    log "SKIP: --system macOS preflight guard test (not running on Darwin; uname=$(uname -s))"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo

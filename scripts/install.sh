@@ -392,6 +392,16 @@ preflight() {
   STAGE="preflight"
   log "pre-flight: OS=${OS} RID=${RID} scope=${INSTALL_SCOPE} mode=${PUBLISH_MODE}"
 
+  # Guard: macOS system-scope is not yet implemented. LaunchDaemon support
+  # (root-owned /Library/LaunchDaemons/, reboot survival) is tracked by #145.
+  # Hard-error here — before any filesystem mutation — so no partial install
+  # artifacts exist when this exit path is taken. Exit 2 = precondition
+  # failure per scripts/script-output-conventions.md.
+  if [[ "${OS}" == "macos" && "${INSTALL_SCOPE}" == "system" ]]; then
+    printf '[install] ERROR: --system is not supported on macOS (see #145 for LaunchDaemon support). Use the default user-LaunchAgent mode (omit --system).\n' >&2
+    exit 2
+  fi
+
   if [[ "${PUBLISH_MODE}" == "fdd" ]]; then
     command -v dotnet >/dev/null 2>&1 \
       || err "dotnet CLI not found in PATH (required for fdd; pass --publish-mode scd to skip)"

@@ -71,6 +71,15 @@ case "$(uname -s)" in
   *)      err "unsupported OS: $(uname -s) — use uninstall.ps1 on Windows" ;;
 esac
 
+# Guard: macOS system-scope is not yet implemented. LaunchDaemon support
+# (root-owned /Library/LaunchDaemons/) is tracked by #145. Hard-error here
+# so uninstall.sh --system cannot silently target the wrong service path.
+# Exit 2 = precondition failure per scripts/script-output-conventions.md.
+if [ "${OS}" = "macos" ] && [ "${INSTALL_SCOPE}" = "system" ]; then
+  printf '[uninstall] ERROR: --system is not supported on macOS (see #145 for LaunchDaemon support). Use the default user-LaunchAgent mode (omit --system).\n' >&2
+  exit 2
+fi
+
 # ----------------------------------------------------------------------------
 # Prefix normalization + validation
 #
