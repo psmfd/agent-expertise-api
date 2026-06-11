@@ -233,6 +233,121 @@ rc_download_release_artifacts() {
 }
 
 # ---------------------------------------------------------------------------
+# _rc_semver_lt — SemVer 2.0 §11-aware less-than comparator.
+#
+# Returns 0 (true) if version $1 < version $2, 1 (false) otherwise.
+# Ignores build metadata (strips +... before comparing).
+# Handles prerelease ordering per §11: a version with prerelease IS lower
+# than the same core version without prerelease (e.g. 1.0.0-rc.1 < 1.0.0).
+# Prerelease dot-tokens are compared: numerically when both are digits,
+# ASCII-lexically otherwise. Numeric tokens sort lower than alphanumeric.
+# Fewer tokens < more tokens when all shared tokens are equal.
+#
+# Bash 3.2 safe: uses set --/positional-param splitting; no arrays at file
+# scope; no ${var,,}; no mapfile/readarray/declare -A.
+#
+# Args: ver_a ver_b
+# Returns: 0 if ver_a < ver_b, 1 if ver_a >= ver_b
+# ---------------------------------------------------------------------------
+_rc_semver_lt() {
+  # Strip build metadata (everything from first '+' onward) before parsing.
+  local a b
+  # ${var%%+*} strips from the first '+' to end-of-string.
+  a="${1%%+*}"
+  b="${2%%+*}"
+
+  # Split each version into core (X.Y.Z) and prerelease parts.
+  local a_core a_pre b_core b_pre
+  case "$a" in
+    *-*) a_core="${a%%-*}"; a_pre="${a#*-}" ;;
+    *)   a_core="$a";        a_pre="" ;;
+  esac
+  case "$b" in
+    *-*) b_core="${b%%-*}"; b_pre="${b#*-}" ;;
+    *)   b_core="$b";        b_pre="" ;;
+  esac
+
+  # Compare X.Y.Z numerically field-by-field using IFS-split into positionals.
+  # We compare three fields; if any comparison is definitive we return early.
+  local IFS=.
+  # shellcheck disable=SC2086  # intentional word-split on IFS
+  set -- $a_core
+  local a_maj=$1 a_min=$2 a_pat=$3
+  # shellcheck disable=SC2086
+  set -- $b_core
+  local b_maj=$1 b_min=$2 b_pat=$3
+
+  # Compare major
+  if [ "$a_maj" -lt "$b_maj" ] 2>/dev/null; then return 0; fi
+  if [ "$a_maj" -gt "$b_maj" ] 2>/dev/null; then return 1; fi
+  # Compare minor
+  if [ "$a_min" -lt "$b_min" ] 2>/dev/null; then return 0; fi
+  if [ "$a_min" -gt "$b_min" ] 2>/dev/null; then return 1; fi
+  # Compare patch
+  if [ "$a_pat" -lt "$b_pat" ] 2>/dev/null; then return 0; fi
+  if [ "$a_pat" -gt "$b_pat" ] 2>/dev/null; then return 1; fi
+
+  # Core X.Y.Z is equal. Apply §11 prerelease rules.
+  # A version with no prerelease is GREATER than any same-core prerelease.
+  if [ -z "$a_pre" ] && [ -z "$b_pre" ]; then return 1; fi  # equal → not lt
+  if [ -z "$a_pre" ] && [ -n "$b_pre" ]; then return 1; fi  # 1.0.0 > 1.0.0-rc1
+  if [ -n "$a_pre" ] && [ -z "$b_pre" ]; then return 0; fi  # 1.0.0-rc1 < 1.0.0
+
+  # Both have prerelease; compare dot-token by dot-token.
+  # Traverse tokens in lockstep using IFS split onto positionals.
+  local a_tok b_tok a_rest b_rest
+  a_rest="$a_pre"
+  b_rest="$b_pre"
+  while true; do
+    # Extract next dot-delimited token from each side.
+    case "$a_rest" in
+      *.*) a_tok="${a_rest%%.*}"; a_rest="${a_rest#*.}" ;;
+      *)   a_tok="$a_rest"; a_rest="" ;;
+    esac
+    case "$b_rest" in
+      *.*) b_tok="${b_rest%%.*}"; b_rest="${b_rest#*.}" ;;
+      *)   b_tok="$b_rest"; b_rest="" ;;
+    esac
+
+    # Detect if both tokens are purely numeric (no leading zeros check per
+    # spec, but §11.4 says "identifiers MUST comprise only ASCII alphanumerics
+    # and hyphens"; we classify digit-only strings as numeric).
+    local a_is_num b_is_num
+    case "$a_tok" in
+      *[!0-9]*) a_is_num=0 ;;
+      '') a_is_num=0 ;;
+      *) a_is_num=1 ;;
+    esac
+    case "$b_tok" in
+      *[!0-9]*) b_is_num=0 ;;
+      '') b_is_num=0 ;;
+      *) b_is_num=1 ;;
+    esac
+
+    if [ "$a_is_num" = "1" ] && [ "$b_is_num" = "1" ]; then
+      # Both numeric: compare as integers.
+      if [ "$a_tok" -lt "$b_tok" ]; then return 0; fi
+      if [ "$a_tok" -gt "$b_tok" ]; then return 1; fi
+    elif [ "$a_is_num" = "1" ] && [ "$b_is_num" = "0" ]; then
+      # Numeric < alphanumeric per §11.4.1.
+      return 0
+    elif [ "$a_is_num" = "0" ] && [ "$b_is_num" = "1" ]; then
+      # Alphanumeric > numeric per §11.4.1.
+      return 1
+    else
+      # Both alphanumeric: ASCII lexical order.
+      if [ "$a_tok" \< "$b_tok" ]; then return 0; fi
+      if [ "$a_tok" \> "$b_tok" ]; then return 1; fi
+    fi
+
+    # Tokens were equal; check if either side is exhausted.
+    if [ -z "$a_rest" ] && [ -z "$b_rest" ]; then return 1; fi  # equal → not lt
+    if [ -z "$a_rest" ] && [ -n "$b_rest" ]; then return 0; fi  # fewer tokens < more
+    if [ -n "$a_rest" ] && [ -z "$b_rest" ]; then return 1; fi  # more tokens > fewer
+  done
+}
+
+# ---------------------------------------------------------------------------
 # rc_enforce_downgrade_defense — refuse if manifest.appVersion is older than
 # the recorded ${PREFIX}/.install-version-semver (release-mode only). Also
 # refuse same-version reinstalls with a DIFFERENT manifest sha (republish
@@ -263,24 +378,18 @@ rc_enforce_downgrade_defense() {
     return 0
   fi
 
-  # Validate both shapes before sort -V (sort -V silently misorders garbage).
-  # D3 pre-PR (shell-expert MED): refuse prerelease appVersion entirely for
-  # --from-release. sort -V is not SemVer §11-aware at the release/prerelease
-  # boundary (it puts 1.0.0 < 1.0.0-rc1 lexicographically, whereas §11 says
-  # 1.0.0-rc1 < 1.0.0). Tactical fix in D3: refuse the prerelease input class
-  # entirely. Full §11-aware comparator tracked by #257.
-  local semver_release_re='^[0-9]+\.[0-9]+\.[0-9]+$'
-  if ! printf '%s' "$prior_ver" | grep -qE "$semver_release_re"; then
-    warn "prior version '${prior_ver}' is not a release-shape semver (contains prerelease/build metadata); skipping downgrade compare"
+  # Validate both shapes: must be at least X.Y.Z (with optional prerelease/
+  # build metadata). Garbage input is rejected before reaching the comparator.
+  local semver_re='^[0-9]+\.[0-9]+\.[0-9]+([+.a-zA-Z0-9-]*)$'
+  if ! printf '%s' "$prior_ver" | grep -qE "$semver_re"; then
+    warn "prior version '${prior_ver}' is not valid semver (X.Y.Z[-pre][+build]); skipping downgrade compare"
     return 0
   fi
-  if ! printf '%s' "$incoming_ver" | grep -qE "$semver_release_re"; then
-    err "--from-release refuses prerelease/build-metadata appVersion '${incoming_ver}'. Release-channel tarballs must carry X.Y.Z. Use --from-source for prerelease builds. (Full SemVer §11 comparator tracked by #257.)"
+  if ! printf '%s' "$incoming_ver" | grep -qE "$semver_re"; then
+    err "appVersion '${incoming_ver}' is not valid semver (X.Y.Z[-pre][+build]); cannot proceed"
   fi
 
-  local lowest
-  lowest=$(printf '%s\n%s\n' "$prior_ver" "$incoming_ver" | sort -V | head -1)
-  if [ "$prior_ver" != "$incoming_ver" ] && [ "$lowest" = "$incoming_ver" ]; then
+  if _rc_semver_lt "$incoming_ver" "$prior_ver"; then
     if [ "${ALLOW_DOWNGRADE:-0}" = "1" ]; then
       warn "downgrade ${prior_ver} -> ${incoming_ver} permitted by --allow-downgrade"
     else
@@ -299,9 +408,10 @@ rc_enforce_downgrade_defense() {
 
 # ---------------------------------------------------------------------------
 # rc_check_aspnetcore_runtime_floor — semver compare against an arg-supplied
-# floor. Excludes prerelease runtimes (-preview/-rc) from candidates because
-# the .NET host refuses to roll-forward from a release floor onto a
-# prerelease without explicit rollForwardToPreRelease.
+# floor. Uses _rc_semver_lt for §11-aware comparison so prerelease runtimes
+# (e.g. -preview, -rc) are ordered correctly; they remain excluded from
+# candidates because the .NET host refuses to roll-forward from a release
+# floor onto a prerelease without explicit rollForwardToPreRelease.
 #
 # Args: required_min (e.g. "10.0.0")
 # ---------------------------------------------------------------------------
@@ -315,7 +425,8 @@ rc_check_aspnetcore_runtime_floor() {
     err "invalid required runtime floor (not X.Y.Z semver): ${floor}"
   fi
 
-  # Filter to the same major; exclude prereleases (hyphenated versions).
+  # Filter to the same major; exclude prereleases (hyphenated versions) because
+  # the .NET host's rollForward policy does not roll onto them automatically.
   local need_major
   need_major=$(printf '%s' "$floor" | cut -d. -f1)
   local installed
@@ -328,12 +439,27 @@ rc_check_aspnetcore_runtime_floor() {
     err "no ASP.NET Core ${need_major}.x runtime installed (need >= ${floor}); install via https://dot.net"
   fi
 
-  local best
-  best=$(printf '%s\n%s\n' "$floor" "$installed" | sort -V | tail -1)
-  if [ "$best" = "$floor" ] && ! printf '%s\n' "$installed" | grep -qFx "$floor"; then
-    err "ASP.NET Core runtime ${need_major}.x installed but none >= ${floor}; installed: $(printf '%s' "$installed" | paste -sd, -)"
+  # Walk installed versions; find the highest one that satisfies >= floor.
+  # Uses _rc_semver_lt so the comparison is §11-aware (no sort -V gap).
+  local satisfied="" best_found="" ver
+  while IFS= read -r ver; do
+    [ -n "$ver" ] || continue
+    # ver >= floor ↔ NOT (ver < floor)
+    if ! _rc_semver_lt "$ver" "$floor"; then
+      satisfied="yes"
+      # Track the highest: best_found < ver → replace best_found.
+      if [ -z "$best_found" ] || _rc_semver_lt "$best_found" "$ver"; then
+        best_found="$ver"
+      fi
+    fi
+  done <<EOF
+$installed
+EOF
+
+  if [ -z "$satisfied" ]; then
+    err "ASP.NET Core runtime ${need_major}.x installed but none >= ${floor}; installed: $(printf '%s' "$installed" | tr '\n' ',')"
   fi
-  log "ASP.NET Core runtime floor: ${floor} satisfied (highest installed: $(printf '%s\n' "$installed" | sort -V | tail -1))"
+  log "ASP.NET Core runtime floor: ${floor} satisfied (highest installed: ${best_found})"
 }
 
 # ---------------------------------------------------------------------------

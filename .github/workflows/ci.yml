@@ -149,6 +149,23 @@ jobs:
       - name: Run generate-manifest unit tests
         run: bash tests/install/test-generate-manifest.sh
 
+  semver-comparator:
+    name: semver comparator unit tests (#257)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Regression coverage for _rc_semver_lt in scripts/lib/release-consumer.sh.
+    # Validates the §11-aware comparator that replaced the sort -V / tactical
+    # prerelease-rejection approach from D3. Runs on every PR; no external
+    # tools required (bash only).
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run semver comparator unit tests
+        run: bash tests/install/test-semver-compare.sh
+
   apictl-restart-race-macos:
     name: apictl restart race regression (macOS)
     runs-on: macos-latest
