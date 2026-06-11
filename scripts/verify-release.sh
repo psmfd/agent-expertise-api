@@ -50,8 +50,18 @@ VERIFY_RELEASE_SOURCED=1
 # Forks must edit BOTH constants and the README recipe. The exact-match
 # semantics are deliberate: --certificate-identity-regexp is the foot-gun
 # this script's existence is designed to prevent.
+#
+# COSIGN_IDENTITIES is a space-separated scalar list (NOT an array — see
+# SUPPORTED_MANIFEST_SCHEMA_VERSIONS below for the bash 3.2 function-scoped
+# sourcing constraint). Each candidate is tried with an exact
+# --certificate-identity match, first hit wins. Two entries exist because
+# the repository owner was renamed TheSemicolon -> psmfd (2026-06, #294):
+# releases signed before the rename (v1.0.0 and earlier) carry the old
+# workflow path in their Fulcio certificate; releases signed after carry
+# the new one. Drop the legacy entry once pre-rename releases are no
+# longer install targets.
 # ---------------------------------------------------------------------------
-readonly COSIGN_IDENTITY='https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main'
+readonly COSIGN_IDENTITIES='https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main https://github.com/TheSemicolon/agent-expertise-api/.github/workflows/release.yml@refs/heads/main'
 readonly COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 readonly REKOR_URL='https://rekor.sigstore.dev'
 
@@ -138,23 +148,37 @@ vr_cosign_verify_manifest() {
   [ -r "$cert" ]     || vr_die "certificate unreadable: $cert" 2
   [ -r "$manifest" ] || vr_die "manifest unreadable: $manifest" 2
 
-  vr_log "cosign verify-blob: identity=${COSIGN_IDENTITY}"
-  vr_log "                    issuer=${COSIGN_OIDC_ISSUER}"
+  vr_log "cosign verify-blob: issuer=${COSIGN_OIDC_ISSUER}"
   vr_log "                    rekor=${REKOR_URL}"
-  if ! cosign verify-blob \
-      --certificate-identity "$COSIGN_IDENTITY" \
-      --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
-      --rekor-url "$REKOR_URL" \
-      --signature "$sig" \
-      --certificate "$cert" \
-      "$manifest" >/dev/null 2>&1; then
+  # Try each pinned identity with EXACT-match semantics; first hit wins.
+  # Intentionally unquoted: scalar word-split (identities contain no spaces).
+  local identity verified=0
+  for identity in ${COSIGN_IDENTITIES}; do
+    vr_log "cosign verify-blob: trying identity=${identity}"
+    if cosign verify-blob \
+        --certificate-identity "$identity" \
+        --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
+        --rekor-url "$REKOR_URL" \
+        --signature "$sig" \
+        --certificate "$cert" \
+        "$manifest" >/dev/null 2>&1; then
+      verified=1
+      # Global (no `local`): release-consumer.sh records the matched
+      # identity in the .install-history audit line — shellcheck cannot
+      # see the cross-file reference.
+      # shellcheck disable=SC2034
+      VERIFIED_COSIGN_IDENTITY="$identity"
+      vr_log "cosign verify-blob: OK (identity=${identity})"
+      break
+    fi
+  done
+  if [ "$verified" != "1" ]; then
     vr_die "cosign verify-blob FAILED. Possible causes:
     1. Manifest tampered or signature does not match
-    2. Signer identity mismatch (expected: ${COSIGN_IDENTITY})
+    2. Signer identity mismatch (accepted: ${COSIGN_IDENTITIES})
     3. Rekor unreachable (try --from-source --i-accept-unverified-source
        fallback; structured offline-verify support tracked by #256)" 1
   fi
-  vr_log "cosign verify-blob: OK"
 }
 
 # ---------------------------------------------------------------------------
