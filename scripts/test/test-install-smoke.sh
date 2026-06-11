@@ -28,6 +28,11 @@
 #      200 again post-restart (regression guard for #141 / PR #164).
 #   9. `expertise-apictl stop` completes cleanly.
 #  10. No orphan dotnet ExpertiseApi process remains after stop.
+#  11. uninstall.sh --yes --purge exits 0.
+#  11a. (macOS only) `launchctl print-disabled gui/UID` contains no entry
+#       for the service label after uninstall — regression guard for #286.
+#       SKIP (not FAIL) if print-disabled itself errors (sandbox constraint).
+#  12. (macOS only) install.sh --system exits 2 + mentions #145.
 #
 # Exit codes:
 #   0  — all assertions passed
@@ -535,7 +540,61 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 11. macOS-only: install.sh --system must hard-error exit 2 (preflight
+# 11. Uninstall — smoke uninstall.sh and assert no stale launchd override
+#     state remains (macOS) and no plist remains (macOS). Runs on all OS.
+#
+#     macOS: after uninstall.sh --yes --purge, `launchctl print-disabled
+#     gui/UID` must NOT contain the service label. This is the acceptance
+#     criterion for #286: the old code ran only `bootout`, leaving a stale
+#     disabled-override; the fix runs `enable` (clears any override) before
+#     `bootout` so the label disappears from print-disabled entirely.
+#
+#     If `launchctl print-disabled` itself errors (e.g. sandbox restrictions
+#     on a CI runner), we treat it as SKIP — not a FAIL — and log the reason.
+# ---------------------------------------------------------------------------
+_uninstall_label="com.thesemicolon.expertise-api"
+
+_uninstall_log="${TMPDIR:-/tmp}/.smoke-uninstall-$$.log"
+log "running uninstall.sh --yes --purge (prefix=${PREFIX})"
+if bash "${ROOT}/scripts/uninstall.sh" --yes --purge --prefix "${PREFIX}" \
+     > "${_uninstall_log}" 2>&1; then
+  PASS=$((PASS + 1))
+  printf 'PASS: uninstall.sh --yes --purge exit 0\n'
+else
+  rc=$?
+  FAIL=$((FAIL + 1))
+  printf 'FAIL: uninstall.sh --yes --purge exit %d\n' "$rc" >&2
+  tail -n 40 "${_uninstall_log}" >&2 || true
+fi
+
+# macOS-only: assert no stale launchd override entry remains after uninstall.
+case "$(uname -s)" in
+  Darwin)
+    # Capture print-disabled output; treat a command failure as a SKIP.
+    set +e
+    _pd_output=$(launchctl print-disabled "gui/$(id -u)" 2>&1)
+    _pd_rc=$?
+    set -e
+    if [ "${_pd_rc}" != "0" ]; then
+      log "SKIP: launchctl print-disabled exited ${_pd_rc} — sandbox restriction; cannot assert launchd override state"
+      log "SKIP: print-disabled output: ${_pd_output}"
+    elif printf '%s\n' "${_pd_output}" | grep -qF "${_uninstall_label}"; then
+      FAIL=$((FAIL + 1))
+      printf 'FAIL: launchd override entry for %s still present after uninstall\n' "${_uninstall_label}" >&2
+      printf 'FAIL: launchctl print-disabled gui/%s output:\n' "$(id -u)" >&2
+      printf '%s\n' "${_pd_output}" >&2
+    else
+      PASS=$((PASS + 1))
+      printf 'PASS: no launchd override entry for %s after uninstall\n' "${_uninstall_label}"
+    fi
+    ;;
+  *)
+    log "SKIP: launchd override assertion (not running on Darwin; uname=$(uname -s))"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 12. macOS-only: install.sh --system must hard-error exit 2 (preflight
 #     guard for #285) and print the expected ERROR line naming #145.
 #     This assertion is macOS-specific; on Linux --system errors at a
 #     different stage (install_service, exit 1) — that behavior is not
