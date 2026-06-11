@@ -52,7 +52,21 @@ cmd_start() {
 cmd_stop() {
   case "${OS}" in
     linux)          systemctl --user stop "${SERVICE}.service" ;;
-    macos)          launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true ;;
+    macos)
+      # Use `launchctl kill SIGTERM` rather than `launchctl bootout`.
+      # bootout UNREGISTERS the service from the launchd domain, causing
+      # `kickstart` in cmd_start to fail with "No such process" (#284).
+      #
+      # kill SIGTERM signals the running process while leaving the service
+      # registered. ASP.NET Core handles SIGTERM gracefully and exits 0.
+      # The plist's KeepAlive dict has SuccessfulExit=false, so launchd
+      # does NOT respawn after a clean exit — the service stays stopped
+      # until an explicit `kickstart`. The subsequent cmd_start `kickstart`
+      # therefore works because the registration is still live.
+      #
+      # If the service is not currently running, kill returns a non-zero
+      # exit, which we swallow (same || true behaviour as the old bootout).
+      launchctl kill SIGTERM "gui/$(id -u)/${LABEL}" 2>/dev/null || true ;;
     wsl_to_windows) sc.exe stop "${SERVICE}" ;;
   esac
 }
