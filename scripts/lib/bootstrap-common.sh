@@ -62,7 +62,7 @@ bc_refuse_xtrace() {
   # than try to set +x mid-flight, because a parent shell may re-enable
   # it. Document the constraint and exit.
   case $- in
-    *x*) err "refuse to bootstrap with xtrace (set -x) enabled \u2014 it would leak the generated DB password" ;;
+    *x*) err "refuse to bootstrap with xtrace (set -x) enabled — it would leak the generated DB password" ;;
   esac
 }
 
@@ -152,11 +152,11 @@ bc_write_connection_string_if_absent() {
   local host="$1" port="$2" db="$3" user="$4" pw="$5"
   [[ -n "${SECRETS_FILE:-}" ]] || err "SECRETS_FILE unset; bootstrap-common bug"
   if [[ -L "${SECRETS_FILE}" ]]; then
-    err "${SECRETS_FILE} is a symlink \u2014 refusing to write (potential write redirection)"
+    err "${SECRETS_FILE} is a symlink — refusing to write (potential write redirection)"
   fi
   if [[ -f "${SECRETS_FILE}" ]] \
      && grep -q '^ConnectionStrings__DefaultConnection=' "${SECRETS_FILE}"; then
-    log "secrets: ConnectionStrings__DefaultConnection already set \u2014 leaving untouched"
+    log "secrets: ConnectionStrings__DefaultConnection already set — leaving untouched"
     return 1
   fi
   # Same-filesystem temp file so the rename is atomic.
@@ -202,7 +202,7 @@ bc_append_install_deps_history() {
   local taken="$1" skipped="$2"
   local history="${PREFIX}/.install-deps-history"
   if [[ -L "${history}" ]]; then
-    warn "${history} is a symlink \u2014 refusing to append audit line"
+    warn "${history} is a symlink — refusing to append audit line"
     return 0
   fi
   local ts

@@ -95,6 +95,20 @@ vr_err()  { printf '[verify-release] ERROR: %s\n' "$1" >&2; }
 vr_die()  { vr_err "$1"; exit "${2:-1}"; }
 
 # ---------------------------------------------------------------------------
+# vr_sha256_of — portable SHA-256: sha256sum (Linux) or shasum -a 256 (macOS).
+# Mirrors the sha256_of helper in scripts/download-models.sh.
+# ---------------------------------------------------------------------------
+vr_sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    vr_die "no sha256 tool found (need sha256sum or shasum)" 2
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # vr_require_cosign — assert cosign present + meets COSIGN_MIN_VERSION.
 # ---------------------------------------------------------------------------
 vr_require_cosign() {
@@ -215,8 +229,7 @@ vr_validate_manifest_schema() {
 # ---------------------------------------------------------------------------
 vr_crosscheck_tarball_sha() {
   local tarball=$1 manifest=$2
-  command -v sha256sum >/dev/null 2>&1 || vr_die "sha256sum required" 2
-  command -v jq        >/dev/null 2>&1 || vr_die "jq required" 2
+  command -v jq >/dev/null 2>&1 || vr_die "jq required" 2
 
   local expected actual
   expected=$(jq -r '.artifacts.tarball.sha256 // empty' "$manifest")
@@ -229,7 +242,7 @@ vr_crosscheck_tarball_sha() {
   if [ "${#expected}" -ne 64 ]; then
     vr_die "manifest artifacts.tarball.sha256 length != 64: ${expected}" 1
   fi
-  actual=$(sha256sum "$tarball" | awk '{print $1}')
+  actual=$(vr_sha256_of "$tarball")
   if [ "$expected" != "$actual" ]; then
     vr_die "TARBALL TAMPERED — manifest declares sha256=${expected} but tarball is sha256=${actual}" 1
   fi

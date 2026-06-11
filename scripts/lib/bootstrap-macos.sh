@@ -134,11 +134,11 @@ _macos_ensure_dotnet_sdk() {
     local sdk_ver
     sdk_ver=$(dotnet --list-sdks 2>/dev/null | awk '$1 ~ /^10\./ { print $1; exit }')
     if (( ${UPGRADE_DEPS:-0} == 0 )); then
-      log "dotnet SDK 10.x present (${sdk_ver}) \u2014 skip"
+      log "dotnet SDK 10.x present (${sdk_ver}) — skip"
       _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}dotnet-sdk:skip"
       return 0
     fi
-    log "dotnet SDK 10.x present (${sdk_ver}) \u2014 --upgrade-deps will refresh via brew"
+    log "dotnet SDK 10.x present (${sdk_ver}) — --upgrade-deps will refresh via brew"
   fi
   log "installing .NET 10 SDK via Homebrew cask (dotnet-sdk)"
   if brew list --cask dotnet-sdk >/dev/null 2>&1; then
@@ -151,7 +151,7 @@ _macos_ensure_dotnet_sdk() {
       || err "brew install --cask dotnet-sdk failed; install manually from https://dot.net and re-run without --install-deps"
   fi
   command -v dotnet >/dev/null 2>&1 \
-    || err "dotnet still not on PATH after brew install \u2014 check 'brew doctor' and ensure /usr/local/share/dotnet or /opt/homebrew/* is in PATH"
+    || err "dotnet still not on PATH after brew install — check 'brew doctor' and ensure /usr/local/share/dotnet or /opt/homebrew/* is in PATH"
   dotnet --list-sdks 2>/dev/null | awk '$1 ~ /^10\./ { found=1 } END { exit !found }' \
     || err "no .NET 10.x SDK detected after install (dotnet --list-sdks shows: $(dotnet --list-sdks 2>&1))"
   _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}dotnet-sdk:installed"
@@ -181,7 +181,7 @@ _macos_ensure_postgres() {
         || log "${_MACOS_PG_FORMULA} already at latest (no-op upgrade)"
       _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}postgres:upgraded"
     else
-      log "${_MACOS_PG_FORMULA} present \u2014 skip"
+      log "${_MACOS_PG_FORMULA} present — skip"
       _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}postgres:skip"
     fi
   else
@@ -232,7 +232,7 @@ _macos_ensure_pgvector() {
       brew upgrade pgvector 2>/dev/null || log "pgvector already at latest"
       _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}pgvector:upgraded"
     else
-      log "pgvector present \u2014 skip"
+      log "pgvector present — skip"
       _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}pgvector:skip"
     fi
     return 0
@@ -283,17 +283,17 @@ _macos_ensure_cosign() {
       # Honor it under BOTH UPGRADE_DEPS=0 and UPGRADE_DEPS=1 — the
       # operator owns the upgrade cadence for tools they manage out-
       # of-band. `--upgrade-deps` is scoped to brew-managed deps.
-      log "cosign present on PATH (${v:-unknown version}, not brew-managed) \u2014 skip"
+      log "cosign present on PATH (${v:-unknown version}, not brew-managed) — skip"
       _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}cosign:skip-external"
       return 0
     fi
     # Brew-managed cosign present.
     if (( ${UPGRADE_DEPS:-0} == 1 )); then
-      log "cosign brew-managed (${v:-unknown}) \u2014 --upgrade-deps will brew-upgrade"
+      log "cosign brew-managed (${v:-unknown}) — --upgrade-deps will brew-upgrade"
       brew upgrade cosign 2>/dev/null || log "cosign already at latest (no-op upgrade)"
       _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}cosign:upgraded"
     else
-      log "cosign brew-managed and present (${v:-unknown version}) \u2014 skip"
+      log "cosign brew-managed and present (${v:-unknown version}) — skip"
       _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}cosign:skip"
     fi
     return 0
@@ -302,7 +302,7 @@ _macos_ensure_cosign() {
   brew install cosign \
     || err "brew install cosign failed; install manually from https://docs.sigstore.dev/cosign/installation/ and re-run without --install-deps"
   command -v cosign >/dev/null 2>&1 \
-    || err "cosign not on PATH after brew install \u2014 check 'brew doctor' and ensure /usr/local/bin or /opt/homebrew/bin is in PATH"
+    || err "cosign not on PATH after brew install — check 'brew doctor' and ensure /usr/local/bin or /opt/homebrew/bin is in PATH"
   _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}cosign:installed"
 }
 
@@ -336,7 +336,7 @@ _macos_ensure_database_and_role() {
   # Existing connection string? Skip everything (never rotate).
   if [[ -f "${SECRETS_FILE}" ]] \
      && grep -q '^ConnectionStrings__DefaultConnection=' "${SECRETS_FILE}"; then
-    log "secrets.env already configured \u2014 skipping role/db/extension creation to avoid password rotation"
+    log "secrets.env already configured — skipping role/db/extension creation to avoid password rotation"
     _MACOS_TAKEN_SKIPPED+="${_MACOS_TAKEN_SKIPPED:+,}role:skip,db:skip,vector:skip,secrets:skip"
     return 0
   fi
@@ -412,7 +412,7 @@ COMMIT;
 }
 
 # ---------------------------------------------------------------------------
-# bootstrap_macos_run \u2014 orchestrator
+# bootstrap_macos_run — orchestrator
 # ---------------------------------------------------------------------------
 
 # Aggregator string for the audit trail. Modules append `name:action` tokens.
