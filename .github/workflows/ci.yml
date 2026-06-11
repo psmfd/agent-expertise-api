@@ -161,6 +161,22 @@ jobs:
       - name: Run apictl restart race regression test
         run: bash scripts/test/test-apictl-restart.sh
 
+  apictl-stop-start-macos:
+    name: apictl stop→start lifecycle (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 5
+    # Validates fix for #284: cmd_stop used launchctl bootout (unregisters
+    # service) so cmd_start's kickstart failed. Now cmd_stop uses
+    # launchctl kill SIGTERM (leaves service registered) so stop→start
+    # round-trips correctly.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run apictl stop→start lifecycle test
+        run: bash scripts/test/test-apictl-stop-start-macos.sh
+
   apictl-restart-race-debian13:
     name: apictl restart race regression (Debian 13 / systemd)
     runs-on: ubuntu-latest
