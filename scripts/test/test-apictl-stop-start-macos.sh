@@ -244,9 +244,21 @@ for cycle in $(seq 1 "${CYCLES}"); do
   fi
   prev_start_pid="${new_pid}"
 
-  # Verify HTTP readiness independently (belt-and-braces on top of wait_for_ready).
-  curl -fsS --max-time 2 "${TEST_URL}/health/ready" >/dev/null \
-    || fail "cycle ${cycle}: /health/ready not responding after start"
+  # Verify HTTP readiness independently. Poll rather than probe once:
+  # launchd reports state=running as soon as the process is spawned, but the
+  # stub binds its listener asynchronously — a single immediate curl races
+  # the bind and fails spuriously (observed on this test's first CI run).
+  # Mirror the initial-startup wait loop above.
+  ready=0
+  for _ in $(seq 1 40); do
+    if curl -fsS --max-time 1 "${TEST_URL}/health/ready" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  [[ "${ready}" == "1" ]] \
+    || fail "cycle ${cycle}: /health/ready not responding within 10s of start"
 
   log "  cycle ${cycle} ok: state=running pid=${new_pid} ready=200"
 done
