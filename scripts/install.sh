@@ -552,6 +552,37 @@ write_install_version_marker() {
 }
 
 # ---------------------------------------------------------------------------
+# Install-env marker — records resolved path layout so expertise-apictl can
+# discover prefix-aware paths (e.g. LOG_DIR) without re-deriving them.
+#
+# Written to a STABLE, non-prefix-dependent location so apictl can probe it
+# without knowing which --prefix was used at install time:
+#   ${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/install.env
+#
+# For a single-user install (the only supported mode) there is one active
+# install at a time, so the "last install wins" property is correct.
+#
+# File contains plain key=value assignments (no quoting, no subshells).
+# apictl reads it with grep+sed, not source, so no shell-execution risk.
+# chmod 644: no secrets — paths only.
+# ---------------------------------------------------------------------------
+write_install_env() {
+  local xdg_config_dir env_dir env_file
+  xdg_config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  env_dir="${xdg_config_dir}/expertise-api"
+  env_file="${env_dir}/install.env"
+  mkdir -p "${env_dir}"
+  if [[ -L "${env_file}" ]]; then
+    err "${env_file} exists as a symlink — refusing to write"
+  fi
+  printf 'EXPERTISE_API_LOG_DIR=%s\n' "${LOG_DIR}" > "${env_file}.tmp"
+  printf 'EXPERTISE_API_PREFIX=%s\n'  "${PREFIX}"  >> "${env_file}.tmp"
+  mv -f -- "${env_file}.tmp" "${env_file}"
+  chmod 644 "${env_file}"
+  log "install-env: ${env_file}"
+}
+
+# ---------------------------------------------------------------------------
 # Publish (staged)
 # ---------------------------------------------------------------------------
 publish_app_staged() {
@@ -929,6 +960,7 @@ main() {
   atomic_swap
   install_service
   write_install_version_marker
+  write_install_env
   # D3 (#249) — post-swap mode/semver/history markers. Written AFTER
   # atomic_swap so they only reflect committed installs (a rollback path
   # that runs cleanup() before SUCCESS=1 will not have touched them).

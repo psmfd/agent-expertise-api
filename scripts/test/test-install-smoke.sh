@@ -409,6 +409,21 @@ if [ "${SMOKE_INSTALL_MODE}" = "release" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 4d. install.env written by install.sh records EXPERTISE_API_LOG_DIR (#287).
+#     Stored at ${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/install.env
+#     so expertise-apictl can locate it without knowing which --prefix was
+#     used at install time. The smoke always uses --prefix so
+#     LOG_DIR == ${PREFIX}/logs; verify that the file records exactly that.
+# ---------------------------------------------------------------------------
+INSTALL_ENV_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/install.env"
+assert "post-install install.env exists at XDG config location" \
+  test -f "${INSTALL_ENV_FILE}"
+assert "post-install install.env records EXPERTISE_API_LOG_DIR" \
+  bash -c "grep -q '^EXPERTISE_API_LOG_DIR=' '${INSTALL_ENV_FILE}' 2>/dev/null"
+assert "post-install install.env EXPERTISE_API_LOG_DIR points to prefix logs dir" \
+  bash -c "grep -qF 'EXPERTISE_API_LOG_DIR=${PREFIX}/logs' '${INSTALL_ENV_FILE}' 2>/dev/null"
+
+# ---------------------------------------------------------------------------
 # 5. Service is active under systemd-user (Linux) / launchd (macOS).
 #    apictl status is the OS-agnostic shim.
 # ---------------------------------------------------------------------------
@@ -443,6 +458,17 @@ assert "/health/live returns 200 within ${READY_TIMEOUT_SECONDS}s" \
 # ---------------------------------------------------------------------------
 assert "/health/ready returns 200" \
   wait_for_http "${BASE_URL}/health/ready" 10
+
+# ---------------------------------------------------------------------------
+# 7b. apictl logs -n 1 succeeds with the prefix install layout (#287).
+#     This is the core regression guard: before the fix, macOS logs would
+#     hardcode ${HOME}/Library/Logs/expertise-api and miss ${PREFIX}/logs.
+#     On macOS the fix causes apictl to read LOG_DIR from install.env (written
+#     in step 4d). On Linux journalctl is path-agnostic. Both platforms must
+#     pass. The service must be running (checked in 7) for logs to exist.
+# ---------------------------------------------------------------------------
+assert "apictl logs -n 1 exits 0 (prefix-aware log path, #287 regression guard)" \
+  bash -c "'${APICTL}' logs -n 1 >/dev/null 2>&1"
 
 # ---------------------------------------------------------------------------
 # 8. apictl restart preserves readiness (regression for #141 / PR #164)
