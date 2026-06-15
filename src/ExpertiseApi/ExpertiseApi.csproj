@@ -82,7 +82,7 @@
       "Archetype A2: native OS service install" for the install scripts that
       depend on these.
     -->
-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
     <PackageReference Include="Microsoft.SemanticKernel.Connectors.Onnx" Version="1.74.0-alpha" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.2" />
