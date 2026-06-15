@@ -67,7 +67,7 @@
       IncludeAssets covers the build / buildMultitargeting / buildTransitive surfaces
       that the task uses across SDK styles.
     -->
-    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.8"
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.9"
                       PrivateAssets="all"
                       IncludeAssets="build;buildMultitargeting;buildTransitive" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
