@@ -574,8 +574,13 @@ jobs:
         #   2. base build fails (SDK drift, transient infra) — we cannot
         #      diff, but failing the gate would block unrelated PRs on
         #      base-branch breakage. Surface as a Warning instead.
-        # set -uo pipefail (no -e) so we can capture rc explicitly.
+        # GitHub's default step shell is `bash -e {0}`, so a failing
+        # `dotnet build` below aborts the step before the rc capture, turning
+        # the intended "treat as non-breaking" fallback into a hard gate
+        # failure. `set +e` clears that errexit so we can inspect rc
+        # explicitly; `set -uo pipefail` keeps the rest of the safety net.
         run: |
+          set +e
           set -uo pipefail
           if [ ! -f src/ExpertiseApi/ExpertiseApi.csproj ]; then
             echo "::notice::base ref has no API project; skipping diff"
