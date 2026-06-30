@@ -419,6 +419,28 @@ as a native OS service:
 - **Windows**: Windows Service via `sc.exe` with Virtual Account
   `NT SERVICE\expertise-api`, failure recovery 5s/5s/30s
 
+#### Lightweight local defaults
+
+The native-service install is tuned for a single-user workstation rather
+than a multi-tenant pod. These defaults are injected by the install scripts
+into the **service runtime environment only** (the generated
+`launch-expertise-api.sh` wrapper on macOS/Linux, the service registry key on
+Windows) — they are **never** baked into the csproj, `appsettings.json`, or
+the Docker image, so the container / Helm / `dotnet run` paths keep the
+production defaults unchanged.
+
+| Setting | Local default | Production default | Why |
+| ------- | ------------- | ------------------ | --- |
+| `DOTNET_gcServer` | `0` (Workstation GC) | `1` (Server GC) | Server GC allocates one managed heap + background GC thread *per logical core* and reserves memory aggressively. Workstation GC uses a single heap — a substantial idle-RSS and thread-count cut for a low-traffic service on a many-core laptop, with no downside at single-user request rates. |
+| `DOTNET_gcConcurrent` | `1` | `1` | Background GC stays on to keep collection pauses short. |
+| `Metrics__Enabled` | `false` | `true` | A solo workstation has no Prometheus scraper, so `/metrics` and per-request histogram bookkeeping are dead weight. |
+| PgBouncer | not used | sidecar (transaction pooling) | A single workstation connects **directly** to PostgreSQL on `5432`; the connection-pooling sidecar (and the `No Reset On Close=true` connection-string flag it requires) is a multi-client concern. The secrets stub written by the installer points straight at Postgres. |
+
+Every value is overridable. On macOS/Linux, set the same variable in
+`secrets.env` (the wrapper uses `:-` defaults, so an explicit value wins) —
+e.g. `DOTNET_gcServer=1` or `Metrics__Enabled=true`. On Windows, edit the
+`Environment` `REG_MULTI_SZ` value on the service key and restart the service.
+
 #### Survives reboot?
 
 | OS | Mode | Survives reboot? | Notes |
