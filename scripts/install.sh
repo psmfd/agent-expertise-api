@@ -703,6 +703,12 @@ ensure_config_stubs() {
 # Set the connection string after install. Example for native Postgres:
 #   ConnectionStrings__DefaultConnection="Host=127.0.0.1;Port=5432;Database=expertise;Username=expertise;Password=CHANGE_ME"
 #
+# This points DIRECTLY at PostgreSQL on 5432 — a single-workstation install
+# does NOT need the PgBouncer sidecar (that is a k8s/Compose concern for pooling
+# many concurrent clients). The appsettings.json default of Port=6432 +
+# "No Reset On Close=true" is PgBouncer-specific; neither is needed here. Only
+# add "No Reset On Close=true" if you deliberately front Postgres with PgBouncer.
+#
 # The double quotes are REQUIRED: bash sources this file via \`set -a; . file\`
 # from the launch wrapper (and scripts/migrate.sh), and an unquoted value
 # containing \`;\` would be split as separate commands. systemd's own
@@ -781,6 +787,29 @@ export ASPNETCORE_URLS="http://${BIND_ADDR}"
 export ASPNETCORE_ENVIRONMENT="\${ASPNETCORE_ENVIRONMENT:-Production}"
 export DOTNET_NOLOGO=true
 export DOTNET_PRINT_TELEMETRY_MESSAGE=false
+
+# --- Lightweight local-workstation runtime tuning (A2 native install ONLY) ---
+# These are set here in the wrapper, NOT in the csproj/appsettings, so they
+# never reach the Docker image, Helm chart, or \`dotnet run\` — the container /
+# k8s path keeps the production defaults (Server GC, metrics on).
+#
+# Server GC (the Microsoft.NET.Sdk.Web default) allocates one managed heap and
+# background GC thread PER logical core and reserves memory aggressively — the
+# right trade for a multi-tenant pod under concurrent load, but pure idle-RSS
+# and thread overhead for a single-user, low-traffic local service. Workstation
+# GC uses a single heap and cuts idle working set substantially on a many-core
+# workstation. Concurrent (background) GC stays on to keep pauses short.
+#
+# Prometheus metrics default off locally: a solo workstation has no scraper, so
+# \`/metrics\` + per-request histogram bookkeeping is dead weight.
+#
+# Every value uses \`:-\` defaults so an operator can override any of them by
+# setting the same variable in secrets.env (sourced above) — e.g. set
+# DOTNET_gcServer=1 or Metrics__Enabled=true to restore production behaviour.
+export DOTNET_gcServer="\${DOTNET_gcServer:-0}"
+export DOTNET_gcConcurrent="\${DOTNET_gcConcurrent:-1}"
+export Metrics__Enabled="\${Metrics__Enabled:-false}"
+
 export Onnx__ModelPath="${MODEL_DIR}/model.onnx"
 export Onnx__VocabPath="${MODEL_DIR}/vocab.txt"
 
