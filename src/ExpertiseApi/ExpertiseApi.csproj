@@ -62,6 +62,16 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.8" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
     <!--
+      Transitive security pin. Microsoft.AspNetCore.OpenApi 10.0.8 pulls
+      Microsoft.OpenApi 2.0.0, which carries a HIGH-severity advisory
+      (GHSA-v5pm-xwqc-g5wc: circular schema references may terminate OpenAPI
+      parsing; vulnerable <= 2.7.4, first patched 2.7.5). Pin forward to the
+      latest patched 2.x — API-compatible within the 2.x major, so the parent
+      package resolves against it. Drop this once Microsoft.AspNetCore.OpenApi
+      references a patched Microsoft.OpenApi transitively.
+    -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.9.0" />
+    <!--
       Build-time OpenAPI document generator (Part D C8). PrivateAssets=all keeps the
       package out of the published output (it's an MSBuild task, not a runtime dependency).
       IncludeAssets covers the build / buildMultitargeting / buildTransitive surfaces
