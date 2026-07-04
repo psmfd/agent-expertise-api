@@ -444,12 +444,25 @@ preflight() {
   # must not be (#145).
 
   if [[ "${PUBLISH_MODE}" == "fdd" ]]; then
-    command -v dotnet >/dev/null 2>&1 \
-      || err "dotnet CLI not found in PATH (required for fdd; pass --publish-mode scd to skip)"
-    if ! dotnet --list-runtimes 2>/dev/null | grep -qE '^Microsoft\.AspNetCore\.App 10\.'; then
-      err "ASP.NET Core 10 runtime not installed (need 'Microsoft.AspNetCore.App 10.x'; install via https://dot.net)"
+    if (( INSTALL_DEPS == 1 )) && ! command -v dotnet >/dev/null 2>&1; then
+      # --install-deps runs AFTER preflight (main) and installs the .NET SDK;
+      # do not hard-fail here for a dep the bootstrap will provide. The per-OS
+      # bootstrap module verifies a 10.x SDK is present before returning, and
+      # write_wrapper/run_migrate_staged use dotnet only after bootstrap.
+      log "dotnet not yet present — deferring to --install-deps bootstrap"
+    else
+      command -v dotnet >/dev/null 2>&1 \
+        || err "dotnet CLI not found in PATH (required for fdd; pass --publish-mode scd, or --install-deps to install it)"
+      if ! dotnet --list-runtimes 2>/dev/null | grep -qE '^Microsoft\.AspNetCore\.App 10\.'; then
+        if (( INSTALL_DEPS == 1 )); then
+          log "ASP.NET Core 10 runtime not yet present — deferring to --install-deps bootstrap"
+        else
+          err "ASP.NET Core 10 runtime not installed (need 'Microsoft.AspNetCore.App 10.x'; install via https://dot.net, or pass --install-deps)"
+        fi
+      else
+        log "dotnet runtime: OK"
+      fi
     fi
-    log "dotnet runtime: OK"
   fi
 
   local port="${BIND_ADDR##*:}"
@@ -703,6 +716,12 @@ ensure_config_stubs() {
 # Set the connection string after install. Example for native Postgres:
 #   ConnectionStrings__DefaultConnection="Host=127.0.0.1;Port=5432;Database=expertise;Username=expertise;Password=CHANGE_ME"
 #
+# This points DIRECTLY at PostgreSQL on 5432 — a single-workstation install
+# does NOT need the PgBouncer sidecar (that is a k8s/Compose concern for pooling
+# many concurrent clients). The appsettings.json default of Port=6432 +
+# "No Reset On Close=true" is PgBouncer-specific; neither is needed here. Only
+# add "No Reset On Close=true" if you deliberately front Postgres with PgBouncer.
+#
 # The double quotes are REQUIRED: bash sources this file via \`set -a; . file\`
 # from the launch wrapper (and scripts/migrate.sh), and an unquoted value
 # containing \`;\` would be split as separate commands. systemd's own
@@ -781,6 +800,29 @@ export ASPNETCORE_URLS="http://${BIND_ADDR}"
 export ASPNETCORE_ENVIRONMENT="\${ASPNETCORE_ENVIRONMENT:-Production}"
 export DOTNET_NOLOGO=true
 export DOTNET_PRINT_TELEMETRY_MESSAGE=false
+
+# --- Lightweight local-workstation runtime tuning (A2 native install ONLY) ---
+# These are set here in the wrapper, NOT in the csproj/appsettings, so they
+# never reach the Docker image, Helm chart, or \`dotnet run\` — the container /
+# k8s path keeps the production defaults (Server GC, metrics on).
+#
+# Server GC (the Microsoft.NET.Sdk.Web default) allocates one managed heap and
+# background GC thread PER logical core and reserves memory aggressively — the
+# right trade for a multi-tenant pod under concurrent load, but pure idle-RSS
+# and thread overhead for a single-user, low-traffic local service. Workstation
+# GC uses a single heap and cuts idle working set substantially on a many-core
+# workstation. Concurrent (background) GC stays on to keep pauses short.
+#
+# Prometheus metrics default off locally: a solo workstation has no scraper, so
+# \`/metrics\` + per-request histogram bookkeeping is dead weight.
+#
+# Every value uses \`:-\` defaults so an operator can override any of them by
+# setting the same variable in secrets.env (sourced above) — e.g. set
+# DOTNET_gcServer=1 or Metrics__Enabled=true to restore production behaviour.
+export DOTNET_gcServer="\${DOTNET_gcServer:-0}"
+export DOTNET_gcConcurrent="\${DOTNET_gcConcurrent:-1}"
+export Metrics__Enabled="\${Metrics__Enabled:-false}"
+
 export Onnx__ModelPath="${MODEL_DIR}/model.onnx"
 export Onnx__VocabPath="${MODEL_DIR}/vocab.txt"
 
@@ -1091,7 +1133,7 @@ install_service() {
 # preflight()/resolve_install_version() so the modules can rely on
 # INSTALL_DEPS / UPGRADE_DEPS / OS / NEW_VERSION / PREFIX / SECRETS_FILE.
 #
-# PR C1: macOS only. Debian/RHEL modules land via #246 / #247.
+# PR C1: macOS. Debian lands via #246; RHEL via #247.
 # ---------------------------------------------------------------------------
 bootstrap_deps() {
   STAGE="bootstrap"
@@ -1106,7 +1148,25 @@ bootstrap_deps() {
       bootstrap_macos_run
       ;;
     linux)
-      err "--install-deps for Linux is not yet implemented (tracked by #246 Debian, #247 RHEL). For now, install dotnet SDK 10, postgresql 17, and pgvector via your package manager and re-run without --install-deps."
+      # Debian/Ubuntu (apt) — #246. RHEL (#247) is still a separate module;
+      # gate on the apt package manager so a non-apt distro gets a clear
+      # pointer rather than a confusing apt-not-found failure.
+      if command -v apt-get >/dev/null 2>&1; then
+        # shellcheck source=lib/bootstrap-debian.sh disable=SC1091
+        . "${SCRIPT_DIR}/lib/bootstrap-debian.sh"
+        bootstrap_debian_run
+      else
+        err "--install-deps on Linux currently supports apt-based distros (Debian/Ubuntu, #246); RHEL is tracked by #247. Install dotnet SDK 10, postgresql ${_DEBIAN_PG_MAJOR:-17}, and pgvector via your package manager and re-run without --install-deps."
+      fi
+      ;;
+    wsl)
+      if command -v apt-get >/dev/null 2>&1; then
+        # shellcheck source=lib/bootstrap-debian.sh disable=SC1091
+        . "${SCRIPT_DIR}/lib/bootstrap-debian.sh"
+        bootstrap_debian_run
+      else
+        err "--install-deps under WSL currently supports apt-based distros (#246)."
+      fi
       ;;
     *)
       err "--install-deps does not support OS=${OS}"
