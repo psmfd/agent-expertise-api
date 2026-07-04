@@ -444,12 +444,25 @@ preflight() {
   # must not be (#145).
 
   if [[ "${PUBLISH_MODE}" == "fdd" ]]; then
-    command -v dotnet >/dev/null 2>&1 \
-      || err "dotnet CLI not found in PATH (required for fdd; pass --publish-mode scd to skip)"
-    if ! dotnet --list-runtimes 2>/dev/null | grep -qE '^Microsoft\.AspNetCore\.App 10\.'; then
-      err "ASP.NET Core 10 runtime not installed (need 'Microsoft.AspNetCore.App 10.x'; install via https://dot.net)"
+    if (( INSTALL_DEPS == 1 )) && ! command -v dotnet >/dev/null 2>&1; then
+      # --install-deps runs AFTER preflight (main) and installs the .NET SDK;
+      # do not hard-fail here for a dep the bootstrap will provide. The per-OS
+      # bootstrap module verifies a 10.x SDK is present before returning, and
+      # write_wrapper/run_migrate_staged use dotnet only after bootstrap.
+      log "dotnet not yet present — deferring to --install-deps bootstrap"
+    else
+      command -v dotnet >/dev/null 2>&1 \
+        || err "dotnet CLI not found in PATH (required for fdd; pass --publish-mode scd, or --install-deps to install it)"
+      if ! dotnet --list-runtimes 2>/dev/null | grep -qE '^Microsoft\.AspNetCore\.App 10\.'; then
+        if (( INSTALL_DEPS == 1 )); then
+          log "ASP.NET Core 10 runtime not yet present — deferring to --install-deps bootstrap"
+        else
+          err "ASP.NET Core 10 runtime not installed (need 'Microsoft.AspNetCore.App 10.x'; install via https://dot.net, or pass --install-deps)"
+        fi
+      else
+        log "dotnet runtime: OK"
+      fi
     fi
-    log "dotnet runtime: OK"
   fi
 
   local port="${BIND_ADDR##*:}"
@@ -1120,7 +1133,7 @@ install_service() {
 # preflight()/resolve_install_version() so the modules can rely on
 # INSTALL_DEPS / UPGRADE_DEPS / OS / NEW_VERSION / PREFIX / SECRETS_FILE.
 #
-# PR C1: macOS only. Debian/RHEL modules land via #246 / #247.
+# PR C1: macOS. Debian lands via #246; RHEL via #247.
 # ---------------------------------------------------------------------------
 bootstrap_deps() {
   STAGE="bootstrap"
@@ -1135,7 +1148,25 @@ bootstrap_deps() {
       bootstrap_macos_run
       ;;
     linux)
-      err "--install-deps for Linux is not yet implemented (tracked by #246 Debian, #247 RHEL). For now, install dotnet SDK 10, postgresql 17, and pgvector via your package manager and re-run without --install-deps."
+      # Debian/Ubuntu (apt) — #246. RHEL (#247) is still a separate module;
+      # gate on the apt package manager so a non-apt distro gets a clear
+      # pointer rather than a confusing apt-not-found failure.
+      if command -v apt-get >/dev/null 2>&1; then
+        # shellcheck source=lib/bootstrap-debian.sh disable=SC1091
+        . "${SCRIPT_DIR}/lib/bootstrap-debian.sh"
+        bootstrap_debian_run
+      else
+        err "--install-deps on Linux currently supports apt-based distros (Debian/Ubuntu, #246); RHEL is tracked by #247. Install dotnet SDK 10, postgresql ${_DEBIAN_PG_MAJOR:-17}, and pgvector via your package manager and re-run without --install-deps."
+      fi
+      ;;
+    wsl)
+      if command -v apt-get >/dev/null 2>&1; then
+        # shellcheck source=lib/bootstrap-debian.sh disable=SC1091
+        . "${SCRIPT_DIR}/lib/bootstrap-debian.sh"
+        bootstrap_debian_run
+      else
+        err "--install-deps under WSL currently supports apt-based distros (#246)."
+      fi
       ;;
     *)
       err "--install-deps does not support OS=${OS}"
