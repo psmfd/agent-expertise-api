@@ -201,6 +201,16 @@ function Install-WindowsService {
         'ASPNETCORE_ENVIRONMENT=Production'
         'DOTNET_NOLOGO=true'
         'DOTNET_PRINT_TELEMETRY_MESSAGE=false'
+        # Lightweight local-workstation runtime tuning (native service ONLY —
+        # set on the service key, never in the csproj/Docker image so the
+        # container/k8s path keeps Server GC + metrics on). Workstation GC uses
+        # a single heap instead of one-per-core, cutting idle working set for a
+        # single-user, low-traffic service; metrics default off (no local
+        # scraper). Override by editing this REG_MULTI_SZ value (e.g. set
+        # DOTNET_gcServer=1 or Metrics__Enabled=true) and restarting the service.
+        'DOTNET_gcServer=0'
+        'DOTNET_gcConcurrent=1'
+        'Metrics__Enabled=false'
         "Onnx__ModelPath=$(Join-Path $ModelDir 'model.onnx')"
         "Onnx__VocabPath=$(Join-Path $ModelDir 'vocab.txt')"
     )

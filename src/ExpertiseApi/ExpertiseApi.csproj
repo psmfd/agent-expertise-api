@@ -59,22 +59,32 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.8" />
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9" />
+    <!--
+      Transitive security pin. Microsoft.AspNetCore.OpenApi 10.0.8 pulls
+      Microsoft.OpenApi 2.0.0, which carries a HIGH-severity advisory
+      (GHSA-v5pm-xwqc-g5wc: circular schema references may terminate OpenAPI
+      parsing; vulnerable <= 2.7.4, first patched 2.7.5). Pin forward to the
+      latest patched 2.x — API-compatible within the 2.x major, so the parent
+      package resolves against it. Drop this once Microsoft.AspNetCore.OpenApi
+      references a patched Microsoft.OpenApi transitively.
+    -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.9.0" />
     <!--
       Build-time OpenAPI document generator (Part D C8). PrivateAssets=all keeps the
       package out of the published output (it's an MSBuild task, not a runtime dependency).
       IncludeAssets covers the build / buildMultitargeting / buildTransitive surfaces
       that the task uses across SDK styles.
     -->
-    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.8"
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.9"
                       PrivateAssets="all"
                       IncludeAssets="build;buildMultitargeting;buildTransitive" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.9" />
     <!--
       Service-host integration. Both packages are no-ops outside their host
       environment (SystemdHelpers.IsSystemdService / WindowsServiceHelpers.IsWindowsService),
@@ -82,13 +92,13 @@
       "Archetype A2: native OS service install" for the install scripts that
       depend on these.
     -->
-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.9" />
     <PackageReference Include="Microsoft.SemanticKernel.Connectors.Onnx" Version="1.74.0-alpha" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.2" />
     <PackageReference Include="Pgvector.EntityFrameworkCore" Version="0.3.0" />
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
-    <PackageReference Include="Scalar.AspNetCore" Version="2.14.14" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.16.6" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
   </ItemGroup>
