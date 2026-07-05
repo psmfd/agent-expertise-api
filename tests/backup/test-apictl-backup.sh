@@ -141,6 +141,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. secrets-file resolution honors the install wrapper's recorded path
+#     (custom-prefix installs put secrets.env outside the XDG default). The
+#     resolved path surfaces in the "ConnectionStrings... not set" error, so
+#     asserting on the message pins the resolution order without needing a DB.
+# ---------------------------------------------------------------------------
+if command -v jq >/dev/null 2>&1; then
+  prefix="${SANDBOX}/install-prefix"
+  mkdir -p "${prefix}/bin" "${XDG_CONFIG_HOME}/expertise-api"
+  printf 'EXPERTISE_API_PREFIX=%s\n' "${prefix}" > "${XDG_CONFIG_HOME}/expertise-api/install.env"
+  cat > "${prefix}/launch-expertise-api.sh" <<EOF
+#!/usr/bin/env bash
+SECRETS_FILE="${prefix}/custom-secrets.env"
+EOF
+  printf 'ConnectionStrings__DefaultConnection=""\n' > "${prefix}/custom-secrets.env"
+  out="$(PATH="${STUB_DIR}:${PATH}" "${APICTL}" backup 2>&1)"
+  rc=$?
+  assert   "wrapper-secrets backup exits nonzero" test "${rc}" -ne 0
+  assert_contains "error names the wrapper-recorded secrets path" "${out}" "${prefix}/custom-secrets.env"
+
+  # Env override wins over the wrapper-recorded path.
+  out="$(PATH="${STUB_DIR}:${PATH}" EXPERTISE_API_SECRETS_FILE="${SANDBOX}/override.env" "${APICTL}" backup 2>&1)"
+  assert_contains "env override wins" "${out}" "${SANDBOX}/override.env"
+else
+  printf 'SKIP: secrets-resolution tests — jq not on host PATH\n'
+fi
+
+# ---------------------------------------------------------------------------
 # 5. restore without an artifact → usage error.
 # ---------------------------------------------------------------------------
 out="$(PATH="${STUB_DIR}:${PATH}" "${APICTL}" restore 2>&1)"
