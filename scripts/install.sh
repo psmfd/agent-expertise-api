@@ -836,15 +836,23 @@ export Metrics__Enabled="\${Metrics__Enabled:-false}"
 export Onnx__ModelPath="${MODEL_DIR}/model.onnx"
 export Onnx__VocabPath="${MODEL_DIR}/vocab.txt"
 
+# DOTNET_ROOT must be exported for BOTH exec branches: an fdd APPHOST
+# resolves the runtime exactly like the muxer path does, and on hosts where
+# dotnet lives outside the default /usr/local/share/dotnet location (e.g.
+# ~/.dotnet from dotnet-install.sh) the apphost fails with
+# "app-launch-failed / missing_runtime" without it. Previously only the
+# DLL branch exported it, so an fdd publish that emitted an apphost crash-
+# looped at service start on such hosts.
+if [[ -n "${dotnet_root}" ]]; then
+  export DOTNET_ROOT="\${DOTNET_ROOT:-${dotnet_root}}"
+fi
+
 if [[ -x "\${BIN_DIR}/ExpertiseApi" ]]; then
   exec "\${BIN_DIR}/ExpertiseApi"
 elif [[ -n "\${DOTNET_BIN}" && -x "\${DOTNET_BIN}" ]]; then
   # Absolute path baked at install time: the service manager's PATH
   # (launchd path_helper, systemd user units) does not include
   # non-standard dotnet roots, so bare \`dotnet\` is not resolvable here.
-  if [[ -n "${dotnet_root}" ]]; then
-    export DOTNET_ROOT="\${DOTNET_ROOT:-${dotnet_root}}"
-  fi
   exec "\${DOTNET_BIN}" "\${BIN_DIR}/ExpertiseApi.dll"
 else
   # Last resort: PATH lookup (pre-existing behavior).
