@@ -68,16 +68,12 @@ public class ApiFactory : WebApplicationFactory<Program>
                     Arg.Any<CancellationToken>())
                 .Returns(callInfo =>
                 {
+                    // Content-derived embeddings (#353): index i maps to input i, identical
+                    // content yields identical vectors, distinct content stays near-orthogonal.
                     var inputs = callInfo.ArgAt<IEnumerable<string>>(0).ToList();
                     var result = new GeneratedEmbeddings<Embedding<float>>();
-                    foreach (var _ in inputs)
-                    {
-                        var vector = new float[384];
-                        new Random(42).NextBytes(new byte[4]); // deterministic seed
-                        for (var i = 0; i < 384; i++)
-                            vector[i] = (float)(new Random(42 + i).NextDouble() * 2 - 1);
-                        result.Add(new Embedding<float>(vector));
-                    }
+                    foreach (var input in inputs)
+                        result.Add(new Embedding<float>(TestHelpers.CreateContentEmbedding(input)));
                     return Task.FromResult<GeneratedEmbeddings<Embedding<float>>>(result);
                 });
 
