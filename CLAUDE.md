@@ -288,6 +288,10 @@ Per ADR-008 (Part D C6/C7 of `docs/security/integration-threat-model.md`), all `
 
 Actor class is resolved by `ActorClassResolver` (the single source of truth across the JwtBearer / ApiKey / LocalDev handlers), cascading mutually-exclusive `Agent ↣ Service ↣ Human`. The `expertise.agent` scope alone is sufficient for `agent`; an `X-Actor-Class: agent` header grants nothing on its own and must be corroborated by the scope or a configured User-Agent allowlist match, else it falls back to the scheme default with a structured warning. `service` applies to non-interactive principals (ApiKey, or `client_credentials` where `sub == azp`/`client_id`). User-Agent is observability-only.
 
+### Aggregator up-sync (ADR-013)
+
+A spoke instance pushes newly Approved entries in the `shared` tenant to a hub's existing `POST /expertise/batch` via `ExpertiseSyncWorker` (`BackgroundService`, `Sync` config section, off by default). Auth is OIDC `client_credentials` against the shared IdP (ADR-005 plumbing; hub-side tenancy via `TenantSource.CompoundRole`/`GroupToTenantMapping` — config-only). **The spoke's hub credential carries `expertise.write.draft` ONLY** — ADR-003 scope semantics force synced entries to land as Draft in the spoke's hub-side tenant, pending curator review (the knowledge-supply-chain control; OWASP ASI04/ASI06). Retry safety is at-least-once via tenant-scoped dedup (`/batch` is outside Idempotency-Key scope per ADR-010); the hub answers replays with `Duplicate`, which the worker counts as success. The hub sets `OriginInstanceId` from `Sync:KnownInstances` (authenticated client id → instance id); a misconfigured `Sync:Enabled=true` spoke fails at startup, not at first tick. Sync metrics: `expertise_sync_cycles_total`, `expertise_sync_items_total`.
+
 ### ForwardedHeaders for IpAddress capture
 
 The audit log records the client IP address. To get the real client IP behind an ingress controller, configure `ForwardedHeaders:KnownNetworks` (CIDR list) so the `UseForwardedHeaders` middleware trusts only the proxy network. Without explicit allowlist the middleware trusts only loopback and audit IpAddress will record the ingress pod IP. In Kubernetes the value is typically the cluster pod CIDR.
@@ -450,12 +454,16 @@ The `ExpertiseEntry` entity carries the original content fields (`Domain`, `Tags
 | `IntegrityHash` | `string?` | SHA-256 hex over canonical JSON of `{tenant, title, body, entryType, severity}`. Backfilled by the `rehash` CLI. |
 | `ReviewState` | `enum { Draft, Approved, Rejected }` | Stored as string. Defaults to `Draft`. |
 | `ReviewedBy`, `ReviewedAt`, `RejectionReason` | `string?`, `DateTime?`, `string?` | Approval/rejection metadata, server-set on `/approve` or `/reject` (later PR). |
+| `OriginInstanceId` | `string?` | ADR-013 up-sync attribution. Server-set on the hub from the authenticated client's `Sync:KnownInstances` mapping — never from the request body. Excluded from canonical hash and dedup equality. |
+| `OriginAuthorPrincipal` | `string?` | Origin-side author for up-synced entries (informational reviewer context; accepted from the request body, truncated to 256 chars). Excluded from canonical hash and dedup equality; hygienized as user-supplied free text on read. |
 
 Indexes added: standalone B-tree on `Tenant`; composite B-tree on `(Tenant, ReviewState)` with `INCLUDE (Id, EntryType, Severity)` covering the hot read path.
 
 A separate **`ExpertiseAuditLog`** table records every state-changing operation: `{Id, Timestamp, Action, EntryId, Tenant, Principal, Agent?, BeforeHash, AfterHash, IpAddress, ActorClass, AuthMethod?, ActorClassHeader?}` (the last three added by ADR-008). FK to `ExpertiseEntries.Id` with `ON DELETE RESTRICT` (audit must survive entry deletion). Reads are not audited. Indexes on `(EntryId, Timestamp)` and `(Principal, Timestamp)`.
 
-The `ExpertiseDbContext` exposes both as `DbSet<>`. **`IExpertiseRepository` is the only sanctioned consumer of `ExpertiseDbContext` for entry data** — the architectural test in `tests/ExpertiseApi.Tests/Architecture/` enforces this for everything outside `Data/` and `Cli/`. CLI commands (`reembed`, `rehash`) are intentional exceptions because they need cursor-based paging the repository interface does not expose.
+A **`SyncStates`** singleton-row table (EmbeddingMetadata pattern) holds the spoke-side up-sync cursor: `{Id, LastSyncedUpdatedAt, LastSyncedId, LastSuccessAt}` (ADR-013).
+
+The `ExpertiseDbContext` exposes these as `DbSet<>`. **`IExpertiseRepository` is the only sanctioned consumer of `ExpertiseDbContext` for entry data** — the architectural test in `tests/ExpertiseApi.Tests/Architecture/` enforces this for everything outside `Data/` and `Cli/`. CLI commands (`reembed`, `rehash`) are intentional exceptions because they need cursor-based paging the repository interface does not expose.
 
 ## Architecture & Design
 

@@ -4,7 +4,11 @@
   "description": "Schema validating values.yaml for the expertise-api chart. Catches operator misconfigurations at `helm install --dry-run` time instead of API startup time.",
   "type": "object",
   "additionalProperties": true,
-  "required": ["image", "auth", "postgres"],
+  "required": [
+    "image",
+    "auth",
+    "postgres"
+  ],
   "$defs": {
     "k8sQuantity": {
       "type": "string",
@@ -21,8 +25,14 @@
           "pattern": "^/.*",
           "description": "HTTP path used by httpGet. Must start with /."
         },
-        "periodSeconds":    { "type": "integer", "minimum": 1 },
-        "failureThreshold": { "type": "integer", "minimum": 1 }
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
       "additionalProperties": false
     },
@@ -32,16 +42,24 @@
         "requests": {
           "type": "object",
           "properties": {
-            "cpu":    { "$ref": "#/$defs/k8sQuantity" },
-            "memory": { "$ref": "#/$defs/k8sQuantity" }
+            "cpu": {
+              "$ref": "#/$defs/k8sQuantity"
+            },
+            "memory": {
+              "$ref": "#/$defs/k8sQuantity"
+            }
           },
           "additionalProperties": false
         },
         "limits": {
           "type": "object",
           "properties": {
-            "cpu":    { "$ref": "#/$defs/k8sQuantity" },
-            "memory": { "$ref": "#/$defs/k8sQuantity" }
+            "cpu": {
+              "$ref": "#/$defs/k8sQuantity"
+            },
+            "memory": {
+              "$ref": "#/$defs/k8sQuantity"
+            }
           },
           "additionalProperties": false
         }
@@ -57,16 +75,25 @@
     },
     "image": {
       "type": "object",
-      "required": ["repository"],
+      "required": [
+        "repository"
+      ],
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
         "tag": {
           "type": "string",
           "description": "Image tag. Empty string (default) falls back to .Chart.AppVersion in deployment.yaml. Override only when pinning to a tag distinct from the chart's appVersion."
         },
         "pullPolicy": {
           "type": "string",
-          "enum": ["Always", "IfNotPresent", "Never"]
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         }
       }
     },
@@ -74,32 +101,62 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name"],
-        "properties": { "name": { "type": "string", "minLength": 1 } }
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     },
     "service": {
       "type": "object",
       "properties": {
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "targetPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "targetPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
     "ingress": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "hostname": { "type": "string", "minLength": 1 },
-        "clusterIssuer": { "type": "string" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "hostname": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clusterIssuer": {
+          "type": "string"
+        }
       }
     },
     "auth": {
       "type": "object",
-      "required": ["mode", "secretName"],
+      "required": [
+        "mode",
+        "secretName"
+      ],
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["Oidc", "LocalDev", "ApiKey", "Hybrid"],
+          "enum": [
+            "Oidc",
+            "LocalDev",
+            "ApiKey",
+            "Hybrid"
+          ],
           "description": "Authentication mode. Only `Oidc` is permitted by the API's startup guard outside Development."
         },
         "secretName": {
@@ -114,32 +171,60 @@
               "type": "array",
               "items": {
                 "type": "object",
-                "required": ["name", "issuer", "audience"],
+                "required": [
+                  "name",
+                  "issuer",
+                  "audience"
+                ],
                 "properties": {
-                  "name": { "type": "string", "minLength": 1 },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "issuer": {
                     "type": "string",
                     "format": "uri",
                     "description": "Issuer URL must be byte-exact to the issuer's `iss` claim. Authentik includes a trailing slash; Entra v2 does not."
                   },
-                  "audience": { "type": "string", "minLength": 1 },
+                  "audience": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "additionalAudiences": {
                     "type": "array",
-                    "items": { "type": "string", "minLength": 1 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
                   },
                   "scopeClaims": {
                     "type": "array",
-                    "items": { "type": "string", "minLength": 1 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
                   },
                   "tenantSource": {
                     "type": "string",
-                    "enum": ["CompoundRole", "Groups"]
+                    "enum": [
+                      "CompoundRole",
+                      "Groups"
+                    ]
                   },
-                  "roleSeparator": { "type": "string", "minLength": 1 },
-                  "groupClaim": { "type": "string", "minLength": 1 },
+                  "roleSeparator": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "groupClaim": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "groupToTenantMapping": {
                     "type": "object",
-                    "additionalProperties": { "type": "string", "minLength": 1 }
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 1
+                    }
                   }
                 }
               }
@@ -171,9 +256,15 @@
           "type": "object",
           "description": "Liveness, readiness, and startup probe overrides. Defaults match the routes wired in Program.cs (/health/live for liveness; /health/ready for readiness and startup). Override when running a forked image that exposes health on different routes. See issue #216.",
           "properties": {
-            "startup":   { "$ref": "#/$defs/probeSpec" },
-            "liveness":  { "$ref": "#/$defs/probeSpec" },
-            "readiness": { "$ref": "#/$defs/probeSpec" }
+            "startup": {
+              "$ref": "#/$defs/probeSpec"
+            },
+            "liveness": {
+              "$ref": "#/$defs/probeSpec"
+            },
+            "readiness": {
+              "$ref": "#/$defs/probeSpec"
+            }
           },
           "additionalProperties": false
         }
@@ -184,23 +275,32 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "When true (default), the chart deploys an in-cluster Postgres StatefulSet (with PgBouncer sidecar). When false, the chart skips all Postgres + PgBouncer resources — the operator must supply 'ConnectionStrings__DefaultConnection' in 'auth.secretName' pointing at an external Postgres (e.g. Azure Database for PostgreSQL Flexible Server, RDS, an existing in-cluster CNPG cluster, or host-level Postgres)."
+          "description": "When true (default), the chart deploys an in-cluster Postgres StatefulSet (with PgBouncer sidecar). When false, the chart skips all Postgres + PgBouncer resources \u2014 the operator must supply 'ConnectionStrings__DefaultConnection' in 'auth.secretName' pointing at an external Postgres (e.g. Azure Database for PostgreSQL Flexible Server, RDS, an existing in-cluster CNPG cluster, or host-level Postgres)."
         },
-        "image": { "type": "string", "minLength": 1 },
-        "storage": { "type": "string", "minLength": 1 },
-        "secretName": { "type": "string", "minLength": 1 },
+        "image": {
+          "type": "string",
+          "minLength": 1
+        },
+        "storage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "secretName": {
+          "type": "string",
+          "minLength": 1
+        },
         "podCidr": {
           "type": "string",
           "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/([0-9]|[1-2][0-9]|3[0-2])$"
         },
         "external": {
           "type": "object",
-          "description": "External-Postgres parameters used by the NetworkPolicy egress rule when postgres.enabled=false. The connection string itself lives in the secret named by auth.secretName, NOT here — this block only carries the network-layer hints the chart cannot derive from the secret.",
+          "description": "External-Postgres parameters used by the NetworkPolicy egress rule when postgres.enabled=false. The connection string itself lives in the secret named by auth.secretName, NOT here \u2014 this block only carries the network-layer hints the chart cannot derive from the secret.",
           "properties": {
             "cidr": {
               "type": "string",
               "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/([0-9]|[1-2][0-9]|3[0-2])$|^([0-9a-fA-F:]+)/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$",
-              "description": "IPv4 or IPv6 CIDR for the external Postgres host (e.g. '10.20.0.0/16' for a managed-Postgres subnet). Used as the egress ipBlock in the API NetworkPolicy when postgres.enabled=false AND networkPolicy.enabled=true. Optional — if unset and networkPolicy.enabled=true, operators must supply their own egress rules."
+              "description": "IPv4 or IPv6 CIDR for the external Postgres host (e.g. '10.20.0.0/16' for a managed-Postgres subnet). Used as the egress ipBlock in the API NetworkPolicy when postgres.enabled=false AND networkPolicy.enabled=true. Optional \u2014 if unset and networkPolicy.enabled=true, operators must supply their own egress rules."
             },
             "port": {
               "type": "integer",
@@ -220,18 +320,32 @@
           "$comment": "When postgres.enabled is true (or omitted), the in-chart Postgres deployment requires 'image' and 'secretName'.",
           "if": {
             "not": {
-              "properties": { "enabled": { "const": false } },
-              "required": ["enabled"]
+              "properties": {
+                "enabled": {
+                  "const": false
+                }
+              },
+              "required": [
+                "enabled"
+              ]
             }
           },
-          "then": { "required": ["image", "secretName"] }
+          "then": {
+            "required": [
+              "image",
+              "secretName"
+            ]
+          }
         }
       ]
     },
     "pgbouncer": {
       "type": "object",
       "properties": {
-        "image": { "type": "string", "minLength": 1 },
+        "image": {
+          "type": "string",
+          "minLength": 1
+        },
         "resources": {
           "$ref": "#/$defs/k8sResources"
         }
@@ -240,7 +354,9 @@
     "migrations": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
+        "enabled": {
+          "type": "boolean"
+        },
         "resources": {
           "$ref": "#/$defs/k8sResources"
         }
@@ -249,14 +365,91 @@
     "metrics": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
+        "enabled": {
+          "type": "boolean"
+        },
         "serviceMonitor": {
           "type": "object",
           "properties": {
-            "namespace": { "type": "string" },
-            "interval": { "type": "string", "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$" },
-            "scrapeTimeout": { "type": "string", "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$" },
-            "labels": { "type": "object" }
+            "namespace": {
+              "type": "string"
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$"
+            },
+            "scrapeTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$"
+            },
+            "labels": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "description": "Aggregator up-sync (ADR-013). Spoke role: enabled + hubUrl/tokenEndpoint/clientId (secret via auth.secretName as Sync__ClientSecret). Hub role: knownInstances map only.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "hubUrl": {
+          "type": "string",
+          "description": "Hub base URL (absolute http(s)). Required when enabled."
+        },
+        "tokenEndpoint": {
+          "type": "string",
+          "description": "OIDC token endpoint for client_credentials. Required when enabled."
+        },
+        "clientId": {
+          "type": "string"
+        },
+        "tokenScope": {
+          "type": "string"
+        },
+        "interval": {
+          "type": "string",
+          "pattern": "^\\d{1,2}:\\d{2}:\\d{2}$",
+          "description": "TimeSpan hh:mm:ss."
+        },
+        "batchSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "knownInstances": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Authenticated client id -> origin instance id."
+        }
+      },
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "hubUrl",
+          "tokenEndpoint",
+          "clientId"
+        ],
+        "properties": {
+          "hubUrl": {
+            "minLength": 1
+          },
+          "tokenEndpoint": {
+            "minLength": 1
+          },
+          "clientId": {
+            "minLength": 1
           }
         }
       }

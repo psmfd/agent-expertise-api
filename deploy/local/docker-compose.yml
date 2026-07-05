@@ -66,6 +66,12 @@ services:
       AUTH__APIKEY: ${AUTH__APIKEY}
       Onnx__ModelPath: models/model.onnx
       Onnx__VocabPath: models/vocab.txt
+      # Aggregator up-sync (ADR-013) — off by default; see .env.example.
+      Sync__Enabled: ${SYNC__ENABLED:-false}
+      Sync__HubUrl: ${SYNC__HUBURL:-}
+      Sync__TokenEndpoint: ${SYNC__TOKENENDPOINT:-}
+      Sync__ClientId: ${SYNC__CLIENTID:-}
+      Sync__ClientSecret: ${SYNC__CLIENTSECRET:-}
     depends_on:
       pgbouncer:
         condition: service_healthy
