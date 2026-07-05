@@ -517,6 +517,24 @@ pending EF Core migrations and is idempotent (no-op when up to date).
   The flag is accepted by `scripts/migrate.sh` directly for standalone use,
   and by `scripts/install.sh` / `scripts/install.ps1` which pass it through.
 
+#### Backup & restore
+
+Operator procedures live in the
+[Backup & Restore Runbook](docs/operations/backup-restore-runbook.md):
+
+- **Part A — seed from an existing pg_dump** (older hosted instance →
+  fresh local install): restore-before-migrate ordering, pre-migrate
+  verification queries, the `Tenant='legacy'` remediation trap, and the
+  `rehash`/`reembed` follow-ups.
+- **Part B — ongoing provenance-verified backups** ([ADR-012](adrs/012-backup-artifact-format.md)):
+  `backup`/`restore` CLI verbs producing an age-encrypted, cosign-signed
+  NDJSON artifact with per-record Merkle hashing, orchestrated by
+  `expertise-apictl backup-init | backup | restore` (#340).
+
+Backup artifacts contain Drafts, Rejected entries, and the audit log —
+treat them as sensitive (the tooling chmods them 600) even though the
+payload is encrypted.
+
 #### Upgrade safety
 
 `scripts/install.sh` is safe to re-run for upgrades. Each invocation:
@@ -855,6 +873,8 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | Scanning stack (CodeQL, Trivy, Hadolint, OSV-Scanner) | [ADR-004](adrs/004-security-scanning-stack.md) |
 | Idempotency-Key handling and replay semantics (Part D C3) | [ADR-010](adrs/010-idempotency-key-handling.md) |
 | Cosign-signed published tarball over SDK-on-host for Archetype A2 install | [ADR-011](adrs/011-deployment-artifact-format.md) |
+| Application-level signed + encrypted backup artifact (format, trust policy) | [ADR-012](adrs/012-backup-artifact-format.md) |
+| Aggregator up-sync: draft-only scope as the knowledge-supply-chain control | [ADR-013](adrs/013-aggregator-upsync.md) |
 
 ## License
 
