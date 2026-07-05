@@ -440,6 +440,10 @@ The three actor classes are mutually exclusive in order `Agent ↣ Service ↣ H
 
 **Detector / heuristic versioning.** `_hygiene.version` ships at `1.0`; the detector class list is enumerated in `_hygiene.detectors` so consumers can reason about coverage and trigger re-scan on version bump. The phone detector ships strict E.164-only (requires leading `+`) in v1.0; US-without-`+` is a known gap, deferred until real content shows demand. The AWS-secret detector requires a context word (`aws_secret_access_key=`, `secret=`, etc.) within 32 characters of the candidate 40-char base64-ish run — false-positive cost on bare base64-ish strings in code samples would otherwise dominate.
 
+### Part D backup-artifact note (ADR-012)
+
+The `backup` CLI verb produces a **full-fidelity cross-tenant extract**: every tenant's entries in every review state (including Drafts and Rejected content), the complete audit log, and — because it bypasses the read pipeline entirely — none of the C6/C7 response-hygiene transforms. It is therefore strictly more privileged than `GET /audit/{id}/raw` and is deliberately **CLI-only**: no HTTP endpoint exists or may be added, so no bearer token of any scope can reach it (same D2 path-dependence reasoning as the raw-audit design). Compensating controls on the artifact itself: the payload is age-encrypted at rest, the manifest is signed via `ssh-keygen -Y` (dedicated ed25519 key; the `allowed_signers` file is the offline trust root — ADR-012 Amendment 1), the wrapper chmods artifacts 600, and restore is fail-closed with per-record quarantine (ADR-012's trust policy). Content restored from a backup re-enters the API through the normal read path, so hygiene wrapping still applies at serve time — the artifact bypasses hygiene only while it exists as a file, which is why the runbook instructs operators to treat artifacts as sensitive despite the encryption.
+
 ---
 
 ## Part E — Currency and deprecation notes

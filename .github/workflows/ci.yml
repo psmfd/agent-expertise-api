@@ -188,6 +188,9 @@ jobs:
       - name: Run migrate-timeout tests
         run: bash tests/install/test-migrate-timeout.sh
 
+      - name: Run apictl backup subcommand tests
+        run: bash tests/backup/test-apictl-backup.sh
+
   apictl-restart-race-macos:
     name: apictl restart race regression (macOS)
     runs-on: macos-latest

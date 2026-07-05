@@ -62,7 +62,21 @@ dotnet run --project src/ExpertiseApi -- reembed [--batch-size 50]
 # Backfill IntegrityHash for entries created before the secure-rebuild data model
 # (entries with IntegrityHash = NULL). Idempotent — only touches null rows.
 dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50]
+
+# Export all entries (every tenant + review state) + audit log as NDJSON with an
+# RFC 6962 Merkle manifest (ADR-012). Plain files only — signing/encryption is
+# scripts/expertise-apictl's job (backup-init | backup | restore subcommands).
+dotnet run --project src/ExpertiseApi -- backup --output <dir> [--instance-id <id>] [--batch-size 500]
+
+# Import a decrypted backup payload. Replace mode only (empty target); verifies
+# per-record hashes + Merkle roots against the manifest; quarantines tampered
+# records as Draft; --force-draft re-gates every entry (foreign-backup seed).
+dotnet run --project src/ExpertiseApi -- restore --input <dir> [--mode replace] [--force-draft] [--batch-size 500]
 ```
+
+Operator-facing backup/restore (signed + age-encrypted artifacts, key/dependency
+bootstrap) goes through `scripts/expertise-apictl backup-init | backup | restore` —
+see [`docs/operations/backup-restore-runbook.md`](docs/operations/backup-restore-runbook.md).
 
 ## Model Download
 

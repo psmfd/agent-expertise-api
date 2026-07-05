@@ -527,8 +527,9 @@ Operator procedures live in the
   verification queries, the `Tenant='legacy'` remediation trap, and the
   `rehash`/`reembed` follow-ups.
 - **Part B — ongoing provenance-verified backups** ([ADR-012](adrs/012-backup-artifact-format.md)):
-  `backup`/`restore` CLI verbs producing an age-encrypted, cosign-signed
-  NDJSON artifact with per-record Merkle hashing, orchestrated by
+  `backup`/`restore` CLI verbs producing an age-encrypted, signature-verified
+  (`ssh-keygen -Y`, ADR-012 Amendment 1) NDJSON artifact with per-record
+  Merkle hashing, orchestrated by
   `expertise-apictl backup-init | backup | restore` (#340).
 
 Backup artifacts contain Drafts, Rejected entries, and the audit log —

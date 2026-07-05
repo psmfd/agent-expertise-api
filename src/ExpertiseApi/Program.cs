@@ -467,6 +467,20 @@ if (RehashCommand.IsRehashRequested(args))
     return;
 }
 
+if (BackupCommand.IsBackupRequested(args))
+{
+    // Exit code matters: scripts/expertise-apictl backup aborts (and never signs or
+    // encrypts a partial payload) when the export verb fails. Same mechanism as migrate.
+    Environment.ExitCode = await BackupCommand.RunAsync(app, args);
+    return;
+}
+
+if (RestoreCommand.IsRestoreRequested(args))
+{
+    Environment.ExitCode = await RestoreCommand.RunAsync(app, args);
+    return;
+}
+
 // ForwardedHeaders must run before authentication so HttpContext.Connection.RemoteIpAddress
 // reflects the real client IP when the audit pipeline reads it.
 app.UseForwardedHeaders();

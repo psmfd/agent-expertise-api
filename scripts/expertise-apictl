@@ -10,7 +10,17 @@
 #   expertise-apictl start|stop|restart|status
 #   expertise-apictl logs [-f] [-n LINES]
 #   expertise-apictl health
+#   expertise-apictl backup-init [--install-deps]
+#   expertise-apictl backup [--output DIR] [--instance-id ID]
+#   expertise-apictl restore ARTIFACT [--force-draft] [--i-accept-unsigned-backup]
 #   expertise-apictl --help
+#
+# backup-init bootstraps the signed+encrypted backup surface (ADR-012):
+# installs age/jq when missing (--install-deps), generates the ed25519
+# signing key (ssh-keygen) and age identity under ~/.config/expertise-api/
+# backup/, and writes backup.env. backup/restore orchestrate the ExpertiseApi
+# backup/restore CLI verbs plus tar/gzip/age and ssh-keygen -Y signatures;
+# see docs/operations/backup-restore-runbook.md.
 #
 
 set -euo pipefail
@@ -24,7 +34,7 @@ READY_TIMEOUT="${EXPERTISE_API_READY_TIMEOUT:-30}"
 log() { printf '[expertise-apictl] %s\n' "$1"; }
 err() { printf '[expertise-apictl] ERROR: %s\n' "$1" >&2; exit 1; }
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
 
 detect_os() {
   case "$(uname -s)" in
@@ -61,7 +71,15 @@ _detect_install_scope() {
   fi
 }
 
-if [[ "${OS}" == "macos" ]]; then
+# The system-scope guard applies to service-LIFECYCLE subcommands only —
+# backup-init/backup/restore talk to the database and filesystem, never to
+# launchd, so they work fine against a --system install.
+case "${1:-}" in
+  backup-init|backup|restore) _lifecycle_cmd=0 ;;
+  *)                          _lifecycle_cmd=1 ;;
+esac
+
+if [[ "${OS}" == "macos" && "${_lifecycle_cmd}" == "1" ]]; then
   _recorded_scope="$(_detect_install_scope)"
   if [[ "${_recorded_scope}" == "system" ]]; then
     cat >&2 <<'SYSTEM_SCOPE_MSG'
@@ -254,6 +272,341 @@ cmd_health() {
   fi
 }
 
+# ===========================================================================
+# Backup / restore orchestration (ADR-012).
+#
+# Division of labour: the ExpertiseApi `backup`/`restore` CLI verbs own
+# NDJSON + Merkle + manifest; these subcommands own tar/gzip/age signing and
+# key/dependency bootstrap. Trust posture: `ssh-keygen -Y sign/verify` with a
+# dedicated passwordless ed25519 key (ADR-012 Amendment 1 — cosign's v3 CLI
+# removed the stable offline detached-signature flow this path needs; OpenSSH
+# signatures are ubiquitous, offline, and CLI-stable). The allowed_signers
+# file, not any transparency log, is the trust root. Config values are read
+# with grep+sed, never sourced (same posture as install.env above).
+# ===========================================================================
+
+BACKUP_CONFIG_DIR="${EXPERTISE_API_BACKUP_CONFIG:-${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/backup}"
+BACKUP_ENV_FILE="${BACKUP_CONFIG_DIR}/backup.env"
+SECRETS_FILE_DEFAULT="${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/secrets.env"
+
+_backup_env_get() {
+  # _backup_env_get KEY — plain key=value read, no shell execution.
+  [[ -f "${BACKUP_ENV_FILE}" ]] || return 0
+  grep -m1 "^$1=" "${BACKUP_ENV_FILE}" | sed "s/^$1=//" 2>/dev/null || true
+}
+
+_sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+_backup_missing_deps() {
+  # ssh-keygen ships with OpenSSH on every supported OS; it is listed anyway
+  # so a pathological minimal container gets an actionable error.
+  local missing=""
+  for tool in ssh-keygen age age-keygen jq tar gzip; do
+    command -v "${tool}" >/dev/null 2>&1 || missing="${missing} ${tool}"
+  done
+  printf '%s' "${missing# }"
+}
+
+_resolve_bin_dir() {
+  # Precedence: env override -> install.env prefix -> install.sh default.
+  if [[ -n "${EXPERTISE_API_BIN_DIR:-}" ]]; then
+    printf '%s' "${EXPERTISE_API_BIN_DIR}"
+    return 0
+  fi
+  local xdg_config install_env prefix
+  xdg_config="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  install_env="${xdg_config}/expertise-api/install.env"
+  if [[ -f "${install_env}" ]]; then
+    prefix=$(grep -m1 '^EXPERTISE_API_PREFIX=' "${install_env}" \
+             | sed 's/^EXPERTISE_API_PREFIX=//' 2>/dev/null || true)
+    if [[ -n "${prefix}" ]]; then
+      printf '%s' "${prefix}/bin"
+      return 0
+    fi
+  fi
+  printf '%s' "${HOME}/.local/share/expertise-api/bin"
+}
+
+_run_api_verb() {
+  # _run_api_verb VERB [ARGS...] — source secrets + mirror the launch
+  # wrapper's env (same rationale as scripts/migrate.sh: the DI graph must
+  # match the runtime graph, and the connection string only lives in
+  # secrets.env), then invoke the installed binary.
+  local bin_dir prefix secrets_file
+  bin_dir="$(_resolve_bin_dir)"
+  prefix="$(dirname "${bin_dir}")"
+  secrets_file="${EXPERTISE_API_SECRETS_FILE:-${SECRETS_FILE_DEFAULT}}"
+
+  if [[ -f "${secrets_file}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${secrets_file}"
+    set +a
+  else
+    log "WARNING: no secrets file at ${secrets_file} — relying on environment"
+  fi
+
+  export ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Production}"
+  export Onnx__ModelPath="${Onnx__ModelPath:-${prefix}/models/model.onnx}"
+  export Onnx__VocabPath="${Onnx__VocabPath:-${prefix}/models/vocab.txt}"
+
+  local conn="${ConnectionStrings__DefaultConnection:-}"
+  [[ -n "${conn}" ]] || err "ConnectionStrings__DefaultConnection is not set — edit ${secrets_file} first"
+  [[ "${conn}" != *CHANGE_ME* ]] || err "ConnectionStrings__DefaultConnection still contains CHANGE_ME — edit ${secrets_file} first"
+
+  if [[ -x "${bin_dir}/ExpertiseApi" ]]; then
+    "${bin_dir}/ExpertiseApi" "$@"
+  elif [[ -f "${bin_dir}/ExpertiseApi.dll" ]]; then
+    command -v dotnet >/dev/null 2>&1 || err "dotnet CLI not found (required for fdd layout at ${bin_dir})"
+    dotnet "${bin_dir}/ExpertiseApi.dll" "$@"
+  else
+    err "no ExpertiseApi binary at ${bin_dir} — run scripts/install.sh first (or set EXPERTISE_API_BIN_DIR)"
+  fi
+}
+
+_backup_preflight() {
+  # Validates the whole backup surface with actionable errors. Every failure
+  # points at backup-init, which fixes all of them.
+  local missing
+  missing="$(_backup_missing_deps)"
+  [[ -z "${missing}" ]] || err "missing tools:${missing:+ }${missing} — run: expertise-apictl backup-init --install-deps"
+  [[ -f "${BACKUP_ENV_FILE}" ]] || err "no backup config at ${BACKUP_ENV_FILE} — run: expertise-apictl backup-init"
+
+  SIGNING_KEY_FILE="$(_backup_env_get SIGNING_KEY)"
+  ALLOWED_SIGNERS_FILE="$(_backup_env_get ALLOWED_SIGNERS)"
+  AGE_IDENTITY_FILE="$(_backup_env_get AGE_IDENTITY)"
+  AGE_RECIPIENTS_FILE="$(_backup_env_get AGE_RECIPIENTS)"
+  BACKUP_OUTPUT_DIR="$(_backup_env_get OUTPUT_DIR)"
+
+  for pair in "SIGNING_KEY:${SIGNING_KEY_FILE}" "ALLOWED_SIGNERS:${ALLOWED_SIGNERS_FILE}" \
+              "AGE_IDENTITY:${AGE_IDENTITY_FILE}" "AGE_RECIPIENTS:${AGE_RECIPIENTS_FILE}"; do
+    local key="${pair%%:*}" val="${pair#*:}"
+    [[ -n "${val}" ]] || err "${key} not set in ${BACKUP_ENV_FILE} — re-run: expertise-apictl backup-init"
+    [[ -f "${val}" ]] || err "${key} points at missing file ${val} — re-run: expertise-apictl backup-init"
+  done
+}
+
+cmd_backup_init() {
+  local install_deps=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --install-deps) install_deps=1; shift ;;
+      *) err "unknown backup-init flag: $1" ;;
+    esac
+  done
+
+  local missing
+  missing="$(_backup_missing_deps)"
+  if [[ -n "${missing}" ]]; then
+    if (( install_deps == 1 )); then
+      case "${OS}" in
+        macos)
+          command -v brew >/dev/null 2>&1 || err "Homebrew required for --install-deps on macOS (https://brew.sh)"
+          local brew_pkgs=""
+          for tool in ${missing}; do
+            case "${tool}" in
+              age-keygen) [[ " ${brew_pkgs} " == *" age "* ]] || brew_pkgs="${brew_pkgs} age" ;;
+              age)        [[ " ${brew_pkgs} " == *" age "* ]] || brew_pkgs="${brew_pkgs} age" ;;
+              *)          brew_pkgs="${brew_pkgs} ${tool}" ;;
+            esac
+          done
+          log "installing via brew:${brew_pkgs}"
+          # shellcheck disable=SC2086
+          brew install ${brew_pkgs} ;;
+        linux|wsl_to_windows)
+          command -v apt-get >/dev/null 2>&1 \
+            || err "--install-deps supports apt-based distros (Debian/Ubuntu); install${missing} via your package manager and re-run"
+          local apt_pkgs=""
+          for tool in ${missing}; do
+            case "${tool}" in
+              age-keygen) [[ " ${apt_pkgs} " == *" age "* ]] || apt_pkgs="${apt_pkgs} age" ;;
+              ssh-keygen) apt_pkgs="${apt_pkgs} openssh-client" ;;
+              *) apt_pkgs="${apt_pkgs} ${tool}" ;;
+            esac
+          done
+          log "installing via apt:${apt_pkgs}"
+          # shellcheck disable=SC2086
+          sudo apt-get install -y ${apt_pkgs} ;;
+      esac
+    else
+      err "missing tools:${missing:+ }${missing} — re-run with --install-deps, or install them and re-run"
+    fi
+  fi
+
+  mkdir -p "${BACKUP_CONFIG_DIR}"
+  chmod 700 "${BACKUP_CONFIG_DIR}"
+
+  local signing_key="${BACKUP_CONFIG_DIR}/backup_signing_key"
+  local allowed_signers="${BACKUP_CONFIG_DIR}/allowed_signers"
+  local age_identity="${BACKUP_CONFIG_DIR}/age-identity.txt"
+  local age_recipients="${BACKUP_CONFIG_DIR}/age-recipients.txt"
+
+  if [[ -f "${signing_key}" ]]; then
+    log "signing key present at ${signing_key} (preserved — never regenerated silently)"
+  else
+    # Passwordless by design: `apictl backup` must run unattended (cron) and
+    # `restore` must work mid-disaster with no interactive prompt. The key is
+    # protected by 700/600 file permissions; rotate to a passphrase-protected
+    # key only if you accept prompts on every sign.
+    log "generating ed25519 signing key (passwordless, chmod 600)"
+    ssh-keygen -t ed25519 -N "" -q -C "expertise-backup" -f "${signing_key}"
+  fi
+  chmod 600 "${signing_key}"
+
+  if [[ ! -f "${allowed_signers}" ]]; then
+    # ssh-keygen -Y verify trusts principals listed here — this file is the
+    # backup trust root (ADR-012 Amendment 1). Format: "<principal> <keytype> <key>".
+    printf 'expertise-backup %s\n' "$(cut -d' ' -f1-2 < "${signing_key}.pub")" > "${allowed_signers}"
+  fi
+
+  if [[ -f "${age_identity}" ]]; then
+    log "age identity present at ${age_identity} (preserved)"
+  else
+    log "generating age identity (chmod 600)"
+    age-keygen -o "${age_identity}" 2>/dev/null
+  fi
+  chmod 600 "${age_identity}"
+
+  if [[ ! -f "${age_recipients}" ]]; then
+    # Recipients file starts with this host's own public key; append a second
+    # recipient (offline/escrow key) here so backups stay decryptable if this
+    # host's identity is lost — see the runbook's key-discipline note.
+    grep -m1 '^# public key: ' "${age_identity}" | sed 's/^# public key: //' > "${age_recipients}"
+    [[ -s "${age_recipients}" ]] || err "could not extract public key from ${age_identity}"
+  fi
+
+  if [[ ! -f "${BACKUP_ENV_FILE}" ]]; then
+    cat > "${BACKUP_ENV_FILE}" <<EOF
+# backup.env — expertise-apictl backup configuration (ADR-012).
+# Plain key=value; read with grep+sed, never sourced. chmod 600.
+SIGNING_KEY=${signing_key}
+ALLOWED_SIGNERS=${allowed_signers}
+AGE_IDENTITY=${age_identity}
+AGE_RECIPIENTS=${age_recipients}
+OUTPUT_DIR=${HOME}/expertise-backups
+EOF
+    chmod 600 "${BACKUP_ENV_FILE}"
+    log "wrote ${BACKUP_ENV_FILE}"
+  else
+    log "backup.env present at ${BACKUP_ENV_FILE} (preserved)"
+  fi
+
+  _backup_preflight
+  log "backup-init: OK — keys in ${BACKUP_CONFIG_DIR}, artifacts will land in $(_backup_env_get OUTPUT_DIR)"
+  log "IMPORTANT: back up ${age_identity} (losing it means losing your backups) and consider adding a second recipient to ${age_recipients}"
+}
+
+cmd_backup() {
+  local output_override="" instance_id
+  instance_id="$(hostname -s 2>/dev/null || uname -n)"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output)      output_override="${2:?--output needs a directory}"; shift 2 ;;
+      --instance-id) instance_id="${2:?--instance-id needs a value}"; shift 2 ;;
+      *) err "unknown backup flag: $1" ;;
+    esac
+  done
+
+  _backup_preflight
+  local out_dir="${output_override:-${BACKUP_OUTPUT_DIR}}"
+  mkdir -p "${out_dir}"
+
+  local workdir ts artifact
+  workdir="$(mktemp -d)"
+  trap 'rm -rf "${workdir}"' EXIT
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  artifact="${out_dir}/expertise-backup-${instance_id}-${ts}.tar"
+
+  log "exporting via ExpertiseApi backup verb"
+  _run_api_verb backup --output "${workdir}/payload" --instance-id "${instance_id}" \
+    || err "export verb failed — nothing was signed or written to ${out_dir}"
+
+  log "compressing + encrypting payload"
+  tar -czf "${workdir}/payload.tar.gz" -C "${workdir}/payload" entries.jsonl audit.jsonl
+  age -e -R "${AGE_RECIPIENTS_FILE}" -o "${workdir}/payload.tar.gz.age" "${workdir}/payload.tar.gz"
+  rm -f "${workdir}/payload.tar.gz" "${workdir}/payload/entries.jsonl" "${workdir}/payload/audit.jsonl"
+
+  # Bind the encrypted payload to the manifest BEFORE signing, so the
+  # signature covers the payload hash (ADR-012 manifest schema).
+  local payload_sha
+  payload_sha="$(_sha256_file "${workdir}/payload.tar.gz.age")"
+  jq --arg sha "${payload_sha}" '. + {payloadSha256: $sha}' \
+    "${workdir}/payload/manifest.json" > "${workdir}/manifest.json"
+
+  log "signing manifest (ssh-keygen -Y, offline — allowed_signers is the trust root)"
+  ssh-keygen -Y sign -f "${SIGNING_KEY_FILE}" -n expertise-backup -q \
+    "${workdir}/manifest.json"
+
+  tar -cf "${artifact}" -C "${workdir}" payload.tar.gz.age manifest.json manifest.json.sig
+  chmod 600 "${artifact}"
+  log "backup: OK — ${artifact}"
+}
+
+cmd_restore() {
+  local artifact="" force_draft=0 accept_unsigned=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force-draft)              force_draft=1; shift ;;
+      --i-accept-unsigned-backup) accept_unsigned=1; shift ;;
+      -*) err "unknown restore flag: $1" ;;
+      *)  [[ -z "${artifact}" ]] || err "multiple artifacts given"; artifact="$1"; shift ;;
+    esac
+  done
+  [[ -n "${artifact}" ]] || err "usage: expertise-apictl restore ARTIFACT.tar [--force-draft] [--i-accept-unsigned-backup]"
+  [[ -f "${artifact}" ]] || err "artifact not found: ${artifact}"
+
+  _backup_preflight
+
+  local workdir
+  workdir="$(mktemp -d)"
+  trap 'rm -rf "${workdir}"' EXIT
+
+  # Member allowlist before extraction (ADR-011 tar-hardening posture): the
+  # outer tar must contain exactly the three expected members, no paths.
+  local members
+  members="$(tar -tf "${artifact}")"
+  if [[ "$(printf '%s\n' "${members}" | sort)" != "$(printf 'manifest.json\nmanifest.json.sig\npayload.tar.gz.age' | sort)" ]]; then
+    err "unexpected artifact contents: $(printf '%s' "${members}" | tr '\n' ' ') — refusing to extract"
+  fi
+  tar -xf "${artifact}" -C "${workdir}"
+
+  if (( accept_unsigned == 1 )); then
+    log "WARNING: --i-accept-unsigned-backup — SKIPPING signature verification (dev escape hatch, ADR-012)"
+  else
+    log "verifying manifest signature (fail closed)"
+    ssh-keygen -Y verify -f "${ALLOWED_SIGNERS_FILE}" \
+      -I expertise-backup -n expertise-backup \
+      -s "${workdir}/manifest.json.sig" \
+      < "${workdir}/manifest.json" >/dev/null 2>&1 \
+      || err "manifest signature verification FAILED — refusing to restore (pass --i-accept-unsigned-backup only if you understand ADR-012's trust policy)"
+  fi
+
+  log "verifying payload hash against manifest"
+  local declared actual
+  declared="$(jq -r '.payloadSha256 // empty' "${workdir}/manifest.json")"
+  [[ -n "${declared}" ]] || err "manifest carries no payloadSha256 — artifact was not produced by 'expertise-apictl backup'"
+  actual="$(_sha256_file "${workdir}/payload.tar.gz.age")"
+  [[ "${declared}" == "${actual}" ]] || err "payload hash mismatch (manifest ${declared}, actual ${actual}) — refusing to restore"
+
+  log "decrypting payload"
+  age -d -i "${AGE_IDENTITY_FILE}" -o "${workdir}/payload.tar.gz" "${workdir}/payload.tar.gz.age"
+  mkdir -p "${workdir}/payload"
+  tar -xzf "${workdir}/payload.tar.gz" -C "${workdir}/payload"
+  cp "${workdir}/manifest.json" "${workdir}/payload/manifest.json"
+
+  log "importing via ExpertiseApi restore verb"
+  local verb_args=(restore --input "${workdir}/payload" --mode replace)
+  (( force_draft == 0 )) || verb_args+=(--force-draft)
+  _run_api_verb "${verb_args[@]}" || err "restore verb failed — see log output above"
+  log "restore: OK"
+}
+
 case "${1:-}" in
   start)      shift; cmd_start "$@" ;;
   stop)       shift; cmd_stop "$@" ;;
@@ -261,6 +614,9 @@ case "${1:-}" in
   status)     shift; cmd_status "$@" ;;
   logs)       shift; cmd_logs "$@" ;;
   health)     shift; cmd_health "$@" ;;
+  backup-init) shift; cmd_backup_init "$@" ;;
+  backup)     shift; cmd_backup "$@" ;;
+  restore)    shift; cmd_restore "$@" ;;
   ''|-h|--help) usage ;;
   *) err "unknown subcommand: $1 (try --help)" ;;
 esac
