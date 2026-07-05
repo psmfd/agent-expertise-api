@@ -439,14 +439,23 @@ internal class ExpertiseRepository(
             .FirstOrDefaultAsync(ct);
     }
 
+    [SuppressMessage("Globalization", "CA1304:Specify CultureInfo",
+        Justification = "e.Title.ToLower() in this LINQ expression translates to PostgreSQL's LOWER() function and never executes on the .NET runtime; the input list is normalized with ToLowerInvariant() above. Same rationale as FindExactMatchAsync.")]
+    [SuppressMessage("Globalization", "CA1311:Specify a culture or use an invariant version",
+        Justification = "e.Title.ToLower() translates to SQL LOWER(); culture has no effect on the SQL output.")]
     public async Task<List<ExpertiseEntry>> FindExactMatchesAsync(string domain, IReadOnlyList<string> titles, TenantContext ctx, CancellationToken ct)
     {
         var lowerTitles = titles.Select(t => t.ToLowerInvariant()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // e.Title.ToLower() (NOT ToLowerInvariant): EF Core translates ToLower() to SQL
+        // LOWER() but cannot translate ToLowerInvariant(), which made this method throw
+        // at runtime — failing EVERY valid /expertise/batch item at the dedup phase.
+        // Latent since the batch endpoint landed; surfaced by the first integration test
+        // to exercise /expertise/batch end-to-end (SyncOriginAttributionTests, ADR-013).
         return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
             .Where(e => e.DeprecatedAt == null)
             .Where(e => e.ReviewState != ReviewState.Rejected)
             .Where(e => e.Domain == domain)
-            .Where(e => lowerTitles.Contains(e.Title.ToLowerInvariant()))
+            .Where(e => lowerTitles.Contains(e.Title.ToLower()))
             .ToListAsync(ct);
     }
 
@@ -486,6 +495,25 @@ internal class ExpertiseRepository(
             .Where(e => e.ReviewState != ReviewState.Rejected)
             .Where(e => e.Domain == domain)
             .Where(e => e.Embedding != null)
+            .ToListAsync(ct);
+    }
+
+    public async Task<List<ExpertiseEntry>> ListSharedApprovedUpdatedAfterAsync(
+        DateTime afterUpdatedAt, Guid afterId, int limit, CancellationToken ct)
+    {
+        // No TenantContext by design (see interface doc): scope is hard-coded to the
+        // shared namespace. Runs from a background-service scope where the EF global
+        // tenant filter's accessor returns null (short-circuits) — this explicit WHERE
+        // is the correctness driver, same posture as every other method here.
+        return await db.ExpertiseEntries
+            .Where(e => e.Tenant == "shared")
+            .Where(e => e.ReviewState == ReviewState.Approved)
+            .Where(e => e.DeprecatedAt == null)
+            .Where(e => e.UpdatedAt > afterUpdatedAt
+                        || (e.UpdatedAt == afterUpdatedAt && e.Id > afterId))
+            .OrderBy(e => e.UpdatedAt).ThenBy(e => e.Id)
+            .Take(limit)
+            .AsNoTracking()
             .ToListAsync(ct);
     }
 

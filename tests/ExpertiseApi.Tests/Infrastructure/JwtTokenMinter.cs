@@ -28,7 +28,8 @@ public static class JwtTokenMinter
         TimeSpan? expiresIn = null,
         string scopeClaim = "scope",
         string? issuer = null,
-        string? audience = null)
+        string? audience = null,
+        string? azp = null)
     {
         var handler = new JsonWebTokenHandler();
 
@@ -37,6 +38,11 @@ public static class JwtTokenMinter
             ["sub"] = sub ?? "test-principal",
             [scopeClaim] = string.Join(' ', scopes)
         };
+
+        // client_credentials-shaped tokens: azp carries the client id. Pass
+        // sub == azp to have ActorClassResolver classify the caller as Service.
+        if (azp is not null)
+            claims["azp"] = azp;
 
         if (groups is not null)
             claims["groups"] = groups.ToArray();

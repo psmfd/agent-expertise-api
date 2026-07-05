@@ -98,7 +98,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Pinned secrets-file schema version. Bump when the format changes; add
 # a per-version fixup in `migrate_secrets_schema` and re-export.
-SECRETS_SCHEMA_VERSION=1
+# v2 adds the documented Sync__* (ADR-013 up-sync) block to the stub. Existing
+# v1 files keep working — detect_secrets_schema_version warns, never rewrites.
+SECRETS_SCHEMA_VERSION=2
 
 # ---------------------------------------------------------------------------
 # Defaults & arg parsing
@@ -730,6 +732,14 @@ ensure_config_stubs() {
 #
 # When Auth:Mode=Oidc, populate per-issuer overrides via Auth__Oidc__Issuers__N__*
 # environment variables — see appsettings.json for the shape.
+#
+# Aggregator up-sync (ADR-013, spoke role only — leave unset for a standalone
+# instance). The hub credential must carry expertise.write.draft ONLY:
+#   Sync__Enabled=true
+#   Sync__HubUrl="https://hub.example.com"
+#   Sync__TokenEndpoint="https://idp.example.com/oauth2/token"
+#   Sync__ClientId="spoke-client-id"
+#   Sync__ClientSecret="CHANGE_ME"
 EOF
     chmod 600 "${SECRETS_FILE}.tmp"
     mv -f -- "${SECRETS_FILE}.tmp" "${SECRETS_FILE}"

@@ -66,6 +66,11 @@ public class ExpertiseEntry
     public string? ReviewedBy { get; set; }
     public DateTime? ReviewedAt { get; set; }
     public string? RejectionReason { get; set; }
+
+    // Aggregator up-sync attribution (ADR-013) — informational, excluded from
+    // canonical hash and dedup equality (like Source/SourceVersion)
+    public string? OriginInstanceId { get; set; }        // server-set from Sync:KnownInstances, never from body
+    public string? OriginAuthorPrincipal { get; set; }   // origin-side author, body-supplied, 256-char cap
 }
 
 public enum EntryType  { IssueFix, Caveat, Requirement, Pattern }
@@ -208,6 +213,10 @@ Soft-deleting a `Tenant = "shared"` entry requires `expertise.write.approve` (re
 Every write path writes one `ExpertiseAuditLog` row in the same transaction as the entry mutation. The repository owns this — `ExpertiseRepository.BuildAuditRow` constructs the row using `IHttpContextAccessor` for `IpAddress`, falling back to `null` when no `HttpContext` (CLI). `BeforeHash` / `AfterHash` are SHA-256 over the canonical content fields (`IntegrityHashService`); approve/reject leave content unchanged so before == after, but the `Action` discriminates the transition.
 
 `GET /audit` is `expertise.admin`-only and cross-tenant. Query parameters: `entryId`, `principal`, `action`, `from`, `to`, `limit` (1-200, default 50), plus cursor pagination via `afterTimestamp` + `afterId`.
+
+### Aggregator up-sync (ADR-013)
+
+Hub-and-spoke; each spoke is a tenant on the hub (ADR-001 unmodified). The spoke's `ExpertiseSyncWorker` (`BackgroundService`, `Sync` config section, disabled by default) pages Approved + `shared`-tenant entries past a `SyncStates` keyset cursor `(LastSyncedUpdatedAt, LastSyncedId)` via `IExpertiseRepository.ListSharedApprovedUpdatedAfterAsync` and POSTs ≤100-item batches to the hub's existing `POST /expertise/batch` under OIDC `client_credentials`. The spoke's hub credential carries `expertise.write.draft` ONLY, so ADR-003 semantics land every synced entry as Draft in the spoke's hub-side tenant — the supply-chain control is the existing authorization layer, not sync code. At-least-once delivery: `/batch` is outside Idempotency-Key scope (ADR-010); replays come back `Duplicate` (success). The cursor advances only when a page lands entirely as Created/Duplicate/Rejected; any transient `Failed` (or HTTP/token failure) retries the whole page next tick. `Rejected` is permanent — logged and skipped. Hub-side `Sync:KnownInstances` (client id → instance id) drives server-set `OriginInstanceId`.
 
 ### ForwardedHeaders middleware
 

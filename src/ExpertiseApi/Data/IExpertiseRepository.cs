@@ -99,6 +99,19 @@ internal interface IExpertiseRepository
     Task<ExpertiseEntry?> FindNearestInDomainAsync(string domain, Vector queryVector, double maxDistance, TenantContext ctx, CancellationToken ct = default);
 
     Task<List<ExpertiseEntry>> FindAllEmbeddingsInDomainAsync(string domain, TenantContext ctx, CancellationToken ct = default);
+
+    /// <summary>
+    /// Up-sync feed (ADR-013): Approved, non-deprecated entries in the cross-tenant
+    /// <c>shared</c> namespace strictly after the keyset cursor
+    /// <c>(afterUpdatedAt, afterId)</c>, ordered <c>(UpdatedAt, Id)</c> ascending.
+    /// Deliberately takes NO <see cref="TenantContext"/> — the caller is the
+    /// background <c>ExpertiseSyncWorker</c> (no HTTP context) and the scope is
+    /// hard-coded to <c>Tenant = "shared"</c>, which is narrower than any
+    /// caller-derived filter (every tenant can read shared). Tombstones
+    /// (<c>DeprecatedAt</c>) are excluded; propagation is a down-sync concern (#342).
+    /// </summary>
+    Task<List<ExpertiseEntry>> ListSharedApprovedUpdatedAfterAsync(
+        DateTime afterUpdatedAt, Guid afterId, int limit, CancellationToken ct = default);
 }
 
 /// <summary>

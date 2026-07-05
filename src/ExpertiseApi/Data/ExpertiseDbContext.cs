@@ -11,6 +11,7 @@ internal class ExpertiseDbContext(
     public DbSet<ExpertiseEntry> ExpertiseEntries => Set<ExpertiseEntry>();
     public DbSet<EmbeddingMetadata> EmbeddingMetadata => Set<EmbeddingMetadata>();
     public DbSet<ExpertiseAuditLog> ExpertiseAuditLogs => Set<ExpertiseAuditLog>();
+    public DbSet<SyncState> SyncStates => Set<SyncState>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -96,6 +97,13 @@ internal class ExpertiseDbContext(
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.ModelName).IsRequired();
+        });
+
+        // Spoke-side up-sync cursor (ADR-013). Singleton-row semantics are enforced at
+        // the call site (get-or-create), matching EmbeddingMetadata — no unique guard.
+        modelBuilder.Entity<SyncState>(entity =>
+        {
+            entity.HasKey(e => e.Id);
         });
 
         modelBuilder.Entity<ExpertiseAuditLog>(entity =>
