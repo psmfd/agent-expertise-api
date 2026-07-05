@@ -333,6 +333,28 @@ _resolve_bin_dir() {
   printf '%s' "${HOME}/.local/share/expertise-api/bin"
 }
 
+_resolve_secrets_file() {
+  # _resolve_secrets_file PREFIX — precedence: env override -> the SECRETS_FILE
+  # recorded in the install's launch wrapper (the single source of truth for
+  # the RUNNING service; installs with a custom --prefix/--config-dir put
+  # secrets.env outside the XDG default) -> XDG default.
+  local prefix="$1" wrapper recorded
+  if [[ -n "${EXPERTISE_API_SECRETS_FILE:-}" ]]; then
+    printf '%s' "${EXPERTISE_API_SECRETS_FILE}"
+    return 0
+  fi
+  wrapper="${prefix}/launch-expertise-api.sh"
+  if [[ -f "${wrapper}" ]]; then
+    recorded=$(grep -m1 '^SECRETS_FILE=' "${wrapper}" \
+               | sed 's/^SECRETS_FILE=//; s/^"//; s/"$//' 2>/dev/null || true)
+    if [[ -n "${recorded}" ]]; then
+      printf '%s' "${recorded}"
+      return 0
+    fi
+  fi
+  printf '%s' "${SECRETS_FILE_DEFAULT}"
+}
+
 _run_api_verb() {
   # _run_api_verb VERB [ARGS...] — source secrets + mirror the launch
   # wrapper's env (same rationale as scripts/migrate.sh: the DI graph must
@@ -341,7 +363,7 @@ _run_api_verb() {
   local bin_dir prefix secrets_file
   bin_dir="$(_resolve_bin_dir)"
   prefix="$(dirname "${bin_dir}")"
-  secrets_file="${EXPERTISE_API_SECRETS_FILE:-${SECRETS_FILE_DEFAULT}}"
+  secrets_file="$(_resolve_secrets_file "${prefix}")"
 
   if [[ -f "${secrets_file}" ]]; then
     set -a
