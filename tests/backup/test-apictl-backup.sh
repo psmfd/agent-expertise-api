@@ -54,14 +54,7 @@ STUB_DIR="${SANDBOX}/stubs"
 mkdir -p "${STUB_DIR}"
 
 write_stubs() {
-  cat > "${STUB_DIR}/cosign" <<'EOF'
-#!/usr/bin/env bash
-case "$1" in
-  version) printf '{"gitVersion":"v2.4.0"}\n' ;;
-  generate-key-pair) : > cosign.key; : > cosign.pub ;;
-  sign-blob|verify-blob) exit 0 ;;
-esac
-EOF
+  # ssh-keygen is real everywhere (OpenSSH) — only the age tools are stubbed.
   cat > "${STUB_DIR}/age-keygen" <<'EOF'
 #!/usr/bin/env bash
 out=""
@@ -72,7 +65,7 @@ EOF
 #!/usr/bin/env bash
 exit 0
 EOF
-  chmod +x "${STUB_DIR}/cosign" "${STUB_DIR}/age-keygen" "${STUB_DIR}/age"
+  chmod +x "${STUB_DIR}/age-keygen" "${STUB_DIR}/age"
 }
 
 # ---------------------------------------------------------------------------
@@ -87,14 +80,13 @@ assert   "no-config exits nonzero" test "${rc}" -ne 0
 assert_contains "no-config names backup-init" "${out}" "backup-init"
 
 # ---------------------------------------------------------------------------
-# 2. backup-init without --install-deps and a PATH missing cosign/age →
+# 2. backup-init without --install-deps and a PATH missing age →
 #    error listing the missing tools (never auto-installs without the flag).
-#    Minimal PATH keeps coreutils/tar/gzip/jq available if present.
 # ---------------------------------------------------------------------------
 out="$("${APICTL}" backup-init 2>&1)"
 rc=$?
-if command -v cosign >/dev/null 2>&1 && command -v age >/dev/null 2>&1; then
-  printf 'SKIP: missing-tools test — real cosign+age present on host PATH\n'
+if command -v age >/dev/null 2>&1; then
+  printf 'SKIP: missing-tools test — real age present on host PATH\n'
 else
   assert   "backup-init missing tools exits nonzero" test "${rc}" -ne 0
   assert_contains "backup-init names --install-deps" "${out}" "--install-deps"
@@ -111,14 +103,17 @@ else
   rc=$?
   cfg="${XDG_CONFIG_HOME}/expertise-api/backup"
   assert "backup-init exits zero" test "${rc}" -eq 0
-  assert "cosign key created" test -f "${cfg}/cosign.key"
+  assert "signing key created" test -f "${cfg}/backup_signing_key"
+  assert "allowed_signers created" grep -q '^expertise-backup ssh-ed25519 ' "${cfg}/allowed_signers"
   assert "age identity created" test -f "${cfg}/age-identity.txt"
   assert "recipients extracted" grep -q '^age1' "${cfg}/age-recipients.txt"
   assert "backup.env created" test -f "${cfg}/backup.env"
-  perms="$(stat -f '%Lp' "${cfg}/backup.env" 2>/dev/null || stat -c '%a' "${cfg}/backup.env")"
+  # GNU stat first (-c), BSD fallback (-f). Order matters: BSD's -f flag also
+  # EXISTS on GNU stat but means "filesystem status" — it exits 0 with garbage,
+  # so probing -f first breaks on Linux (caught by CI on the first run).
+  perms="$(stat -c '%a' "${cfg}/backup.env" 2>/dev/null || stat -f '%Lp' "${cfg}/backup.env")"
   assert "backup.env chmod 600" test "${perms}" = "600"
 
-  printf 'sentinel' > "${cfg}/age-identity.txt.orig"
   cp "${cfg}/age-identity.txt" "${cfg}/age-identity.txt.orig"
   out="$(PATH="${STUB_DIR}:${PATH}" "${APICTL}" backup-init 2>&1)"
   assert "re-run exits zero" test $? -eq 0

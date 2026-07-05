@@ -16,10 +16,11 @@
 #   expertise-apictl --help
 #
 # backup-init bootstraps the signed+encrypted backup surface (ADR-012):
-# installs cosign/age/jq when missing (--install-deps), generates the cosign
-# keypair and age identity under ~/.config/expertise-api/backup/, and writes
-# backup.env. backup/restore orchestrate the ExpertiseApi backup/restore CLI
-# verbs plus tar/gzip/age/cosign; see docs/operations/backup-restore-runbook.md.
+# installs age/jq when missing (--install-deps), generates the ed25519
+# signing key (ssh-keygen) and age identity under ~/.config/expertise-api/
+# backup/, and writes backup.env. backup/restore orchestrate the ExpertiseApi
+# backup/restore CLI verbs plus tar/gzip/age and ssh-keygen -Y signatures;
+# see docs/operations/backup-restore-runbook.md.
 #
 
 set -euo pipefail
@@ -33,7 +34,7 @@ READY_TIMEOUT="${EXPERTISE_API_READY_TIMEOUT:-30}"
 log() { printf '[expertise-apictl] %s\n' "$1"; }
 err() { printf '[expertise-apictl] ERROR: %s\n' "$1" >&2; exit 1; }
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
 
 detect_os() {
   case "$(uname -s)" in
@@ -275,11 +276,12 @@ cmd_health() {
 # Backup / restore orchestration (ADR-012).
 #
 # Division of labour: the ExpertiseApi `backup`/`restore` CLI verbs own
-# NDJSON + Merkle + manifest; these subcommands own tar/gzip/age/cosign and
-# key/dependency bootstrap. Trust posture: cosign LOCAL-KEYPAIR mode with
-# --tlog-upload=false / --insecure-ignore-tlog=true — the deliberate,
-# ADR-012-documented offline stance (no Rekor at DR time; the backup public
-# key, not a Fulcio identity, is the trust root). Config values are read
+# NDJSON + Merkle + manifest; these subcommands own tar/gzip/age signing and
+# key/dependency bootstrap. Trust posture: `ssh-keygen -Y sign/verify` with a
+# dedicated passwordless ed25519 key (ADR-012 Amendment 1 — cosign's v3 CLI
+# removed the stable offline detached-signature flow this path needs; OpenSSH
+# signatures are ubiquitous, offline, and CLI-stable). The allowed_signers
+# file, not any transparency log, is the trust root. Config values are read
 # with grep+sed, never sourced (same posture as install.env above).
 # ===========================================================================
 
@@ -293,23 +295,6 @@ _backup_env_get() {
   grep -m1 "^$1=" "${BACKUP_ENV_FILE}" | sed "s/^$1=//" 2>/dev/null || true
 }
 
-_require_cosign_version() {
-  # Same 2.2.0 floor and version-extraction shape as scripts/verify-release.sh
-  # vr_require_cosign (kept inline: apictl is symlinked onto PATH, so relative
-  # sourcing of the repo tree is not reliable here).
-  local v lowest min='2.2.0'
-  v=$(cosign version --json 2>/dev/null \
-        | grep -oiE '"gitVersion"[[:space:]]*:[[:space:]]*"v?[0-9.]+"' \
-        | head -1 | sed 's/.*"v\{0,1\}\([0-9.]\{1,\}\).*/\1/' || true)
-  if [[ -z "${v}" ]]; then
-    v=$(cosign version 2>&1 | grep -oE 'GitVersion:[[:space:]]*v?[0-9.]+' \
-          | head -1 | sed 's/.*v\{0,1\}\([0-9.]\{1,\}\).*/\1/' || true)
-  fi
-  [[ -n "${v}" ]] || err "could not determine cosign version (need >= ${min})"
-  lowest=$(printf '%s\n%s\n' "${min}" "${v}" | sort -V | head -1)
-  [[ "${lowest}" == "${min}" ]] || err "cosign ${v} is older than required ${min}"
-}
-
 _sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -319,8 +304,10 @@ _sha256_file() {
 }
 
 _backup_missing_deps() {
+  # ssh-keygen ships with OpenSSH on every supported OS; it is listed anyway
+  # so a pathological minimal container gets an actionable error.
   local missing=""
-  for tool in cosign age age-keygen jq tar gzip; do
+  for tool in ssh-keygen age age-keygen jq tar gzip; do
     command -v "${tool}" >/dev/null 2>&1 || missing="${missing} ${tool}"
   done
   printf '%s' "${missing# }"
@@ -389,16 +376,15 @@ _backup_preflight() {
   local missing
   missing="$(_backup_missing_deps)"
   [[ -z "${missing}" ]] || err "missing tools:${missing:+ }${missing} — run: expertise-apictl backup-init --install-deps"
-  _require_cosign_version
   [[ -f "${BACKUP_ENV_FILE}" ]] || err "no backup config at ${BACKUP_ENV_FILE} — run: expertise-apictl backup-init"
 
-  COSIGN_KEY_FILE="$(_backup_env_get COSIGN_KEY)"
-  COSIGN_PUB_FILE="$(_backup_env_get COSIGN_PUB)"
+  SIGNING_KEY_FILE="$(_backup_env_get SIGNING_KEY)"
+  ALLOWED_SIGNERS_FILE="$(_backup_env_get ALLOWED_SIGNERS)"
   AGE_IDENTITY_FILE="$(_backup_env_get AGE_IDENTITY)"
   AGE_RECIPIENTS_FILE="$(_backup_env_get AGE_RECIPIENTS)"
   BACKUP_OUTPUT_DIR="$(_backup_env_get OUTPUT_DIR)"
 
-  for pair in "COSIGN_KEY:${COSIGN_KEY_FILE}" "COSIGN_PUB:${COSIGN_PUB_FILE}" \
+  for pair in "SIGNING_KEY:${SIGNING_KEY_FILE}" "ALLOWED_SIGNERS:${ALLOWED_SIGNERS_FILE}" \
               "AGE_IDENTITY:${AGE_IDENTITY_FILE}" "AGE_RECIPIENTS:${AGE_RECIPIENTS_FILE}"; do
     local key="${pair%%:*}" val="${pair#*:}"
     [[ -n "${val}" ]] || err "${key} not set in ${BACKUP_ENV_FILE} — re-run: expertise-apictl backup-init"
@@ -439,46 +425,45 @@ cmd_backup_init() {
           local apt_pkgs=""
           for tool in ${missing}; do
             case "${tool}" in
-              cosign) : ;;             # not in Debian repos — handled below
-              age-keygen) apt_pkgs="${apt_pkgs} age" ;;
+              age-keygen) [[ " ${apt_pkgs} " == *" age "* ]] || apt_pkgs="${apt_pkgs} age" ;;
+              ssh-keygen) apt_pkgs="${apt_pkgs} openssh-client" ;;
               *) apt_pkgs="${apt_pkgs} ${tool}" ;;
             esac
           done
-          if [[ -n "${apt_pkgs}" ]]; then
-            log "installing via apt:${apt_pkgs}"
-            # shellcheck disable=SC2086
-            sudo apt-get install -y ${apt_pkgs}
-          fi
-          if ! command -v cosign >/dev/null 2>&1; then
-            err "cosign is not packaged in Debian — install per https://docs.sigstore.dev/cosign/system_config/installation/ (pin the version and verify the checksum, ADR-011 discipline), then re-run backup-init"
-          fi ;;
+          log "installing via apt:${apt_pkgs}"
+          # shellcheck disable=SC2086
+          sudo apt-get install -y ${apt_pkgs} ;;
       esac
     else
       err "missing tools:${missing:+ }${missing} — re-run with --install-deps, or install them and re-run"
     fi
   fi
-  _require_cosign_version
 
   mkdir -p "${BACKUP_CONFIG_DIR}"
   chmod 700 "${BACKUP_CONFIG_DIR}"
 
-  local cosign_key="${BACKUP_CONFIG_DIR}/cosign.key"
-  local cosign_pub="${BACKUP_CONFIG_DIR}/cosign.pub"
+  local signing_key="${BACKUP_CONFIG_DIR}/backup_signing_key"
+  local allowed_signers="${BACKUP_CONFIG_DIR}/allowed_signers"
   local age_identity="${BACKUP_CONFIG_DIR}/age-identity.txt"
   local age_recipients="${BACKUP_CONFIG_DIR}/age-recipients.txt"
 
-  if [[ -f "${cosign_key}" ]]; then
-    log "cosign keypair present at ${cosign_key} (preserved — never regenerated silently)"
+  if [[ -f "${signing_key}" ]]; then
+    log "signing key present at ${signing_key} (preserved — never regenerated silently)"
   else
     # Passwordless by design: `apictl backup` must run unattended (cron) and
     # `restore` must work mid-disaster with no interactive prompt. The key is
-    # protected by 700/600 file permissions; rotate to a passworded key only
-    # if you accept prompts on every sign/verify.
-    log "generating cosign keypair (passwordless, chmod 600)"
-    (cd "${BACKUP_CONFIG_DIR}" && COSIGN_PASSWORD="" cosign generate-key-pair >/dev/null 2>&1)
-    [[ -f "${cosign_key}" && -f "${cosign_pub}" ]] || err "cosign generate-key-pair did not produce ${cosign_key}"
+    # protected by 700/600 file permissions; rotate to a passphrase-protected
+    # key only if you accept prompts on every sign.
+    log "generating ed25519 signing key (passwordless, chmod 600)"
+    ssh-keygen -t ed25519 -N "" -q -C "expertise-backup" -f "${signing_key}"
   fi
-  chmod 600 "${cosign_key}"
+  chmod 600 "${signing_key}"
+
+  if [[ ! -f "${allowed_signers}" ]]; then
+    # ssh-keygen -Y verify trusts principals listed here — this file is the
+    # backup trust root (ADR-012 Amendment 1). Format: "<principal> <keytype> <key>".
+    printf 'expertise-backup %s\n' "$(cut -d' ' -f1-2 < "${signing_key}.pub")" > "${allowed_signers}"
+  fi
 
   if [[ -f "${age_identity}" ]]; then
     log "age identity present at ${age_identity} (preserved)"
@@ -500,8 +485,8 @@ cmd_backup_init() {
     cat > "${BACKUP_ENV_FILE}" <<EOF
 # backup.env — expertise-apictl backup configuration (ADR-012).
 # Plain key=value; read with grep+sed, never sourced. chmod 600.
-COSIGN_KEY=${cosign_key}
-COSIGN_PUB=${cosign_pub}
+SIGNING_KEY=${signing_key}
+ALLOWED_SIGNERS=${allowed_signers}
 AGE_IDENTITY=${age_identity}
 AGE_RECIPIENTS=${age_recipients}
 OUTPUT_DIR=${HOME}/expertise-backups
@@ -554,11 +539,9 @@ cmd_backup() {
   jq --arg sha "${payload_sha}" '. + {payloadSha256: $sha}' \
     "${workdir}/payload/manifest.json" > "${workdir}/manifest.json"
 
-  log "signing manifest (cosign local keypair, no transparency log)"
-  COSIGN_PASSWORD="" cosign sign-blob --yes --key "${COSIGN_KEY_FILE}" \
-    --tlog-upload=false \
-    --output-signature "${workdir}/manifest.json.sig" \
-    "${workdir}/manifest.json" >/dev/null
+  log "signing manifest (ssh-keygen -Y, offline — allowed_signers is the trust root)"
+  ssh-keygen -Y sign -f "${SIGNING_KEY_FILE}" -n expertise-backup -q \
+    "${workdir}/manifest.json"
 
   tar -cf "${artifact}" -C "${workdir}" payload.tar.gz.age manifest.json manifest.json.sig
   chmod 600 "${artifact}"
@@ -597,13 +580,10 @@ cmd_restore() {
     log "WARNING: --i-accept-unsigned-backup — SKIPPING signature verification (dev escape hatch, ADR-012)"
   else
     log "verifying manifest signature (fail closed)"
-    # --insecure-ignore-tlog is the documented, deliberate offline posture for
-    # local-keypair mode (ADR-012): backups never touch Rekor, so there is no
-    # transparency-log entry to check. The trust root is COSIGN_PUB.
-    cosign verify-blob --key "${COSIGN_PUB_FILE}" \
-      --signature "${workdir}/manifest.json.sig" \
-      --insecure-ignore-tlog=true \
-      "${workdir}/manifest.json" >/dev/null 2>&1 \
+    ssh-keygen -Y verify -f "${ALLOWED_SIGNERS_FILE}" \
+      -I expertise-backup -n expertise-backup \
+      -s "${workdir}/manifest.json.sig" \
+      < "${workdir}/manifest.json" >/dev/null 2>&1 \
       || err "manifest signature verification FAILED — refusing to restore (pass --i-accept-unsigned-backup only if you understand ADR-012's trust policy)"
   fi
 
