@@ -16,8 +16,14 @@ internal class ExpertiseRepository(
     /// <summary>
     /// Builds the tenant predicate per ADR-001: a row is visible if its <c>Tenant</c>
     /// matches the caller's, or if it is in the cross-tenant <c>shared</c> namespace.
+    /// <para>
+    /// <c>internal</c> (not private) so the query-translation test suite
+    /// (<c>RepositoryQueryTranslationTests</c>, #352) can build on the exact same
+    /// tenant-scoping seam the production reads use, rather than re-deriving it and
+    /// risking drift.
+    /// </para>
     /// </summary>
-    private static IQueryable<ExpertiseEntry> ApplyTenantFilter(
+    internal static IQueryable<ExpertiseEntry> ApplyTenantFilter(
         IQueryable<ExpertiseEntry> query, TenantContext ctx)
     {
         var tenant = RequireTenant(ctx);
@@ -26,9 +32,10 @@ internal class ExpertiseRepository(
 
     /// <summary>
     /// Reads default to <see cref="ReviewState.Approved"/>. Drafts and Rejected entries
-    /// are exposed only via the dedicated <c>/drafts</c> endpoint.
+    /// are exposed only via the dedicated <c>/drafts</c> endpoint. <c>internal</c> for the
+    /// same test-seam reason as <see cref="ApplyTenantFilter"/> (#352).
     /// </summary>
-    private static IQueryable<ExpertiseEntry> ApplyApprovedReviewFilter(
+    internal static IQueryable<ExpertiseEntry> ApplyApprovedReviewFilter(
         IQueryable<ExpertiseEntry> query) =>
             query.Where(e => e.ReviewState == ReviewState.Approved);
 
@@ -105,6 +112,26 @@ internal class ExpertiseRepository(
         bool includeDeprecated,
         CancellationToken ct)
     {
+        return await BuildListQuery(ctx, domain, tags, entryType, severity, includeDeprecated).ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Composes the conditional <c>GET /expertise</c> filter query. Extracted from
+    /// <see cref="ListAsync"/> as an <c>internal</c> seam so the query-translation test
+    /// suite (#352) can assert every filter-combination's SQL translatability via
+    /// <c>ToQueryString()</c> against the exact production expression tree — the
+    /// <c>tags.All(t =&gt; e.Tags.Contains(t))</c> array-containment predicate is the
+    /// highest-risk shape (same class as the <c>ToLowerInvariant</c> incident) and must
+    /// be tested against the real builder, not a reconstruction that could drift.
+    /// </summary>
+    internal IQueryable<ExpertiseEntry> BuildListQuery(
+        TenantContext ctx,
+        string? domain,
+        List<string>? tags,
+        EntryType? entryType,
+        Severity? severity,
+        bool includeDeprecated)
+    {
         var query = ApplyApprovedReviewFilter(ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx));
 
         if (!includeDeprecated)
@@ -122,7 +149,7 @@ internal class ExpertiseRepository(
         if (tags is { Count: > 0 })
             query = query.Where(e => tags.All(t => e.Tags.Contains(t)));
 
-        return await query.OrderByDescending(e => e.UpdatedAt).ToListAsync(ct);
+        return query.OrderByDescending(e => e.UpdatedAt);
     }
 
     public async Task<List<ExpertiseEntry>> ListDraftsAsync(TenantContext ctx, CancellationToken ct)
