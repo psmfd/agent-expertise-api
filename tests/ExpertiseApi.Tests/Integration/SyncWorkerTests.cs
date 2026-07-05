@@ -104,7 +104,7 @@ public class SyncWorkerTests : IAsyncLifetime
     public async Task SyncOnce_PushesSharedApprovedEntries_AdvancesCursor_AndIsIdempotent()
     {
         await WipeAsync();
-        var (visible, _) = await SeedAsync();
+        var visible = await SeedAsync();
         await using var hub = new StubHub();
         await hub.StartAsync();
         await using var provider = BuildWorkerServices(hub.BaseUrl);
@@ -137,7 +137,7 @@ public class SyncWorkerTests : IAsyncLifetime
     public async Task TransientHubFailure_LeavesCursorUntouched_ThenRetriesSamePage()
     {
         await WipeAsync();
-        var (visible, _) = await SeedAsync();
+        var visible = await SeedAsync();
         await using var hub = new StubHub();
         await hub.StartAsync();
         await using var provider = BuildWorkerServices(hub.BaseUrl);
@@ -163,7 +163,7 @@ public class SyncWorkerTests : IAsyncLifetime
     public async Task RepositoryFeed_FiltersAndPages()
     {
         await WipeAsync();
-        var (visible, _) = await SeedAsync();
+        var visible = await SeedAsync();
         await using var provider = BuildWorkerServices("http://unused.local");
         await using var scope = provider.CreateAsyncScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
@@ -181,7 +181,8 @@ public class SyncWorkerTests : IAsyncLifetime
 
     // ---- Helpers ----------------------------------------------------------
 
-    private async Task<(List<ExpertiseEntry> Visible, List<ExpertiseEntry> Hidden)> SeedAsync()
+    /// <returns>The entries the sync feed should surface, in expected (UpdatedAt, Id) order.</returns>
+    private async Task<List<ExpertiseEntry>> SeedAsync()
     {
         await using var db = NewContext();
 
@@ -212,23 +213,21 @@ public class SyncWorkerTests : IAsyncLifetime
 
         // Inserted one-by-one so UpdatedAt (now()) strictly increases — makes the
         // expected (UpdatedAt, Id) feed order deterministic.
-        var visible = new List<ExpertiseEntry>();
         foreach (var title in new[] { "sync me first", "sync me second", "sync me third" })
         {
-            var e = Make(title, "shared", ReviewState.Approved);
-            db.ExpertiseEntries.Add(e);
+            db.ExpertiseEntries.Add(Make(title, "shared", ReviewState.Approved));
             await db.SaveChangesAsync();
-            visible.Add(e);
         }
 
         db.ExpertiseEntries.AddRange(hidden);
         await db.SaveChangesAsync();
 
-        var ordered = await db.ExpertiseEntries.IgnoreQueryFilters().AsNoTracking()
+        // Re-queried (not accumulated) so the returned snapshot carries the
+        // server-generated Id/CreatedAt/UpdatedAt values in feed order.
+        return await db.ExpertiseEntries.IgnoreQueryFilters().AsNoTracking()
             .Where(e => e.Tenant == "shared" && e.ReviewState == ReviewState.Approved && e.DeprecatedAt == null)
             .OrderBy(e => e.UpdatedAt).ThenBy(e => e.Id)
             .ToListAsync();
-        return (ordered, hidden);
     }
 
     private async Task WipeAsync()
