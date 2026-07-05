@@ -74,7 +74,9 @@ internal sealed class IdempotencyGcService : BackgroundService
         }
     }
 
-    private async Task SweepOnceAsync(CancellationToken ct)
+    // internal (not private) so IdempotencyGcServiceTests can drive a single sweep
+    // deterministically without racing the PeriodicTimer loop (#354).
+    internal async Task SweepOnceAsync(CancellationToken ct)
     {
         try
         {
