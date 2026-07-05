@@ -123,6 +123,8 @@ CLI:
 
 - `dotnet run --project src/ExpertiseApi -- reembed [--batch-size 50]` — regenerate all embeddings.
 - `dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50]` — backfill `IntegrityHash` for entries with a null hash. Idempotent.
+- `dotnet run --project src/ExpertiseApi -- backup --output <dir> [--instance-id <id>]` — export all entries (every tenant + review state) + audit log as NDJSON with an RFC 6962 Merkle manifest (ADR-012). Plain files; signing/encryption is `scripts/expertise-apictl`'s job. Deliberately CLI-only — a backup is a full-fidelity cross-tenant extract, more privileged than `GET /audit/{id}/raw`, so it must never be reachable through a bearer token.
+- `dotnet run --project src/ExpertiseApi -- restore --input <dir> [--force-draft]` — import a decrypted backup payload. Replace mode only (empty target, pending migrations empty); verifies per-record `BackupRecordHash` + Merkle roots against the manifest (root mismatch → abort; single-record mismatch → quarantine as Draft + `RestoreQuarantined` audit row); `--force-draft` re-gates every entry for foreign-backup seeds.
 
 ## Authentication
 

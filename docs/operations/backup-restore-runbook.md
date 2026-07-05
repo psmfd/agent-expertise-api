@@ -106,9 +106,32 @@ A clean `migrate` exit proves the **schema** converged — not that no data was 
 
 ## Part B — Ongoing provenance-verified backups (ADR-012)
 
-> Ships with the `backup`/`restore` CLI feature ([#340](https://github.com/psmfd/agent-expertise-api/issues/340)). This section is finalized in that PR; the shape below is normative per [ADR-012](../../adrs/012-backup-artifact-format.md).
+Implemented by [#340](https://github.com/psmfd/agent-expertise-api/issues/340): the `backup`/`restore` CLI verbs own NDJSON + Merkle + manifest; `scripts/expertise-apictl` owns tar/gzip/age/cosign orchestration and bootstrap.
 
-- **One-time setup:** `scripts/expertise-apictl backup-init` — installs cosign/age if missing (apt/brew), generates the cosign keypair and age identity into `~/.config/expertise-api/backup/` (700/600), writes `backup.env`. Re-running validates and reports; it never overwrites keys silently.
-- **Take a backup:** `scripts/expertise-apictl backup` — preflight → NDJSON export → gzip → age-encrypt → manifest + `cosign sign-blob --key` → single `.tar` artifact, chmod 600.
-- **Restore:** `scripts/expertise-apictl restore <artifact>` — signature verify (fail-closed) → payload SHA check → decrypt → `restore` verb with pending-migrations and empty-target preconditions; per-record hash mismatches quarantine as Draft; foreign backups land entirely as Draft.
-- **Key discipline:** losing the age identity means losing the backups; losing the cosign key means future backups need a new trust root. Configure a second age recipient (offline/escrow copy) in `backup.env`. Backup artifacts contain Drafts, Rejected entries, and the audit log — treat the artifact itself as sensitive even though it is encrypted.
+### One-time setup
+
+```bash
+scripts/expertise-apictl backup-init --install-deps
+```
+
+Installs missing tools (`brew` on macOS; `apt` on Debian — cosign itself is not in Debian's repos, so the command prints pinned-install instructions if absent), generates a **passwordless** cosign keypair and an age identity into `~/.config/expertise-api/backup/` (dir 700, files 600 — passwordless so cron backups and mid-disaster restores never block on a prompt; file permissions are the protection), and writes `backup.env` (key paths, age recipients, output dir). Re-running validates and reports; existing keys are never overwritten.
+
+### Take a backup
+
+```bash
+scripts/expertise-apictl backup [--output DIR] [--instance-id ID]
+```
+
+Preflight (tools, keys, config — every failure points at `backup-init`) → `ExpertiseApi backup` verb (NDJSON export under one RepeatableRead snapshot) → `tar -czf` → `age -e` → payload SHA injected into the manifest → `cosign sign-blob --key` (no transparency log — the backup public key is the trust root, ADR-012) → single `expertise-backup-<instance>-<ts>.tar`, chmod 600. Plaintext intermediates live only in a `mktemp` dir removed on exit.
+
+### Restore
+
+```bash
+scripts/expertise-apictl restore ARTIFACT.tar [--force-draft] [--i-accept-unsigned-backup]
+```
+
+Member allowlist on the outer tar → `cosign verify-blob` (fail-closed; `--i-accept-unsigned-backup` is the dev-only escape hatch) → payload SHA vs manifest → `age -d` → `ExpertiseApi restore` verb, which enforces: pending-migrations empty, empty target (replace mode), per-record hash verification (mismatch → imported as Draft + `RestoreQuarantined` audit row), Merkle roots matching the signed manifest (mismatch → abort, nothing imported), and embedding-model compatibility (mismatch → abort, run `reembed`). `--force-draft` re-gates every entry as Draft — required posture for seeding from someone else's backup.
+
+### Key discipline
+
+Losing the age identity means losing the backups; losing the cosign key means future backups need a new trust root. Add a second age recipient (offline/escrow key) to `age-recipients.txt` so backups stay decryptable if this host dies. Backup artifacts contain Drafts, Rejected entries, and the audit log — treat the artifact itself as sensitive even though the payload is encrypted.
