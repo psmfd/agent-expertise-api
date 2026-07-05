@@ -16,6 +16,31 @@ head -c 5 dump.file        # "PGDMP" => custom/tar archive: use pg_restore
 pg_restore --list dump.file  # confirms/rejects archive format cleanly
 ```
 
+### A.0b Lessons from the first real seed (2026-07-05)
+
+Three preconditions the original procedure under-specified, all hit in practice:
+
+1. **Stop the API service first** (`expertise-apictl stop`) — `DROP DATABASE` fails
+   with "being accessed by other users" while the service holds pooled connections,
+   and a partial retry then restores into the still-migrated database (object
+   collisions, the exact hazard A.1 warns about).
+2. **Pre-create the vector extension as a superuser** when the app role is not one
+   (native installs; container images make the app user a bootstrap superuser, which
+   masks this): `psql -U <superuser> -d <db> -c 'CREATE EXTENSION vector;'` before
+   `pg_restore`, which then reports one ignorable "must be owner of extension" error.
+   Hosted-only extensions in the dump (e.g. `pg_stat_statements`) also fail
+   ignorably — expected.
+3. **If you change `Tenant` during remediation (A.4), re-run `rehash` after
+   NULLing the hashes** — `IntegrityHash` canonicalizes over `{tenant, title, body,
+   entryType, severity}`, so a tenant move invalidates every hash silently:
+   `UPDATE "ExpertiseEntries" SET "IntegrityHash"=NULL;` then `rehash`.
+
+After a successful seed, take an ADR-012 artifact immediately (`expertise-apictl
+backup`) — that becomes the canonical source going forward, and future seeds use
+`expertise-apictl restore` (schema-skew-proof) instead of this Part A procedure.
+Make sure the installed service binary is current first: a pre-ADR-012 binary
+silently ignores the `backup` verb and boots the web host instead.
+
 ### A.1 Restore into a truly EMPTY database — before ever running migrations
 
 Order matters: **restore first, migrate second.** Restoring into a database where EF migrations already ran produces object-already-exists collisions that `--clean --if-exists` only partially resolves.

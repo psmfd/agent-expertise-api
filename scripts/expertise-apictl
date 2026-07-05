@@ -539,9 +539,13 @@ cmd_backup() {
   local out_dir="${output_override:-${BACKUP_OUTPUT_DIR}}"
   mkdir -p "${out_dir}"
 
-  local workdir ts artifact
-  workdir="$(mktemp -d)"
-  trap 'rm -rf "${workdir}"' EXIT
+  # workdir is deliberately NOT local: the EXIT trap fires after the function's
+  # locals are gone, and under `set -u` an out-of-scope expansion aborts the
+  # trap with "unbound variable" (leaving the plaintext tempdir behind).
+  local ts artifact
+  _apictl_workdir="$(mktemp -d)"
+  local workdir="${_apictl_workdir}"
+  trap 'rm -rf "${_apictl_workdir:-}"' EXIT
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   artifact="${out_dir}/expertise-backup-${instance_id}-${ts}.tar"
 
@@ -585,9 +589,10 @@ cmd_restore() {
 
   _backup_preflight
 
-  local workdir
-  workdir="$(mktemp -d)"
-  trap 'rm -rf "${workdir}"' EXIT
+  # See cmd_backup for why the trap variable must not be local.
+  _apictl_workdir="$(mktemp -d)"
+  local workdir="${_apictl_workdir}"
+  trap 'rm -rf "${_apictl_workdir:-}"' EXIT
 
   # Member allowlist before extraction (ADR-011 tar-hardening posture): the
   # outer tar must contain exactly the three expected members, no paths.
