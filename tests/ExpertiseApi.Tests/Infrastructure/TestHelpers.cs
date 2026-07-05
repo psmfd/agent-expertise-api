@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using ExpertiseApi.Auth;
 using ExpertiseApi.Models;
+using ExpertiseApi.Services;
 using Pgvector;
 
 namespace ExpertiseApi.Tests.Infrastructure;
@@ -88,7 +89,10 @@ internal static class TestHelpers
             Severity = severity,
             Source = source,
             Tags = ["test"],
-            Embedding = CreateTestVector(),
+            // Content-derived so a seeded entry and a POSTed entry with the same
+            // title+body produce the SAME embedding (semantic dedup can then collide
+            // them), while distinct content stays near-orthogonal (#353).
+            Embedding = CreateContentVector(EmbeddingService.BuildInputText(title, body)),
             Tenant = tenant,
             AuthorPrincipal = authorPrincipal,
             ReviewState = reviewState,
@@ -96,6 +100,7 @@ internal static class TestHelpers
         };
     }
 
+    /// <summary>Content-independent fixed vector (query vectors / unit-test stubs that don't care).</summary>
     internal static Vector CreateTestVector(int dimensions = 384)
     {
         var values = new float[dimensions];
@@ -103,5 +108,40 @@ internal static class TestHelpers
         for (var i = 0; i < dimensions; i++)
             values[i] = (float)(rng.NextDouble() * 2 - 1);
         return new Vector(values);
+    }
+
+    /// <summary>
+    /// Deterministic, CONTENT-DERIVED embedding for tests (#353). Identical content yields
+    /// the identical vector (cosine distance 0 → a real duplicate); different content yields
+    /// a near-orthogonal vector (cosine distance ≈ 1.0, far above the 0.10 dedup threshold →
+    /// NOT a duplicate). Replaces the old content-independent mock that returned the same
+    /// vector for every input — which made semantic-dedup behaviour structurally unobservable
+    /// and forced two integration tests into per-test workarounds.
+    /// </summary>
+    internal static float[] CreateContentEmbedding(string content, int dimensions = 384)
+    {
+        var rng = new Random(StableSeed(content));
+        var values = new float[dimensions];
+        for (var i = 0; i < dimensions; i++)
+            values[i] = (float)(rng.NextDouble() * 2 - 1);
+        return values;
+    }
+
+    internal static Vector CreateContentVector(string content, int dimensions = 384)
+        => new(CreateContentEmbedding(content, dimensions));
+
+    // FNV-1a over UTF-16 code units. Stable across processes, unlike string.GetHashCode
+    // (randomized per run in .NET Core) — the seed MUST be reproducible so the same content
+    // embeds identically in the mock generator and in seeded fixtures. Collisions are
+    // irrelevant for test data.
+    private static int StableSeed(string s)
+    {
+        unchecked
+        {
+            var hash = (int)2166136261;
+            foreach (var c in s)
+                hash = (hash ^ c) * 16777619;
+            return hash;
+        }
     }
 }

@@ -25,29 +25,20 @@ namespace ExpertiseApi.Tests.Integration;
 public class ResponseHygieneIntegrationTests : IAsyncLifetime
 {
     private readonly PostgresFixture _postgres;
-    private WebApplicationFactory<Program> _factory = null!;
-    private JwtApiFactory _baseFactory = null!;
+    private JwtApiFactory _factory = null!;
 
     public ResponseHygieneIntegrationTests(PostgresFixture postgres) => _postgres = postgres;
 
     public Task InitializeAsync()
     {
-        _baseFactory = new JwtApiFactory(_postgres.ConnectionString);
-        // Disable deduplication: the mock embedding generator in the test factory
-        // returns the same vector for every input, so dedup would collapse our two
-        // seed entries onto a single id and break the shared-nonce assertion.
-        _factory = _baseFactory.WithWebHostBuilder(builder =>
-        {
-            builder.UseSetting("Deduplication:Enabled", "false");
-        });
+        // Dedup stays ENABLED: content-derived embeddings (#353) mean the Guid-unique
+        // fixtures below no longer false-collide, so the shared-nonce assertion holds
+        // without the old Deduplication:Enabled=false workaround.
+        _factory = new JwtApiFactory(_postgres.ConnectionString);
         return Task.CompletedTask;
     }
 
-    public async Task DisposeAsync()
-    {
-        await _factory.DisposeAsync();
-        await _baseFactory.DisposeAsync();
-    }
+    public async Task DisposeAsync() => await _factory.DisposeAsync();
 
     private HttpClient AuthorizedClient(params string[] scopes)
     {

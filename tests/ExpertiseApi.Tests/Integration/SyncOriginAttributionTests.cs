@@ -35,12 +35,14 @@ public class SyncOriginAttributionTests : IClassFixture<PostgresFixture>
             [$"Sync:KnownInstances:{SpokeClientId}"] = SpokeInstanceId,
         });
 
-    // Domain is per-test: the shared JwtApiFactory embedding mock returns an identical
-    // vector for every input, so two tests writing the same domain would semantic-dedup
-    // against each other (dedup is domain-scoped by design).
-    private static object BatchItem(string domain, string title, string? originAuthor = null) => new
+    // A single shared domain across both tests: content-derived embeddings (#353) mean the
+    // distinct Guid titles below produce near-orthogonal vectors, so the two tests no longer
+    // semantic-collide — the old per-test-unique-domain workaround is gone.
+    private const string Domain = "origin-attribution";
+
+    private static object BatchItem(string title, string? originAuthor = null) => new
     {
-        domain,
+        domain = Domain,
         title,
         body = $"body of {title}",
         entryType = "Pattern",
@@ -65,7 +67,7 @@ public class SyncOriginAttributionTests : IClassFixture<PostgresFixture>
 
         var title = $"synced entry {Guid.NewGuid():N}";
         var response = await client.PostAsJsonAsync("/expertise/batch",
-            new[] { BatchItem("origin-attribution-registered", title, originAuthor: "alice@spoke-alpha") });
+            new[] { BatchItem(title, originAuthor: "alice@spoke-alpha") });
 
         var responseBody = await response.Content.ReadAsStringAsync();
         response.StatusCode.Should().Be(HttpStatusCode.OK, "batch response was: {0}", responseBody);
@@ -96,7 +98,7 @@ public class SyncOriginAttributionTests : IClassFixture<PostgresFixture>
 
         var title = $"ordinary entry {Guid.NewGuid():N}";
         var response = await client.PostAsJsonAsync("/expertise/batch",
-            new[] { BatchItem("origin-attribution-unregistered", title, originAuthor: "mallory@fake-origin") });
+            new[] { BatchItem(title, originAuthor: "mallory@fake-origin") });
 
         var responseBody = await response.Content.ReadAsStringAsync();
         response.StatusCode.Should().Be(HttpStatusCode.OK, "batch response was: {0}", responseBody);
