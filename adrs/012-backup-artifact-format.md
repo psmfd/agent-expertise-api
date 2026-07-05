@@ -27,7 +27,8 @@ How should backup artifacts be formatted, signed, and encrypted, and what does r
 
 ### Compression
 
-- **gzip via .NET `GZipStream`** — zero new NuGet or host dependencies; compression happens inside the CLI verb so the verb alone produces a complete (unsigned, unencrypted) artifact for dev use.
+- **gzip via `tar -czf` in the orchestration wrapper** — zero new NuGet or host dependencies (gzip ships everywhere cosign and age do); the wrapper streams tar → gzip → age in one pipeline, and the CLI verb emits plain NDJSON so the dev loop (`--i-accept-unsigned-backup`) needs no tooling at all.
+- **gzip via .NET `GZipStream` inside the CLI verb** — also dependency-free, but double-buffers the payload through managed memory and splits compression across two layers once the wrapper tars the files anyway.
 - **zstd** — better ratio/speed, but requires either a NuGet native-binding package or a host binary; a third external tool alongside cosign and age for marginal gain at this data volume.
 
 ### Signing
@@ -44,7 +45,7 @@ How should backup artifacts be formatted, signed, and encrypted, and what does r
 
 ## Decision Outcome
 
-**Chosen: application-level NDJSON (B), gzip, cosign local-keypair signing, age encryption of the payload only.**
+**Chosen: application-level NDJSON (B), gzip via the wrapper's `tar -czf`, cosign local-keypair signing, age encryption of the payload only.**
 
 Artifact layout — outer tar `expertise-backup-<instanceId>-<timestamp>.tar` containing:
 
@@ -75,7 +76,7 @@ Because the manifest and signature are cleartext, an operator verifies the signa
 
 ### Sub-decisions
 
-**Record hashing: new `BackupRecordHash`, not a widened `IntegrityHashService.Compute`.** `Compute` hashes exactly `{tenant, title, body, entryType, severity}` and is load-bearing for the dedup-equality contract (`DeduplicationService`). The backup leaf hash must cover the full record: those 5 fields plus `Domain`, sorted `Tags`, `Source`/`SourceVersion`, `Visibility`, `AuthorPrincipal`/`AuthorAgent`, `ReviewState`/`ReviewedBy`/`ReviewedAt`/`RejectionReason`, and `CreatedAt`/`UpdatedAt`/`DeprecatedAt`. It lives as a static sibling of `IntegrityHashService`, reusing the same `Utf8JsonWriter` canonical-JSON idiom. Leaves combine into an RFC 6962 Merkle tree (0x00 leaf / 0x01 node prefixes) so inclusion proofs are available later for down-sync reconciliation (ADR-013 deferral list).
+**Record hashing: new `BackupRecordHash`, not a widened `IntegrityHashService.Compute`.** `Compute` hashes exactly `{tenant, title, body, entryType, severity}` and is load-bearing for the dedup-equality contract (`DeduplicationService`). The backup leaf hash must cover the full record: those 5 fields plus `Id` (binds the hash to the record's identity, so hashes cannot be swapped between records with identical content), `Domain`, sorted `Tags`, `Source`/`SourceVersion`, `Visibility`, `AuthorPrincipal`/`AuthorAgent`, `ReviewState`/`ReviewedBy`/`ReviewedAt`/`RejectionReason`, and `CreatedAt`/`UpdatedAt`/`DeprecatedAt`. It lives as a static sibling of `IntegrityHashService`, reusing the same `Utf8JsonWriter` canonical-JSON idiom. Leaves combine into an RFC 6962 Merkle tree (0x00 leaf / 0x01 node prefixes) so inclusion proofs are available later for down-sync reconciliation (ADR-013 deferral list).
 
 **Embeddings ship inside the artifact but outside the trust boundary.** Embedding vectors are exported for restore speed, but are NOT covered by leaf hashes — they are derived data, regenerable via `reembed`. Restore compares the manifest's `embeddingModel` against the live `EmbeddingMetadata` row and **fails loudly on mismatch**, directing the operator to `reembed` (same explicit-compat-check posture as ADR-011's `requiredRuntime.minVersion`).
 
@@ -115,5 +116,5 @@ Because the manifest and signature are cleartext, an operator verifies the signa
 - Import order: entries first, then audit rows (`ON DELETE RESTRICT` FK).
 - Export DTOs get a source-generated `JsonSerializerContext` (repo-first; keeps `AnalysisMode=All` clean and the CLI trim-friendly).
 - `Embedding` exports as `float[]` via `entry.Embedding?.ToArray()`.
-- The .NET verbs own NDJSON+gzip+Merkle+manifest; `apictl` owns age/cosign orchestration — so the binary alone produces a valid artifact under `--i-accept-unsigned-backup` for dev loops.
+- The .NET verbs own NDJSON+Merkle+manifest; `apictl` owns tar/gzip/age/cosign orchestration — so the binary alone produces a valid (plain, unsigned) payload under `--i-accept-unsigned-backup` for dev loops.
 - tar extraction on restore follows ADR-011's hardening note (prefer `bsdtar`; GNU tar fallback flags).
