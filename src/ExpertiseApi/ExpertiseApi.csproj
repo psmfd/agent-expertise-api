@@ -71,7 +71,7 @@
       package resolves against it. Drop this once Microsoft.AspNetCore.OpenApi
       references a patched Microsoft.OpenApi transitively.
     -->
-    <PackageReference Include="Microsoft.OpenApi" Version="2.9.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="3.8.0" />
     <!--
       Build-time OpenAPI document generator (Part D C8). PrivateAssets=all keeps the
       package out of the published output (it's an MSBuild task, not a runtime dependency).
