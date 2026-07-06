@@ -94,15 +94,6 @@ internal class ExpertiseRepository(
             .FirstOrDefaultAsync(ct);
     }
 
-    public async Task<ExpertiseEntry?> GetByIdIncludingDraftsAsync(Guid id, TenantContext ctx, CancellationToken ct)
-    {
-        // Approve/reject paths must be able to load Draft entries; the default
-        // ApplyApprovedReviewFilter would exclude them.
-        return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
-            .Where(e => e.Id == id)
-            .FirstOrDefaultAsync(ct);
-    }
-
     public async Task<List<ExpertiseEntry>> ListAsync(
         TenantContext ctx,
         string? domain,
