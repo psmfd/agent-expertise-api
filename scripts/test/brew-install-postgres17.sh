@@ -3,21 +3,21 @@
 # brew-install-postgres17.sh — install PostgreSQL 17 + pgvector via Homebrew for the
 # macOS install-smoke CI jobs, self-healing a corrupt pre-cached bottle.
 #
-# GitHub's macOS runner images have shipped a `postgresql@17` keg missing its
-# share/ files (notably `postgres.bki`, the catalog bootstrap seed). Because the
-# formula still registers as installed, `brew install` skips it and `initdb` then
-# fails at service start with:
+# Homebrew has published a BROKEN `postgresql@17` bottle for some arch/OS combos
+# (observed: 17.10 arm64_sequoia) whose tarball is missing `postgres.bki`, the
+# catalog bootstrap seed. The failure is not a local extraction glitch — the
+# poured bottle genuinely lacks the file — so the formula's own post_install
+# `initdb` fails during `brew install` with:
 #     initdb: error: file ".../share/postgresql@17/postgres.bki" does not exist
-# When the seed file is absent we force a clean reinstall — clearing the cached
-# bottle first in case the cached download is itself the corrupt copy — and
-# re-verify, hard-failing loudly rather than letting the confusing initdb error
-# surface downstream.
+# A plain reinstall re-pours the same broken bottle and fails identically. The
+# only reliable repair is to BUILD FROM SOURCE, which regenerates postgres.bki
+# from the catalog headers during `make`.
 #
 # `postgresql@17` is keg-only, so its bin/ is exported via GITHUB_PATH for
 # subsequent workflow steps. Shared by all three macOS smoke jobs (ci.yml x2 +
 # install-smoke-from-release.yml) so the heal lives in one place.
 #
-# Exit codes: 0 ok · 1 postgresql@17 still broken after repair.
+# Exit codes: 0 ok · 1 postgresql@17 still broken after source rebuild.
 
 set -euo pipefail
 
@@ -30,20 +30,23 @@ bki_present() {
 
 brew update >/dev/null
 
-# Install postgresql@17 FIRST and heal it BEFORE pgvector, so pgvector drops its
-# extension into a repaired sharedir (a later postgresql@17 reinstall would wipe
-# pgvector's files).
-brew install postgresql@17
+# Install postgresql@17 FIRST and heal it BEFORE pgvector, so pgvector builds
+# against a repaired keg (a later postgresql@17 rebuild would wipe pgvector's
+# dropped files). Tolerate a non-zero exit here: a broken bottle makes the
+# formula's post_install initdb fail, but the real success criterion is
+# bki_present below, which drives the repair.
+brew install postgresql@17 || log "postgresql@17 install returned non-zero (likely broken-bottle post_install); verifying"
 
 if ! bki_present; then
-  log "postgresql@17 keg is missing postgres.bki — repairing corrupt runner bottle"
-  rm -f "$(brew --cache postgresql@17)" 2>/dev/null || true
-  brew reinstall postgresql@17
+  log "postgresql@17 is missing postgres.bki (broken upstream bottle) — rebuilding from source"
+  # --build-from-source compiles postgres, which generates postgres.bki and runs
+  # a working post_install. Slow (several minutes) but the only real repair.
+  HOMEBREW_NO_INSTALL_FROM_API=1 brew reinstall --build-from-source postgresql@17
   bki_present || {
-    echo "::error::postgresql@17 still missing postgres.bki after reinstall"
+    echo "::error::postgresql@17 still missing postgres.bki after source rebuild"
     exit 1
   }
-  log "repair OK"
+  log "source rebuild OK — postgres.bki present"
 fi
 
 brew install pgvector
