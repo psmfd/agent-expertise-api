@@ -38,8 +38,11 @@ fi
 
 # The root <coverage line-rate="..." branch-rate="..."> attributes are the first
 # occurrences in the document; nested package/class elements repeat them.
+# grep -m1 stops after the first matching line and exits 0 — do NOT pipe grep to
+# `head`, which closes the pipe early and gives grep a SIGPIPE that fails the
+# pipeline under `set -o pipefail` (GNU grep on CI is stricter than BSD grep).
 extract() {
-  grep -o "$1=\"[0-9.]*\"" "$xml" | head -1 | sed "s/$1=\"//; s/\"//"
+  grep -o -m1 "$1=\"[0-9.]*\"" "$xml" | sed "s/$1=\"//; s/\"//"
 }
 line_raw="$(extract line-rate)"
 branch_raw="$(extract branch-rate)"
