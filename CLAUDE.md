@@ -62,7 +62,21 @@ dotnet run --project src/ExpertiseApi -- reembed [--batch-size 50]
 # Backfill IntegrityHash for entries created before the secure-rebuild data model
 # (entries with IntegrityHash = NULL). Idempotent — only touches null rows.
 dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50]
+
+# Export all entries (every tenant + review state) + audit log as NDJSON with an
+# RFC 6962 Merkle manifest (ADR-012). Plain files only — signing/encryption is
+# scripts/expertise-apictl's job (backup-init | backup | restore subcommands).
+dotnet run --project src/ExpertiseApi -- backup --output <dir> [--instance-id <id>] [--batch-size 500]
+
+# Import a decrypted backup payload. Replace mode only (empty target); verifies
+# per-record hashes + Merkle roots against the manifest; quarantines tampered
+# records as Draft; --force-draft re-gates every entry (foreign-backup seed).
+dotnet run --project src/ExpertiseApi -- restore --input <dir> [--mode replace] [--force-draft] [--batch-size 500]
 ```
+
+Operator-facing backup/restore (signed + age-encrypted artifacts, key/dependency
+bootstrap) goes through `scripts/expertise-apictl backup-init | backup | restore` —
+see [`docs/operations/backup-restore-runbook.md`](docs/operations/backup-restore-runbook.md).
 
 ## Model Download
 
@@ -274,6 +288,10 @@ Per ADR-008 (Part D C6/C7 of `docs/security/integration-threat-model.md`), all `
 
 Actor class is resolved by `ActorClassResolver` (the single source of truth across the JwtBearer / ApiKey / LocalDev handlers), cascading mutually-exclusive `Agent ↣ Service ↣ Human`. The `expertise.agent` scope alone is sufficient for `agent`; an `X-Actor-Class: agent` header grants nothing on its own and must be corroborated by the scope or a configured User-Agent allowlist match, else it falls back to the scheme default with a structured warning. `service` applies to non-interactive principals (ApiKey, or `client_credentials` where `sub == azp`/`client_id`). User-Agent is observability-only.
 
+### Aggregator up-sync (ADR-013)
+
+A spoke instance pushes newly Approved entries in the `shared` tenant to a hub's existing `POST /expertise/batch` via `ExpertiseSyncWorker` (`BackgroundService`, `Sync` config section, off by default). Auth is OIDC `client_credentials` against the shared IdP (ADR-005 plumbing; hub-side tenancy via `TenantSource.CompoundRole`/`GroupToTenantMapping` — config-only). **The spoke's hub credential carries `expertise.write.draft` ONLY** — ADR-003 scope semantics force synced entries to land as Draft in the spoke's hub-side tenant, pending curator review (the knowledge-supply-chain control; OWASP ASI04/ASI06). Retry safety is at-least-once via tenant-scoped dedup (`/batch` is outside Idempotency-Key scope per ADR-010); the hub answers replays with `Duplicate`, which the worker counts as success. The hub sets `OriginInstanceId` from `Sync:KnownInstances` (authenticated client id → instance id); a misconfigured `Sync:Enabled=true` spoke fails at startup, not at first tick. Sync metrics: `expertise_sync_cycles_total`, `expertise_sync_items_total`.
+
 ### ForwardedHeaders for IpAddress capture
 
 The audit log records the client IP address. To get the real client IP behind an ingress controller, configure `ForwardedHeaders:KnownNetworks` (CIDR list) so the `UseForwardedHeaders` middleware trusts only the proxy network. Without explicit allowlist the middleware trusts only loopback and audit IpAddress will record the ingress pod IP. In Kubernetes the value is typically the cluster pod CIDR.
@@ -322,7 +340,7 @@ Scope shorthand (`read`, `draft`, `approve`, `admin`) expands to full scope stri
 
 | Workflow | Trigger | What it does |
 | -------- | ------- | ------------ |
-| `ci.yml` | PRs to main/dev, push to dev | Jobs: build & test (SCA vulnerable-package check, openapi.json artifact check, `dotnet format analyzers` gate), pi extension typecheck + tests, Helm lint + render tests, release-manifest generator, semver-comparator unit tests, install/uninstall script-guard unit tests, apictl restart-race (macOS + Debian 13), apictl stop→start lifecycle (macOS), install-smoke `--from-source` (Linux + macOS), install-smoke `--system` LaunchDaemon (macOS, `SMOKE_SYSTEM_SCOPE=1`, #145), OpenAPI breaking-change gate (PR-only, see below) |
+| `ci.yml` | PRs to main/dev, push to dev | Jobs: build & test (SCA vulnerable-package check, openapi.json artifact check, `dotnet format analyzers` gate, **coverage regression ratchet** via `scripts/check-coverage.sh` against `.coverage-baseline` — see below), pi extension typecheck + tests, Helm lint + render tests, release-manifest generator, semver-comparator unit tests, install/uninstall script-guard unit tests, apictl restart-race (macOS + Debian 13), apictl stop→start lifecycle (macOS), install-smoke `--from-source` (Linux + macOS), install-smoke `--system` LaunchDaemon (macOS, `SMOKE_SYSTEM_SCOPE=1`, #145), OpenAPI breaking-change gate (PR-only, see below) |
 | `install-smoke-from-release.yml` | Push to dev / PRs, path-filtered to the release-consumer chain | `install.sh --from-release` end-to-end against the latest cosign-signed release (Linux + macOS) — E3 of the readiness track; gates the D4 default-flip per ADR-011 |
 | `release.yml` | Push to main | semantic-release version bump + tag, Docker build linux/amd64+arm64 to GHCR, cosign-signed A2 tarball + manifest as release assets, Helm chart OCI push, deploy dispatch to the infra repo (only when a new version is released) |
 | `lint-pr-title.yml` | PR to dev | Validates PR title follows Conventional Commits format |
@@ -337,6 +355,10 @@ GHCR image: `ghcr.io/psmfd/agent-expertise-api` (multi-arch: amd64 + arm64).
 
 The build emits the OpenAPI document to `src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json` (build-time emission; `release.yml` attaches it as a release asset). On every PR, the `openapi-diff` job in `ci.yml` builds the spec from both the PR head and the base SHA and runs `oasdiff breaking` between them. Breaking API changes **fail the check** unless the PR carries the `breaking-change-approved` label (which `openapi-label-cleanup.yml` strips on merge). If an endpoint change is intentionally breaking, apply that label rather than reworking the diff.
 
+### Coverage regression ratchet
+
+The `Test` step collects coverage (`--collect:"XPlat Code Coverage"` with `coverlet.runsettings`, which excludes `Migrations/`), and `scripts/check-coverage.sh` fails the build if line or branch coverage drops below the floor in `.coverage-baseline` (currently `line=82.0`, `branch=68.0` against a measured ≈84.6% / ≈70.9%). It is a **regression ratchet, not a target**: the floors sit a few points below the measured value so normal variation never trips CI, but removing a test file does. Raise the floors when coverage improves; never lower them without a recorded reason. Mutation testing (Stryker.NET) was deliberately **not** adopted — it strengthens existing tests rather than covering unexecuted paths, and its per-mutant cost is disproportionate against the Testcontainers-backed suite (revisit only as a scheduled, file-scoped run).
+
 ### Pre-flight PR validator
 
 `scripts/validate-pr.sh` runs the same checks `lint-pr-title.yml` enforces (plus branch name + base branch from `agent-framework/rules/github-flow.md`) so failures surface locally before a PR is opened. Run it before every `gh pr create` / `gh pr edit --title`:
@@ -349,9 +371,14 @@ scripts/validate-pr.sh --title "fix: patch concurrency mapping" --branch fix/foo
 
 ## Testing
 
+See [`docs/testing-and-coverage.md`](docs/testing-and-coverage.md) for the durable testing
+conventions and the silent-bug guardrails (query-translation tests, content-derived mock
+embeddings, the frozen enum-name guard, the coverage regression ratchet, and testability
+seams) — read it before adding a repository query, endpoint, or enum member.
+
 ### Test Prerequisites
 
-- **Docker** must be running — integration tests use [Testcontainers](https://dotnet.testcontainers.org/) to spin up a PostgreSQL + pgvector instance per test run.
+- **Docker** must be running — integration tests use [Testcontainers](https://dotnet.testcontainers.org/) to spin up a PostgreSQL + pgvector instance per test run. Any Docker-compatible runtime works; for **podman** set `DOCKER_HOST` to the machine socket and `TESTCONTAINERS_RYUK_DISABLED=true` (see the testing guide).
 - Unit tests run without Docker.
 
 ### Commands
@@ -436,12 +463,16 @@ The `ExpertiseEntry` entity carries the original content fields (`Domain`, `Tags
 | `IntegrityHash` | `string?` | SHA-256 hex over canonical JSON of `{tenant, title, body, entryType, severity}`. Backfilled by the `rehash` CLI. |
 | `ReviewState` | `enum { Draft, Approved, Rejected }` | Stored as string. Defaults to `Draft`. |
 | `ReviewedBy`, `ReviewedAt`, `RejectionReason` | `string?`, `DateTime?`, `string?` | Approval/rejection metadata, server-set on `/approve` or `/reject` (later PR). |
+| `OriginInstanceId` | `string?` | ADR-013 up-sync attribution. Server-set on the hub from the authenticated client's `Sync:KnownInstances` mapping — never from the request body. Excluded from canonical hash and dedup equality. |
+| `OriginAuthorPrincipal` | `string?` | Origin-side author for up-synced entries (informational reviewer context; accepted from the request body, truncated to 256 chars). Excluded from canonical hash and dedup equality; hygienized as user-supplied free text on read. |
 
 Indexes added: standalone B-tree on `Tenant`; composite B-tree on `(Tenant, ReviewState)` with `INCLUDE (Id, EntryType, Severity)` covering the hot read path.
 
 A separate **`ExpertiseAuditLog`** table records every state-changing operation: `{Id, Timestamp, Action, EntryId, Tenant, Principal, Agent?, BeforeHash, AfterHash, IpAddress, ActorClass, AuthMethod?, ActorClassHeader?}` (the last three added by ADR-008). FK to `ExpertiseEntries.Id` with `ON DELETE RESTRICT` (audit must survive entry deletion). Reads are not audited. Indexes on `(EntryId, Timestamp)` and `(Principal, Timestamp)`.
 
-The `ExpertiseDbContext` exposes both as `DbSet<>`. **`IExpertiseRepository` is the only sanctioned consumer of `ExpertiseDbContext` for entry data** — the architectural test in `tests/ExpertiseApi.Tests/Architecture/` enforces this for everything outside `Data/` and `Cli/`. CLI commands (`reembed`, `rehash`) are intentional exceptions because they need cursor-based paging the repository interface does not expose.
+A **`SyncStates`** singleton-row table (EmbeddingMetadata pattern) holds the spoke-side up-sync cursor: `{Id, LastSyncedUpdatedAt, LastSyncedId, LastSuccessAt}` (ADR-013).
+
+The `ExpertiseDbContext` exposes these as `DbSet<>`. **`IExpertiseRepository` is the only sanctioned consumer of `ExpertiseDbContext` for entry data** — the architectural test in `tests/ExpertiseApi.Tests/Architecture/` enforces this for everything outside `Data/` and `Cli/`. CLI commands (`reembed`, `rehash`) are intentional exceptions because they need cursor-based paging the repository interface does not expose.
 
 ## Architecture & Design
 

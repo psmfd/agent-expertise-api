@@ -61,6 +61,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.9" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.7.0" />
     <!--
       Transitive security pin. Microsoft.AspNetCore.OpenApi 10.0.8 pulls
       Microsoft.OpenApi 2.0.0, which carries a HIGH-severity advisory
@@ -77,9 +78,7 @@
       IncludeAssets covers the build / buildMultitargeting / buildTransitive surfaces
       that the task uses across SDK styles.
     -->
-    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.9"
-                      PrivateAssets="all"
-                      IncludeAssets="build;buildMultitargeting;buildTransitive" />
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.9" PrivateAssets="all" IncludeAssets="build;buildMultitargeting;buildTransitive" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

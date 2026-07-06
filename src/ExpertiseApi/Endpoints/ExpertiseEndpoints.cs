@@ -6,9 +6,11 @@ using ExpertiseApi.Endpoints.Filters;
 using ExpertiseApi.Hygiene;
 using ExpertiseApi.Models;
 using ExpertiseApi.Services;
+using ExpertiseApi.Services.Sync;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Pgvector;
 
 namespace ExpertiseApi.Endpoints;
@@ -203,6 +205,7 @@ internal static class ExpertiseEndpoints
         EmbeddingService embeddingService,
         DeduplicationService dedup,
         IResponseHygiene hygiene,
+        IOptionsMonitor<SyncOptions> syncOptions,
         CancellationToken ct)
     {
         if (!IsRequestValid(request))
@@ -231,7 +234,8 @@ internal static class ExpertiseEndpoints
         if (isDuplicate && existing is not null)
             return Results.Conflict(ExpertiseEntryResponse.From(existing, hygiene));
 
-        var created = await repo.CreateAsync(BuildEntry(request, embedding, tenantContext), tenantContext, ct);
+        var originInstanceId = ResolveOriginInstanceId(tenantContext, syncOptions.CurrentValue);
+        var created = await repo.CreateAsync(BuildEntry(request, embedding, tenantContext, originInstanceId), tenantContext, ct);
         return Results.Created($"/expertise/{created.Id}", ExpertiseEntryResponse.From(created, hygiene));
     }
 
@@ -294,10 +298,12 @@ internal static class ExpertiseEndpoints
         EmbeddingService embeddingService,
         DeduplicationService dedup,
         ILoggerFactory loggerFactory,
+        IOptionsMonitor<SyncOptions> syncOptions,
         CancellationToken ct)
     {
         const int MaxBatchSize = 100;
         var tenantContext = httpContext.RequireTenantContext();
+        var originInstanceId = ResolveOriginInstanceId(tenantContext, syncOptions.CurrentValue);
 
         if (requests is null || requests.Count == 0)
             return Results.Problem("Request body must contain at least one entry.", statusCode: 400);
@@ -432,7 +438,7 @@ internal static class ExpertiseEndpoints
 
             try
             {
-                var created = await repo.CreateAsync(BuildEntry(request, embedding, tenantContext), tenantContext, ct);
+                var created = await repo.CreateAsync(BuildEntry(request, embedding, tenantContext, originInstanceId), tenantContext, ct);
                 results[index] = new BatchEntryResult(index, BatchEntryStatus.Created, created.Id, null);
             }
             catch (OperationCanceledException)
@@ -466,7 +472,8 @@ internal static class ExpertiseEndpoints
     private static ExpertiseEntry BuildEntry(
         CreateExpertiseRequest request,
         Vector embedding,
-        TenantContext tenantContext)
+        TenantContext tenantContext,
+        string? originInstanceId)
     {
         var authorPrincipal = tenantContext.Principal.FindFirst("sub")?.Value
                           ?? tenantContext.Principal.Identity?.Name
@@ -486,6 +493,14 @@ internal static class ExpertiseEndpoints
             Tenant = request.Tenant ?? tenantContext.Tenant!,
             AuthorPrincipal = authorPrincipal,
             AuthorAgent = tenantContext.Agent,
+            // ADR-013 origin attribution. OriginInstanceId is SERVER-derived (authenticated
+            // client → Sync:KnownInstances) — the body's claim about its own origin is never
+            // trusted. OriginAuthorPrincipal is informational body input, truncated like
+            // ActorClassHeader (ADR-008 precedent) rather than rejected.
+            OriginInstanceId = originInstanceId,
+            OriginAuthorPrincipal = request.OriginAuthorPrincipal is { Length: > 256 } long_
+                ? long_[..256]
+                : request.OriginAuthorPrincipal,
             // Shared entries bypass the draft queue (which is scoped to the writing tenant
             // and never surfaces shared drafts). Create them directly as Approved to avoid
             // a permanently unapprovable stranded draft.
@@ -494,6 +509,17 @@ internal static class ExpertiseEndpoints
             ReviewedAt = isShared ? DateTime.UtcNow : null,
         };
     }
+
+    /// <summary>
+    /// Maps the authenticated client identifier (azp/appid/client_id, surfaced as
+    /// <see cref="TenantContext.Agent"/>) to a configured origin instance id
+    /// (<c>Sync:KnownInstances</c>, ADR-013). Null for callers that are not
+    /// registered sync spokes — i.e., every ordinary caller.
+    /// </summary>
+    private static string? ResolveOriginInstanceId(TenantContext tenantContext, SyncOptions sync) =>
+        tenantContext.Agent is { } client && sync.KnownInstances.TryGetValue(client, out var instance)
+            ? instance
+            : null;
 
     private static async Task<IResult> DeleteEntry(
         Guid id,
@@ -598,7 +624,14 @@ internal record CreateExpertiseRequest(
     /// stranded drafts (the draft queue is scoped to the writing tenant and never surfaces
     /// shared entries).
     /// </summary>
-    string? Tenant = null);
+    string? Tenant = null,
+    /// <summary>
+    /// Origin-side author for entries arriving via aggregator up-sync (ADR-013) —
+    /// informational reviewer context only. Truncated to 256 characters at write time.
+    /// Contrast with <c>OriginInstanceId</c>, which is server-derived from the
+    /// authenticated client and never accepted from the body.
+    /// </summary>
+    string? OriginAuthorPrincipal = null);
 
 internal record UpdateExpertiseRequest(
     string? Domain = null,

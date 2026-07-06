@@ -366,6 +366,46 @@ builder.Services.AddSingleton<ExpertiseApi.Services.Idempotency.IIdempotencyStor
 builder.Services.AddSingleton<ExpertiseApi.Endpoints.Filters.IdempotencyEndpointFilter>();
 builder.Services.AddHostedService<ExpertiseApi.Services.Idempotency.IdempotencyGcService>();
 
+// ---------------------------------------------------------------------------
+// Aggregator up-sync (ADR-013). The Sync section is ALWAYS bound: the hub role
+// only needs Sync:KnownInstances (consumed by the create endpoints for
+// OriginInstanceId attribution) with Enabled=false. The spoke machinery —
+// resilient HttpClients, token client, worker — registers only when enabled.
+// Validation is a manual startup guard (repo convention, like the auth guards):
+// a misconfigured spoke must fail at boot, not at first tick.
+// ---------------------------------------------------------------------------
+builder.Services.Configure<ExpertiseApi.Services.Sync.SyncOptions>(
+    builder.Configuration.GetSection("Sync"));
+if (builder.Configuration.GetValue<bool>("Sync:Enabled", false))
+{
+    string[] requiredSyncKeys = ["Sync:HubUrl", "Sync:TokenEndpoint", "Sync:ClientId", "Sync:ClientSecret"];
+    var missingSyncKeys = requiredSyncKeys
+        .Where(k => string.IsNullOrWhiteSpace(builder.Configuration[k]))
+        .ToList();
+    if (missingSyncKeys.Count > 0)
+    {
+        throw new InvalidOperationException(
+            $"Sync:Enabled=true requires {string.Join(", ", missingSyncKeys)} to be set. " +
+            "Supply Sync__ClientSecret via the environment (secrets.env / k8s secret), never appsettings.json.");
+    }
+
+    foreach (var urlKey in new[] { "Sync:HubUrl", "Sync:TokenEndpoint" })
+    {
+        if (!Uri.TryCreate(builder.Configuration[urlKey], UriKind.Absolute, out var parsed)
+            || (parsed.Scheme != Uri.UriSchemeHttps && parsed.Scheme != Uri.UriSchemeHttp))
+        {
+            throw new InvalidOperationException($"{urlKey} must be an absolute http(s) URL.");
+        }
+    }
+
+    builder.Services.AddHttpClient(ExpertiseApi.Services.Sync.ExpertiseSyncWorker.HttpClientName)
+        .AddStandardResilienceHandler();
+    builder.Services.AddHttpClient(ExpertiseApi.Services.Sync.HubTokenClient.HttpClientName)
+        .AddStandardResilienceHandler();
+    builder.Services.AddSingleton<ExpertiseApi.Services.Sync.HubTokenClient>();
+    builder.Services.AddHostedService<ExpertiseApi.Services.Sync.ExpertiseSyncWorker>();
+}
+
 var baseDir = AppContext.BaseDirectory;
 var modelPath = builder.Configuration["Onnx:ModelPath"] ?? Path.Combine(baseDir, "models", "model.onnx");
 var vocabPath = builder.Configuration["Onnx:VocabPath"] ?? Path.Combine(baseDir, "models", "vocab.txt");
@@ -464,6 +504,20 @@ if (ReembedCommand.IsReembedRequested(args))
 if (RehashCommand.IsRehashRequested(args))
 {
     await RehashCommand.RunAsync(app, args);
+    return;
+}
+
+if (BackupCommand.IsBackupRequested(args))
+{
+    // Exit code matters: scripts/expertise-apictl backup aborts (and never signs or
+    // encrypts a partial payload) when the export verb fails. Same mechanism as migrate.
+    Environment.ExitCode = await BackupCommand.RunAsync(app, args);
+    return;
+}
+
+if (RestoreCommand.IsRestoreRequested(args))
+{
+    Environment.ExitCode = await RestoreCommand.RunAsync(app, args);
     return;
 }
 

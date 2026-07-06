@@ -95,6 +95,29 @@ spec:
             - name: AllowedHosts
               value: {{ . | quote }}
             {{- end }}
+            {{- /* Aggregator up-sync (ADR-013). Sync__ClientSecret comes from auth.secretName via envFrom, never a plain value. */}}
+            {{- if .Values.sync.enabled }}
+            - name: Sync__Enabled
+              value: "true"
+            - name: Sync__HubUrl
+              value: {{ required "sync.hubUrl is required when sync.enabled" .Values.sync.hubUrl | quote }}
+            - name: Sync__TokenEndpoint
+              value: {{ required "sync.tokenEndpoint is required when sync.enabled" .Values.sync.tokenEndpoint | quote }}
+            - name: Sync__ClientId
+              value: {{ required "sync.clientId is required when sync.enabled" .Values.sync.clientId | quote }}
+            {{- with .Values.sync.tokenScope }}
+            - name: Sync__TokenScope
+              value: {{ . | quote }}
+            {{- end }}
+            - name: Sync__Interval
+              value: {{ .Values.sync.interval | quote }}
+            - name: Sync__BatchSize
+              value: {{ .Values.sync.batchSize | quote }}
+            {{- end }}
+            {{- range $client, $instance := .Values.sync.knownInstances }}
+            - name: Sync__KnownInstances__{{ $client }}
+              value: {{ $instance | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           volumeMounts:

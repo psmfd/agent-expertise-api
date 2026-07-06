@@ -311,6 +311,11 @@ log "running install.sh with prefix=${PREFIX} bind=${BIND_ADDR} mode=${SMOKE_INS
 install_args=(--skip-preflight --prefix "${PREFIX}" --bind "${BIND_ADDR}")
 if [ "${SMOKE_INSTALL_MODE}" = "release" ]; then
   install_args+=(--from-release --version "${SMOKE_RELEASE_VERSION}")
+else
+  # Source-build leg (E1/E2). Since the D4 default-flip (#249) made
+  # --from-release the default, the local-build path must be requested
+  # explicitly, and --i-accept-unverified-source is mandatory with it.
+  install_args+=(--from-source --i-accept-unverified-source)
 fi
 
 # Preserve the staged tree on failure so the failure-handler below can
@@ -654,6 +659,7 @@ case "$(uname -s)" in
       # shellcheck disable=SC2024
       sudo bash "${ROOT}/scripts/install.sh" \
         --system \
+        --from-source --i-accept-unverified-source \
         --bind "${_sys_bind}" \
         > "${_sys_install_log}" 2>&1
       _sys_rc=$?
@@ -783,6 +789,7 @@ case "$(uname -s)" in
       _system_err_output=$(bash "${ROOT}/scripts/install.sh" \
         --prefix "${PREFIX}/_system_guard_probe" \
         --system \
+        --from-source --i-accept-unverified-source \
         2>&1)
       _system_rc=$?
       set -e

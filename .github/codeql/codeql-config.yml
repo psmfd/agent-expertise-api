@@ -25,3 +25,16 @@ paths-ignore:
   - '**/bin/**'
   - '**/generated/**'
   - '**/*.generated.cs'
+
+# Rule-level exclusions. `paths-ignore` above cannot reach source-generator
+# output for C# under CodeQL's manual build mode — the extractor processes
+# `obj/Release/.../generated/*.g.cs` during compilation, before the database-path
+# filter applies — so generated-code alerts still surface. cs/useless-cast-to-self
+# fires 64x purely on System.Text.Json source-generated `*.g.cs` (e.g.
+# SyncJsonContext, aggregator #348); it is a redundant-cast style rule with
+# negligible value on hand-written code. Excluding the rule clears this
+# generated-code noise durably, rather than via repeated per-alert REST-API
+# dismissals that recur with every new source-generated type.
+query-filters:
+  - exclude:
+      id: cs/useless-cast-to-self

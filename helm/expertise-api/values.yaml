@@ -109,6 +109,26 @@ forwardedHeaders:
   # Example:
   # - "10.42.0.0/16"
 
+# Aggregator up-sync (ADR-013). SPOKE role: enabled=true + hubUrl/tokenEndpoint/
+# clientId; the client secret is NOT set here — add Sync__ClientSecret to the
+# auth.secretName secret (same envFrom path as the DB connection string). The
+# spoke's hub credential must carry expertise.write.draft ONLY (the draft-only
+# scope is the supply-chain control). HUB role: leave enabled=false and populate
+# knownInstances (authenticated client id -> origin instance id) for server-side
+# OriginInstanceId attribution on synced entries.
+sync:
+  enabled: false
+  hubUrl: ""
+  tokenEndpoint: ""
+  clientId: ""
+  # Optional OAuth scope parameter for the token request (IdP-dependent).
+  tokenScope: ""
+  interval: "00:05:00"
+  batchSize: 100
+  knownInstances: {}
+  # Example:
+  #   "spoke-alpha-client-id": spoke-alpha
+
 api:
   resources:
     requests:

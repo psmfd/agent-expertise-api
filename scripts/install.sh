@@ -12,7 +12,7 @@
 #                      [--rid RID] [--fix-line-endings]
 #                      [--allow-system-prefix]
 #                      [--install-deps] [--upgrade-deps]
-#                      [--from-release | --from-source [--i-accept-unverified-source]]
+#                      [--from-release | --from-source --i-accept-unverified-source]
 #                      [--version vX.Y.Z|latest]
 #                      [--allow-downgrade] [--accept-republished-version]
 #                      [--skip-release-api-crosscheck]
@@ -23,16 +23,15 @@
 #
 # Install mode (ADR-011, issue #249):
 #
-#   * --from-release   Fetch cosign-signed portable tarball from GHCR
-#                      Releases. Cosign verifies the manifest; manifest's
-#                      sha256 binds the tarball. Default mode after the
-#                      D4 flip gate clears. Requires --version on FIRST
-#                      release-mode install (--version latest only
-#                      permitted on upgrades).
-#   * --from-source    Build from local source tree (current default for
-#                      back-compat with pre-D3 callers). Becomes opt-in
-#                      after the D4 flip; --i-accept-unverified-source
-#                      will be mandatory then. Accepted silently in D3.
+#   * --from-release   DEFAULT (D4 flip, #249). Fetch cosign-signed portable
+#                      tarball from GitHub Releases. Cosign verifies the
+#                      manifest; the manifest's sha256 binds the tarball.
+#                      Requires --version on the FIRST release-mode install
+#                      (--version latest only permitted on upgrades).
+#   * --from-source    Opt-in escape hatch: build from the local source tree
+#                      (no cosign chain). REQUIRES --i-accept-unverified-source
+#                      to acknowledge the reduced trust posture. For devs
+#                      iterating on a clone and air-gapped operators.
 #   * --version vX.Y.Z Pin the release tag (release-mode only). Required
 #                      on first install. "latest" permitted on upgrades.
 #   * --allow-downgrade  Permit ${incoming} < ${prior}. Cosign verify still
@@ -98,7 +97,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Pinned secrets-file schema version. Bump when the format changes; add
 # a per-version fixup in `migrate_secrets_schema` and re-export.
-SECRETS_SCHEMA_VERSION=1
+# v2 adds the documented Sync__* (ADR-013 up-sync) block to the stub. Existing
+# v1 files keep working — detect_secrets_schema_version warns, never rewrites.
+SECRETS_SCHEMA_VERSION=2
 
 # ---------------------------------------------------------------------------
 # Defaults & arg parsing
@@ -113,15 +114,15 @@ FIX_LINE_ENDINGS=0
 ALLOW_SYSTEM_PREFIX=0
 INSTALL_DEPS=0
 UPGRADE_DEPS=0
-# D3 (#249) — release-mode args. Defaults preserve pre-D3 behavior (source
-# mode silent default) until the D4 flip gate clears (one release cycle of
-# D2 green + D3 smoke test green on macOS+Linux). See ADR-011.
-INSTALL_MODE=""               # "" (= source, silent default in D3) | release | source
+# Release-mode args (#249). Since the D4 default-flip an unset INSTALL_MODE
+# resolves to release (cosign-verified tarball); --from-source is opt-in and
+# requires --i-accept-unverified-source. See ADR-011.
+INSTALL_MODE=""               # "" (resolves to release, D4 default-flip) | release | source
 REQUESTED_VERSION=""          # vX.Y.Z, X.Y.Z, or "latest" — release mode only
 ALLOW_DOWNGRADE=0
 ACCEPT_REPUBLISHED_VERSION=0
 SKIP_RELEASE_API_CROSSCHECK=0
-ACCEPT_UNVERIFIED_SOURCE=0    # no-op in D3; mandatory after D4 default-flip
+ACCEPT_UNVERIFIED_SOURCE=0    # mandatory with --from-source since the D4 default-flip (#249)
 MIGRATE_TIMEOUT=300           # wall-time limit for the migrate verb; 0 = unbounded
 
 usage() { sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -173,15 +174,25 @@ fi
 [[ "${PUBLISH_MODE}" == "fdd" || "${PUBLISH_MODE}" == "scd" ]] \
   || err "--publish-mode must be 'fdd' or 'scd'"
 
-# D3 (#249) — install-mode validation. Silent default in D3 = source (= "")
-# for back-compat. After the D4 flip gate clears, the default becomes
-# release and --from-source will require --i-accept-unverified-source.
+# Install-mode validation (#249). Since the D4 default-flip an unset
+# INSTALL_MODE resolves to release (cosign-verified); --from-source is the
+# opt-in escape hatch and requires --i-accept-unverified-source.
 #
 # D3 pre-PR (shell-expert LOW): the arg-parse loop currently lets
 # `--from-release --from-source` (or vice versa) silently take the LAST
 # value of INSTALL_MODE. Refuse the conflict so the operator's intent is
 # never resolved silently.
-if [[ "${INSTALL_MODE}" == "release" ]] && [[ "${ACCEPT_UNVERIFIED_SOURCE}" == "1" ]]; then
+# D4 default-flip (#249, ADR-011): the default install mode is now the
+# cosign-verified release tarball. Resolve an unset INSTALL_MODE to release
+# FIRST — so the accept-flag guard below also catches the implicit-default
+# case (--i-accept-unverified-source with no mode flag), not just explicit
+# --from-release. --from-source is the opt-in escape hatch (else branch).
+if [[ -z "${INSTALL_MODE}" ]]; then
+  INSTALL_MODE="release"
+fi
+# --i-accept-unverified-source is meaningful only with --from-source. Reject it
+# in any non-source (cosign-verified) mode rather than silently ignoring intent.
+if [[ "${INSTALL_MODE}" != "source" ]] && [[ "${ACCEPT_UNVERIFIED_SOURCE}" == "1" ]]; then
   err "--i-accept-unverified-source is meaningful only with --from-source (release mode is cosign-verified)"
 fi
 if [[ "${INSTALL_MODE}" == "release" ]]; then
@@ -200,9 +211,11 @@ else
   if (( ALLOW_DOWNGRADE == 1 || ACCEPT_REPUBLISHED_VERSION == 1 || SKIP_RELEASE_API_CROSSCHECK == 1 )); then
     err "--allow-downgrade / --accept-republished-version / --skip-release-api-crosscheck are release-mode-only flags"
   fi
-  # Touch ACCEPT_UNVERIFIED_SOURCE so shellcheck sees it referenced; will
-  # become load-bearing after the D4 default-flip.
-  : "${ACCEPT_UNVERIFIED_SOURCE}"
+  # D4 default-flip (#249): --from-source now builds from an unverified local
+  # tree (no cosign chain), so it must be an explicit, acknowledged choice.
+  if (( ACCEPT_UNVERIFIED_SOURCE != 1 )); then
+    err "--from-source builds from an unverified local source tree (no cosign verification). Pass --i-accept-unverified-source to acknowledge the reduced trust posture, or omit --from-source to use the default cosign-verified --from-release path."
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -730,6 +743,14 @@ ensure_config_stubs() {
 #
 # When Auth:Mode=Oidc, populate per-issuer overrides via Auth__Oidc__Issuers__N__*
 # environment variables — see appsettings.json for the shape.
+#
+# Aggregator up-sync (ADR-013, spoke role only — leave unset for a standalone
+# instance). The hub credential must carry expertise.write.draft ONLY:
+#   Sync__Enabled=true
+#   Sync__HubUrl="https://hub.example.com"
+#   Sync__TokenEndpoint="https://idp.example.com/oauth2/token"
+#   Sync__ClientId="spoke-client-id"
+#   Sync__ClientSecret="CHANGE_ME"
 EOF
     chmod 600 "${SECRETS_FILE}.tmp"
     mv -f -- "${SECRETS_FILE}.tmp" "${SECRETS_FILE}"
@@ -826,15 +847,23 @@ export Metrics__Enabled="\${Metrics__Enabled:-false}"
 export Onnx__ModelPath="${MODEL_DIR}/model.onnx"
 export Onnx__VocabPath="${MODEL_DIR}/vocab.txt"
 
+# DOTNET_ROOT must be exported for BOTH exec branches: an fdd APPHOST
+# resolves the runtime exactly like the muxer path does, and on hosts where
+# dotnet lives outside the default /usr/local/share/dotnet location (e.g.
+# ~/.dotnet from dotnet-install.sh) the apphost fails with
+# "app-launch-failed / missing_runtime" without it. Previously only the
+# DLL branch exported it, so an fdd publish that emitted an apphost crash-
+# looped at service start on such hosts.
+if [[ -n "${dotnet_root}" ]]; then
+  export DOTNET_ROOT="\${DOTNET_ROOT:-${dotnet_root}}"
+fi
+
 if [[ -x "\${BIN_DIR}/ExpertiseApi" ]]; then
   exec "\${BIN_DIR}/ExpertiseApi"
 elif [[ -n "\${DOTNET_BIN}" && -x "\${DOTNET_BIN}" ]]; then
   # Absolute path baked at install time: the service manager's PATH
   # (launchd path_helper, systemd user units) does not include
   # non-standard dotnet roots, so bare \`dotnet\` is not resolvable here.
-  if [[ -n "${dotnet_root}" ]]; then
-    export DOTNET_ROOT="\${DOTNET_ROOT:-${dotnet_root}}"
-  fi
   exec "\${DOTNET_BIN}" "\${BIN_DIR}/ExpertiseApi.dll"
 else
   # Last resort: PATH lookup (pre-existing behavior).
@@ -1197,7 +1226,7 @@ main() {
   # D3 (#249) — post-swap mode/semver/history markers. Written AFTER
   # atomic_swap so they only reflect committed installs (a rollback path
   # that runs cleanup() before SUCCESS=1 will not have touched them).
-  rc_write_post_install_markers "${INSTALL_MODE:-source}"
+  rc_write_post_install_markers "${INSTALL_MODE:-release}"
   SUCCESS=1
 
   log "install complete"

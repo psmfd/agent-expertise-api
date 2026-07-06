@@ -173,7 +173,9 @@ internal sealed class MigrationStateRefresher : BackgroundService
         }
     }
 
-    private async Task RefreshOnceAsync(CancellationToken ct)
+    // internal (not private) so MigrationStateRefresherTests can drive one refresh
+    // deterministically without racing the PeriodicTimer loop (#354).
+    internal async Task RefreshOnceAsync(CancellationToken ct)
     {
         try
         {

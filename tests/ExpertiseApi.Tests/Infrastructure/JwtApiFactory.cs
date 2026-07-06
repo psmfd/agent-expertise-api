@@ -24,16 +24,26 @@ namespace ExpertiseApi.Tests.Infrastructure;
 public class JwtApiFactory : WebApplicationFactory<Program>
 {
     private readonly string _connectionString;
+    private readonly IReadOnlyDictionary<string, string?>? _extraSettings;
 
-    public JwtApiFactory(string connectionString)
+    public JwtApiFactory(string connectionString, IReadOnlyDictionary<string, string?>? extraSettings = null)
     {
         _connectionString = connectionString;
+        _extraSettings = extraSettings;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
         builder.UseSetting("Auth:Mode", "Oidc");
+
+        // Test-specific configuration overlays (e.g. Sync:KnownInstances for
+        // ADR-013 origin-attribution tests).
+        if (_extraSettings is not null)
+        {
+            foreach (var (key, value) in _extraSettings)
+                builder.UseSetting(key, value);
+        }
 
         // Override DefaultConnection so any DI consumer that reads from
         // IConfiguration (e.g. the singleton NpgsqlDataSource backing
@@ -102,15 +112,12 @@ public class JwtApiFactory : WebApplicationFactory<Program>
                     Arg.Any<CancellationToken>())
                 .Returns(callInfo =>
                 {
+                    // Content-derived embeddings (#353): index i maps to input i, identical
+                    // content yields identical vectors, distinct content stays near-orthogonal.
                     var inputs = callInfo.ArgAt<IEnumerable<string>>(0).ToList();
                     var result = new GeneratedEmbeddings<Embedding<float>>();
-                    foreach (var _ in inputs)
-                    {
-                        var vector = new float[384];
-                        for (var i = 0; i < 384; i++)
-                            vector[i] = (float)(new Random(42 + i).NextDouble() * 2 - 1);
-                        result.Add(new Embedding<float>(vector));
-                    }
+                    foreach (var input in inputs)
+                        result.Add(new Embedding<float>(TestHelpers.CreateContentEmbedding(input)));
                     return Task.FromResult<GeneratedEmbeddings<Embedding<float>>>(result);
                 });
 

@@ -20,7 +20,7 @@ namespace ExpertiseApi.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.4")
+                .HasAnnotation("ProductVersion", "10.0.9")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "vector");
@@ -151,6 +151,12 @@ namespace ExpertiseApi.Migrations
                     b.Property<string>("IntegrityHash")
                         .HasColumnType("text");
 
+                    b.Property<string>("OriginAuthorPrincipal")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OriginInstanceId")
+                        .HasColumnType("text");
+
                     b.Property<string>("RejectionReason")
                         .HasColumnType("text");
 
@@ -235,6 +241,28 @@ namespace ExpertiseApi.Migrations
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("Tenant", "ReviewState"), new[] { "Id", "EntryType", "Severity" });
 
                     b.ToTable("ExpertiseEntries");
+                });
+
+            modelBuilder.Entity("ExpertiseApi.Models.SyncState", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("LastSuccessAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("LastSyncedId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("LastSyncedUpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("SyncStates");
                 });
 
             modelBuilder.Entity("ExpertiseApi.Models.ExpertiseAuditLog", b =>

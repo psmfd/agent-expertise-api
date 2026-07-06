@@ -16,8 +16,14 @@ internal class ExpertiseRepository(
     /// <summary>
     /// Builds the tenant predicate per ADR-001: a row is visible if its <c>Tenant</c>
     /// matches the caller's, or if it is in the cross-tenant <c>shared</c> namespace.
+    /// <para>
+    /// <c>internal</c> (not private) so the query-translation test suite
+    /// (<c>RepositoryQueryTranslationTests</c>, #352) can build on the exact same
+    /// tenant-scoping seam the production reads use, rather than re-deriving it and
+    /// risking drift.
+    /// </para>
     /// </summary>
-    private static IQueryable<ExpertiseEntry> ApplyTenantFilter(
+    internal static IQueryable<ExpertiseEntry> ApplyTenantFilter(
         IQueryable<ExpertiseEntry> query, TenantContext ctx)
     {
         var tenant = RequireTenant(ctx);
@@ -26,9 +32,10 @@ internal class ExpertiseRepository(
 
     /// <summary>
     /// Reads default to <see cref="ReviewState.Approved"/>. Drafts and Rejected entries
-    /// are exposed only via the dedicated <c>/drafts</c> endpoint.
+    /// are exposed only via the dedicated <c>/drafts</c> endpoint. <c>internal</c> for the
+    /// same test-seam reason as <see cref="ApplyTenantFilter"/> (#352).
     /// </summary>
-    private static IQueryable<ExpertiseEntry> ApplyApprovedReviewFilter(
+    internal static IQueryable<ExpertiseEntry> ApplyApprovedReviewFilter(
         IQueryable<ExpertiseEntry> query) =>
             query.Where(e => e.ReviewState == ReviewState.Approved);
 
@@ -87,15 +94,6 @@ internal class ExpertiseRepository(
             .FirstOrDefaultAsync(ct);
     }
 
-    public async Task<ExpertiseEntry?> GetByIdIncludingDraftsAsync(Guid id, TenantContext ctx, CancellationToken ct)
-    {
-        // Approve/reject paths must be able to load Draft entries; the default
-        // ApplyApprovedReviewFilter would exclude them.
-        return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
-            .Where(e => e.Id == id)
-            .FirstOrDefaultAsync(ct);
-    }
-
     public async Task<List<ExpertiseEntry>> ListAsync(
         TenantContext ctx,
         string? domain,
@@ -104,6 +102,26 @@ internal class ExpertiseRepository(
         Severity? severity,
         bool includeDeprecated,
         CancellationToken ct)
+    {
+        return await BuildListQuery(ctx, domain, tags, entryType, severity, includeDeprecated).ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Composes the conditional <c>GET /expertise</c> filter query. Extracted from
+    /// <see cref="ListAsync"/> as an <c>internal</c> seam so the query-translation test
+    /// suite (#352) can assert every filter-combination's SQL translatability via
+    /// <c>ToQueryString()</c> against the exact production expression tree — the
+    /// <c>tags.All(t =&gt; e.Tags.Contains(t))</c> array-containment predicate is the
+    /// highest-risk shape (same class as the <c>ToLowerInvariant</c> incident) and must
+    /// be tested against the real builder, not a reconstruction that could drift.
+    /// </summary>
+    internal IQueryable<ExpertiseEntry> BuildListQuery(
+        TenantContext ctx,
+        string? domain,
+        List<string>? tags,
+        EntryType? entryType,
+        Severity? severity,
+        bool includeDeprecated)
     {
         var query = ApplyApprovedReviewFilter(ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx));
 
@@ -122,7 +140,7 @@ internal class ExpertiseRepository(
         if (tags is { Count: > 0 })
             query = query.Where(e => tags.All(t => e.Tags.Contains(t)));
 
-        return await query.OrderByDescending(e => e.UpdatedAt).ToListAsync(ct);
+        return query.OrderByDescending(e => e.UpdatedAt);
     }
 
     public async Task<List<ExpertiseEntry>> ListDraftsAsync(TenantContext ctx, CancellationToken ct)
@@ -439,14 +457,23 @@ internal class ExpertiseRepository(
             .FirstOrDefaultAsync(ct);
     }
 
+    [SuppressMessage("Globalization", "CA1304:Specify CultureInfo",
+        Justification = "e.Title.ToLower() in this LINQ expression translates to PostgreSQL's LOWER() function and never executes on the .NET runtime; the input list is normalized with ToLowerInvariant() above. Same rationale as FindExactMatchAsync.")]
+    [SuppressMessage("Globalization", "CA1311:Specify a culture or use an invariant version",
+        Justification = "e.Title.ToLower() translates to SQL LOWER(); culture has no effect on the SQL output.")]
     public async Task<List<ExpertiseEntry>> FindExactMatchesAsync(string domain, IReadOnlyList<string> titles, TenantContext ctx, CancellationToken ct)
     {
         var lowerTitles = titles.Select(t => t.ToLowerInvariant()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // e.Title.ToLower() (NOT ToLowerInvariant): EF Core translates ToLower() to SQL
+        // LOWER() but cannot translate ToLowerInvariant(), which made this method throw
+        // at runtime — failing EVERY valid /expertise/batch item at the dedup phase.
+        // Latent since the batch endpoint landed; surfaced by the first integration test
+        // to exercise /expertise/batch end-to-end (SyncOriginAttributionTests, ADR-013).
         return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
             .Where(e => e.DeprecatedAt == null)
             .Where(e => e.ReviewState != ReviewState.Rejected)
             .Where(e => e.Domain == domain)
-            .Where(e => lowerTitles.Contains(e.Title.ToLowerInvariant()))
+            .Where(e => lowerTitles.Contains(e.Title.ToLower()))
             .ToListAsync(ct);
     }
 
@@ -486,6 +513,25 @@ internal class ExpertiseRepository(
             .Where(e => e.ReviewState != ReviewState.Rejected)
             .Where(e => e.Domain == domain)
             .Where(e => e.Embedding != null)
+            .ToListAsync(ct);
+    }
+
+    public async Task<List<ExpertiseEntry>> ListSharedApprovedUpdatedAfterAsync(
+        DateTime afterUpdatedAt, Guid afterId, int limit, CancellationToken ct)
+    {
+        // No TenantContext by design (see interface doc): scope is hard-coded to the
+        // shared namespace. Runs from a background-service scope where the EF global
+        // tenant filter's accessor returns null (short-circuits) — this explicit WHERE
+        // is the correctness driver, same posture as every other method here.
+        return await db.ExpertiseEntries
+            .Where(e => e.Tenant == "shared")
+            .Where(e => e.ReviewState == ReviewState.Approved)
+            .Where(e => e.DeprecatedAt == null)
+            .Where(e => e.UpdatedAt > afterUpdatedAt
+                        || (e.UpdatedAt == afterUpdatedAt && e.Id > afterId))
+            .OrderBy(e => e.UpdatedAt).ThenBy(e => e.Id)
+            .Take(limit)
+            .AsNoTracking()
             .ToListAsync(ct);
     }
 

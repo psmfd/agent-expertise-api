@@ -517,6 +517,25 @@ pending EF Core migrations and is idempotent (no-op when up to date).
   The flag is accepted by `scripts/migrate.sh` directly for standalone use,
   and by `scripts/install.sh` / `scripts/install.ps1` which pass it through.
 
+#### Backup & restore
+
+Operator procedures live in the
+[Backup & Restore Runbook](docs/operations/backup-restore-runbook.md):
+
+- **Part A — seed from an existing pg_dump** (older hosted instance →
+  fresh local install): restore-before-migrate ordering, pre-migrate
+  verification queries, the `Tenant='legacy'` remediation trap, and the
+  `rehash`/`reembed` follow-ups.
+- **Part B — ongoing provenance-verified backups** ([ADR-012](adrs/012-backup-artifact-format.md)):
+  `backup`/`restore` CLI verbs producing an age-encrypted, signature-verified
+  (`ssh-keygen -Y`, ADR-012 Amendment 1) NDJSON artifact with per-record
+  Merkle hashing, orchestrated by
+  `expertise-apictl backup-init | backup | restore` (#340).
+
+Backup artifacts contain Drafts, Rejected entries, and the audit log —
+treat them as sensitive (the tooling chmods them 600) even though the
+payload is encrypted.
+
 #### Upgrade safety
 
 `scripts/install.sh` is safe to re-run for upgrades. Each invocation:
@@ -647,17 +666,23 @@ host. The long-term shape is captured in
 [ADR-011](adrs/011-deployment-artifact-format.md): CI publishes a
 portable cosign-signed tarball; `install.sh` cosign-verifies and
 extracts it without an SDK on the host. PR C1 (#248) shipped Option A
-as the pragmatic short-term default. The flip to Option B as the
-installer's default is tracked separately and gated on one release
-cycle of green CI publishing the signed manifest + tarball.
+as the pragmatic short-term interim default. **The D4 default-flip (#249)
+has since landed: `--from-release` is now the installer default.**
 
-#### `--from-release` (ADR-011 Option B opt-in)
+#### `--from-release` (ADR-011 Option B — default since #249)
 
-D3 of the ADR-011 rollout (#249) adds an opt-in release-tarball mode to
-`install.sh`. The default (no flag) remains source-build for backward
-compatibility — the default-flip ships in D4 once one release cycle of
-the D2 publishing pipeline has gone green and the D3 smoke test has run
-on a fresh macOS + Ubuntu host.
+`install.sh` with no mode flag now installs from the cosign-signed release
+tarball (ADR-011 Option B). Source builds are the explicit opt-in escape
+hatch: `--from-source` requires `--i-accept-unverified-source` to
+acknowledge that a local tree carries no cosign chain (see the source-build
+note below). On a **first** release-mode install `--version vX.Y.Z` is
+required (`latest` is permitted only on upgrades).
+
+> **Windows (`install.ps1`)** does not yet have a `--from-release` path — it
+> builds from source unconditionally (no cosign verification). Windows
+> release-path parity is tracked in
+> [#367](https://github.com/psmfd/agent-expertise-api/issues/367); until then
+> the default trust posture differs from macOS/Linux.
 
 ```bash
 ./scripts/install.sh --from-release --version vX.Y.Z   # fetch + cosign-verify + extract
@@ -721,8 +746,9 @@ bundle (#256).
 Quick start (macOS / Linux / WSL):
 
 ```bash
-./scripts/install.sh                              # per-user install, fdd publish (source build, current D3 default for back-compat)
-./scripts/install.sh --from-release --version vX.Y.Z  # ADR-011 release-mode: cosign-verify a published tarball, no SDK on host
+./scripts/install.sh --version vX.Y.Z             # DEFAULT (ADR-011): cosign-verify a published tarball, no SDK on host
+./scripts/install.sh                              # DEFAULT on upgrades: fetches the latest signed release
+./scripts/install.sh --from-source --i-accept-unverified-source  # opt-in: build from local tree (no cosign chain)
 edit ~/.config/expertise-api/secrets.env          # set ConnectionStrings__DefaultConnection
 ./scripts/migrate.sh                              # apply EF Core migrations (idempotent)
 ./scripts/expertise-apictl status                 # daily-use service control
@@ -844,6 +870,8 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 |------|---------|
 | [CLAUDE.md](CLAUDE.md) | Full build/run commands, local dev guide |
 | [.agents/skills/expertise-api/references/DESIGN.md](.agents/skills/expertise-api/references/DESIGN.md) | Authoritative design reference (data model, API, architecture) |
+| [docs/testing-and-coverage.md](docs/testing-and-coverage.md) | Testing conventions and silent-bug guardrails (translation tests, coverage ratchet, mock embeddings, enum guard) |
+| [docs/operations/backup-restore-runbook.md](docs/operations/backup-restore-runbook.md) | Backup/restore operator procedures (pg_dump seed + signed-artifact CLI) |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | Copilot agent instructions |
 
 ## Security
@@ -855,6 +883,8 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | Scanning stack (CodeQL, Trivy, Hadolint, OSV-Scanner) | [ADR-004](adrs/004-security-scanning-stack.md) |
 | Idempotency-Key handling and replay semantics (Part D C3) | [ADR-010](adrs/010-idempotency-key-handling.md) |
 | Cosign-signed published tarball over SDK-on-host for Archetype A2 install | [ADR-011](adrs/011-deployment-artifact-format.md) |
+| Application-level signed + encrypted backup artifact (format, trust policy) | [ADR-012](adrs/012-backup-artifact-format.md) |
+| Aggregator up-sync: draft-only scope as the knowledge-supply-chain control | [ADR-013](adrs/013-aggregator-upsync.md) |
 
 ## License
 

@@ -37,6 +37,8 @@ internal sealed record ExpertiseEntryResponse(
     Visibility Visibility,
     string AuthorPrincipal,
     string? AuthorAgent,
+    string? OriginInstanceId,
+    HygienizedField? OriginAuthorPrincipal,
     string? IntegrityHash,
     ReviewState ReviewState,
     string? ReviewedBy,
@@ -69,6 +71,14 @@ internal sealed record ExpertiseEntryResponse(
             Visibility: entry.Visibility,
             AuthorPrincipal: entry.AuthorPrincipal,
             AuthorAgent: entry.AuthorAgent,
+            // ADR-013 origin attribution. OriginInstanceId is SERVER-derived (trusted
+            // structured — wrapping would misleadingly imply it was untrusted);
+            // OriginAuthorPrincipal arrived in a request body from another instance,
+            // so it gets the full user-supplied hygiene pipeline.
+            OriginInstanceId: entry.OriginInstanceId,
+            OriginAuthorPrincipal: entry.OriginAuthorPrincipal is null
+                ? null
+                : hygiene.Hygienize(entry.OriginAuthorPrincipal, ContentClass.UserSuppliedFreeText, nonce),
             // IntegrityHash is computed over the ORIGINAL entity content (write-time);
             // hygienizing the displayed Title/Body does NOT invalidate the audit chain
             // because the audit row records the hash of the canonical entity, not the

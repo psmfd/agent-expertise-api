@@ -95,6 +95,25 @@ public class ExpertiseEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task List_WithTagsFilter_ReturnsOnlyEntriesWithAllRequestedTags()
+    {
+        // Closes the audit's #1 gap: the ?tags= filter (tags.All array-containment over a
+        // text[] column) had no HTTP test — the exact untested shape-class that let the
+        // batch-dedup bug ship. Complements the DB-less translation guard
+        // (RepositoryQueryTranslationTests) with an end-to-end correctness assertion.
+        await SeedWithTags("has both", "postgres", "ef-core");
+        await SeedWithTags("missing one", "postgres");
+        await SeedWithTags("different set", "ef-core", "kubernetes");
+
+        var response = await _client.GetAsync("/expertise?tags=postgres,ef-core");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().Be(1, "tags.All requires EVERY requested tag be present on the entry");
+        json[0].GetProperty("title").GetProperty("value").GetString().Should().Contain("has both");
+    }
+
+    [Fact]
     public async Task List_ExcludesDeprecatedByDefault()
     {
         var entry = await SeedEntryViaRepo("shared", "Active entry");
@@ -175,5 +194,16 @@ public class ExpertiseEndpointTests : IAsyncLifetime
         return await repo.CreateAsync(
             TestHelpers.SeedEntry(domain: domain, title: title, entryType: entryType, tenant: tenant),
             TestHelpers.CreateTenantContext(tenant));
+    }
+
+    // Seeds an Approved entry with an explicit tag set (SeedEntry hardcodes ["test"]).
+    private async Task SeedWithTags(string title, params string[] tags)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        var entry = TestHelpers.SeedEntry(domain: "tag-filter", title: title);
+        entry.Tags = [.. tags];
+        db.ExpertiseEntries.Add(entry);
+        await db.SaveChangesAsync();
     }
 }
