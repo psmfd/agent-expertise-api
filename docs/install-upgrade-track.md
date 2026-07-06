@@ -2,33 +2,40 @@
 
 Persistent TODO for the multi-PR effort that gets the native-service install path (Archetype A2) ready for pi-agent integration. Updated at the end of every working session.
 
-**Last updated:** 2026-05-23 (v1.0.0 SHIPPED with signed artifacts — first prod release.yml run; D4-macOS-cosign merged; #166 + #215 + #269 closed)
-**Driver issue:** [#230 readiness sweep](https://github.com/TheSemicolon/agent-expertise-api/issues/230)
+**Last updated:** 2026-07-06 (E3 from-release smoke #260 landed; Debian/Ubuntu bootstrap #246 landed via #335; headless boot + macOS LaunchDaemon #145 landed via #307; migrate log-flush #263 and env-export #262 bugs closed. Remaining: D4 default-flip #249 and RHEL/Fedora bootstrap #247.)
+**Driver issue:** [#230 readiness sweep](https://github.com/psmfd/agent-expertise-api/issues/230)
 **Goal:** make `scripts/install.sh` safe, upgrade-aware, and capable of bootstrapping host dependencies on macOS (primary) and Linux, so the pi-agent integration session has a turn-key target.
 
 ## Next session starts here 👇
 
-**State as of 2026-05-23 23:59 UTC:**
+**State as of 2026-07-06:**
 
-- `dev` is **clean**, ~3 commits ahead of `main` (the recovery PRs #270/#272 + this tracker commit).
-- `main` is at `v1.0.0` tagged + published with full artifact set:
-  - Docker image `ghcr.io/thesemicolon/agent-expertise-api:v1.0.0` (multi-arch, cosign-signed)
-  - Helm chart `ghcr.io/thesemicolon/charts/expertise-api:1.0.0` (cosign-signed)
-  - Portable tarball `expertise-api-1.0.0-portable.tar.gz` (263 MB) + manifest + cosign sig (ADR-011 Option B)
-  - openapi.json + sha256 + cosign sig
-  - **End-to-end cosign verify-blob PASSED** locally via `scripts/verify-release.sh` against the published artifacts — D2 stanza confirmed working in prod OIDC.
+- `main` shipped **`v1.0.0` on 2026-05-23** with the full cosign-signed artifact set (Docker
+  multi-arch, Helm chart, portable tarball + manifest + sig, openapi.json + sig) — cut detail
+  in the session log below.
+- The 2026-05-23 "top of stack" is now **largely done**:
+  - **E3 `--from-release` smoke (#260): DONE** — `.github/workflows/install-smoke-from-release.yml`
+    runs `install.sh --from-release` against the latest signed release on Linux + macOS and
+    asserts the D3 post-install markers (#260, asset-name fix #293).
+  - **Debian/Ubuntu bootstrap (C2, #246): DONE** via #335.
+  - **Headless boot + macOS LaunchDaemon (#145): DONE** via #307; macOS `--system` hard-errors
+    until LaunchDaemon support is present (#291).
+  - **migrate log-flush (#263) and env-export (#262) bugs: CLOSED.**
+- `install.sh` **still defaults to `--from-source`** — the D4 default-flip has not landed
+  (see Remaining stack).
 
-### Top of stack (do these first next session)
+### Remaining stack
 
-1. **E3 (#260)** is now fully unblocked — we have a real signed v1.0.0 to verify against. Write the workflow that runs `install.sh --from-release --version v1.0.0`, cosign-verifies the manifest, extracts the tarball, runs the install, asserts post-install markers (`.install-mode == release`, `.install-version-semver` non-empty). Path-filter trigger on `scripts/install.sh`, `scripts/verify-release.sh`, `scripts/lib/release-consumer.sh`, `.github/workflows/release.yml`. Required green on `dev` for one release cycle to gate D4 default-flip.
-
-2. **D4 default-flip (#249)** — gated on E3 green. When ready: PR that flips `install.sh`'s default install mode from `--from-source` to `--from-release`. ADR-011 binding-flip rule applies. macOS-cosign half already landed (#267, `549e6cc`); Linux halves still bundled with C2/C3.
-
-3. **C2 (#246) / C3 (#247)** — Debian/Ubuntu + RHEL/Fedora bootstrap modules. Scope contracted to `cosign + bsdtar` per ADR-011 Option B. WSL warn-and-refuse for Postgres unchanged. Can be done in parallel with E3 since they don't share files.
+1. **D4 default-flip (#249, OPEN)** — flip `install.sh`'s default from `--from-source` to
+   `--from-release`. The E3 gate is now satisfied (from-release smoke exists and runs); the
+   flip itself is the remaining action, subject to ADR-011's binding-flip rule (one release
+   cycle of green E3 on `dev`).
+2. **C3 RHEL/Fedora bootstrap (#247, OPEN)** — `dnf` equivalent of the Debian module (#246),
+   scoped to `cosign + bsdtar` per ADR-011 Option B. Independent of D4; no shared files.
 
 ### Other open follow-ups (lower priority)
 
-- **#262/#263** — install.sh `migrate` env-mirror + log-flush bugs surfaced during D3 review.
+- **#262/#263** — install.sh `migrate` env-mirror + log-flush bugs surfaced during D3 review. ☑ both CLOSED.
 - **#242** — PREFIX-parent TOCTOU in `--system` mode (bundled with #145 LaunchDaemon work).
 - **#255/#256** — D3 follow-ups (`--tarball-url`, `--allow-offline-verify`).
 - **#257** — SemVer §11-aware comparator — ☑ closed by this PR (feat/semver-aware-downgrade-defense).
@@ -50,8 +57,8 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
 ## Out of scope for this track
 
 - `scripts/install.ps1` / `uninstall.ps1` mirror parity — separate follow-up issue, file when PR C lands.
-- `#145` macOS LaunchDaemon opt-in — separate session.
-- `#166` CI smoke test — naturally consumes everything below; pursue after PR C lands.
+- `#145` macOS LaunchDaemon opt-in — ☑ DONE (landed via #307; macOS `--system` hard-errors until support present, #291).
+- `#166` CI smoke test — ☑ DONE (E1 #261 Linux, E2 #264 macOS, E3 #260 from-release).
 - `#242` PREFIX-parent TOCTOU in `--system` mode — surfaced by security review on PR A; multi-user safety is naturally addressed alongside #145 LaunchDaemon work.
 
 ## Workstream status
@@ -63,16 +70,16 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
 | A | PR A — uninstall hardening | #222 | ☑ merged as `411bcad` (#243) | `eval` removal, `--prefix` guard, `--allow-system-prefix` escape, 49-assertion smoke test. |
 | B | PR B — install atomicity + upgrade safety + CRLF | #223 | ☑ merged as `44fd668` (#244) | Atomic stage-then-swap, migrate-against-staged, version marker, CRLF detector, shared `scripts/lib/prefix-validation.sh`. 93/93 tests pass. |
 | **C1** | PR C1 — macOS Homebrew bootstrap + shared library | #241 | ☑ merged as `afaba45` (#248) | `bootstrap-common.sh` + `bootstrap-macos.sh`. ‘Install the SDK’ short-term default per #245; ADR-011 records the long-term migration. 139/139 tests pass. |
-| C2 | PR C2 — Debian/Ubuntu bootstrap | #246 | ☐ unblocked, scope updated by ADR-011 | Under ADR-011 Option B: bootstrap surface reduces from ‘Microsoft feed + GPG pinning’ to ‘cosign + bsdtar’. WSL warn-and-refuse for Postgres unchanged. |
-| C3 | PR C3 — RHEL/Fedora bootstrap | #247 | ☐ unblocked, scope updated by ADR-011 | Same scope contraction as C2 under ADR-011 Option B. |
+| C2 | PR C2 — Debian/Ubuntu bootstrap | #246 | ☑ merged (#335) | apt `--install-deps` bootstrap for Debian/Ubuntu. |
+| C3 | PR C3 — RHEL/Fedora bootstrap | #247 | ☐ open | `dnf` equivalent of #335, same `cosign + bsdtar` scope per ADR-011 Option B. |
 | ADR | ADR for deployment artifact format | #245 | ☑ merged as `fcb3c19` (#250) | `adrs/011-deployment-artifact-format.md`. Endorses Option B (CI publishes a portable cosign-signed tarball; install.sh cosign-verifies + bsdtar-extracts) with Option A retained as `--from-source`. Implementation tracked as #249. |
 | D1 | csproj `<RuntimeIdentifiers>` + `<RollForward>` precondition | #249 | ☑ merged as `a54aabf` (#251) | One-line csproj addition. Hard precondition for D2 portable publish (ONNX RID natives). Zero behavior change to docker/helm/`dotnet run`/existing A2 installs. |
 | D2 | release.yml portable publish + manifest + cosign sign-blob | #249 | ☑ merged as `6929bdb` (#252) | `scripts/build/generate-manifest.sh` + 30-assertion test suite; release.yml publish/manifest/sign/upload steps; README §Supply-chain verification stanza for the tarball-via-manifest recipe; CI `release-manifest-generator` job seeds #166 incrementally. First D2 production run gates the D4 default-flip per ADR-011. |
 | D3 | install.sh `--from-release` opt-in (cosign verify + bsdtar extract + downgrade defense + runtime semver tighten) | #249 | ☑ merged as `88d20b1` (#258) | Load-bearing PR. Ships `scripts/verify-release.sh` (sanctioned cosign-verify entrypoint), `scripts/lib/release-consumer.sh` (fetch/verify/inspect/extract/markers), install.sh wiring (`--from-release` / `--from-source` / `--version` / `--allow-downgrade` / `--accept-republished-version` / `--skip-release-api-crosscheck`), and `tests/install/test-release-tarball-flow.sh` (39 assertions). Pre-PR fan-out folded 2 HIGH + 4 MED + 5 LOW. Follow-up flags deferred to #255 (`--tarball-url`) and #256 (`--allow-offline-verify`); SemVer §11 comparator deferred to #257 (closed by feat/semver-aware-downgrade-defense). |
-| D4 | Cosign as managed dep in `bootstrap-*.sh`; default flip `--from-source` → `--from-release` | #249 | ◐ macOS half landed (#267, `549e6cc`); Linux halves bundle with C2/C3; default-flip still gated | macOS half adds `_macos_ensure_cosign` to `bootstrap-macos.sh` (Homebrew, idempotent, honors any cosign on PATH). bsdtar intentionally not installed (macOS `/usr/bin/tar` IS bsdtar; release-consumer.sh::rc_select_tar already auto-detects). Linux halves still pending in C2 (#246) / C3 (#247). **Default flip itself still gated** on E3 (#260) green for one release cycle. D2 production-verified by the v1.0.0 cut on 2026-05-23. |
+| D4 | Cosign as managed dep in `bootstrap-*.sh`; default flip `--from-source` → `--from-release` | #249 | ◐ macOS half landed (#267, `549e6cc`); Linux halves bundle with C2/C3; default-flip still gated | macOS half adds `_macos_ensure_cosign` to `bootstrap-macos.sh` (Homebrew, idempotent, honors any cosign on PATH). bsdtar intentionally not installed (macOS `/usr/bin/tar` IS bsdtar; release-consumer.sh::rc_select_tar already auto-detects). Debian cosign folded into #335; RHEL half pending in C3 (#247). E3 (#260) is now merged and running, so the gate is satisfied — **the default-flip itself (#249, OPEN) is the remaining action.** D2 production-verified by the v1.0.0 cut on 2026-05-23. |
 | E1 | install.sh end-to-end smoke (Linux / systemd-user / postgres-17 in privileged container) | #166 | ☑ merged as `122542d` (#261) | Ships `scripts/test/Dockerfile.install-smoke` (debian13 + systemd + postgres17 + dotnet-sdk-10) + `scripts/test/test-install-smoke.sh` (12-assertion harness) + new `install-smoke-linux` job in `ci.yml`. Covers the primary AC of #166 (Linux + Postgres + service install + restart + health + orphan check). Container approach mirrors the existing apictl-restart-race-debian13 precedent (privileged systemd-in-container with cgroup v2 unified mount + host-uid 1000 user); deviates from #166's suggested GHA `services:` shape because the smoke needs systemd-user for service-install/restart parity with real hosts, which GHA's host runner does not give cleanly. Harness is OS-agnostic by design so E2 (macOS) reuses it without modification. First run on dev: 1m58s, all 12 assertions PASS. |
 | E2 | macOS install.sh smoke (`brew install postgresql@17`, reuses E1 harness) | #259 | ☑ merged as `731cba3` (#264) | Closes the stretch AC of #166. Adds `install-smoke-macos` to `ci.yml` (macos-latest / arm64, brew-installed postgresql@17 + pgvector, no privileged container). Reuses `scripts/test/test-install-smoke.sh` — the macOS branches seeded in E1 (`start_postgres_macos`, Darwin psql dispatch, BSD-pgrep guard) ran for the first time and exposed one harness bug: hardcoded `DOTNET_ROOT=/usr/share/dotnet` overrode the GHA-runner's `/Users/runner/.dotnet`, breaking the FDD apphost. Fixed in the same PR (honor caller `DOTNET_ROOT`; per-OS fallback). Pre-PR fan-out (code-review + security + linter) PASS; two Info-level hardening notes folded in (postgresql@14 collision check + pgvector hard-fail probe). First green run on dev: 1m58s wall clock, 12/12 assertions PASS. |
-| E3 | `--from-release` install.sh smoke (both OSes; gates D4 default-flip) | #260 | ◐ **implemented** — `.github/workflows/install-smoke-from-release.yml` adds `install-smoke-linux-from-release` + `install-smoke-macos-from-release` jobs | Runs `install.sh --from-release --version <latest-tag>` against the latest cosign-signed release. Path-filter trigger on `scripts/install.sh`, `scripts/verify-release.sh`, `scripts/lib/release-consumer.sh`, `.github/workflows/release.yml`. Asserts D3 post-install markers (`.install-mode == release`, `.install-version-semver` non-empty with correct appVersion, `.install-history` non-empty). Required green for one release cycle on `dev` to unblock D4. |
+| E3 | `--from-release` install.sh smoke (both OSes; gates D4 default-flip) | #260 | ☑ merged (#260, asset-name fix #293) — `.github/workflows/install-smoke-from-release.yml` runs `install-smoke-linux-from-release` + `install-smoke-macos-from-release` | Runs `install.sh --from-release --version <latest-tag>` against the latest cosign-signed release. Path-filter trigger on `scripts/install.sh`, `scripts/verify-release.sh`, `scripts/lib/release-consumer.sh`, `.github/workflows/release.yml`. Asserts D3 post-install markers (`.install-mode == release`, `.install-version-semver` non-empty with correct appVersion, `.install-history` non-empty). The D4 gate is now satisfied. |
 | T | Upgrade-roundtrip test | (landed w/ B) | ☑ in PR B | `tests/install/test-upgrade-roundtrip.sh` (39 assertions). Extend in C1 for `--install-deps` paths. |
 
 Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
@@ -173,6 +180,15 @@ Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
 - Doc-sync pairs touched: README Archetype A2 section, CLAUDE.md Quick Start.
 
 ## Session log
+
+- **2026-07-06** — Tracker refreshed to current state (no new install work this session; audit
+  of issue states + org-URL fix). Since the 2026-05-23 v1.0.0 cut, the readiness track
+  advanced: E3 `--from-release` smoke landed (#260, asset-name fix #293); Debian/Ubuntu
+  bootstrap landed (C2, #335); headless boot + macOS LaunchDaemon landed (#145 via #307,
+  with macOS `--system` hard-error #291); migrate log-flush (#263) and env-export (#262)
+  bugs closed. **Remaining:** D4 default-flip (#249) — E3 gate now satisfied, flip is the
+  only remaining action — and RHEL/Fedora bootstrap (C3, #247). `install.sh` still defaults
+  to `--from-source`. Driver-issue URL corrected to the `psmfd` org (post-rename).
 
 - **2026-05-23 (late)** — **v1.0.0 SHIPPED.** First production release with full signed artifact set. Cut path: PR #267 (macOS-cosign-in-bootstrap, `549e6cc`) → PR #268 (dev → main promotion attempt 1, `13020009`; merged but exposed two release.yml defects) → PR #270 (`global.json` rollForward `latestPatch` → `latestFeature`, `9b9b819`; fixes SDK feature-band drift) → PR #271 (retry 1; exposed chart-sync non-idempotency) → PR #272 (chart-sync idempotency guard, `30e58fb`) → PR #273 (retry 2 — **all green**). v1.0.0 tag/release deleted twice during recovery; no consumers affected (no artifacts had been published to GHCR at delete time). Final release: Docker multi-arch + signed, Helm chart + signed, openapi.json + signed, **portable tarball + manifest + cosign sig (D2 first prod run)**. End-to-end `scripts/verify-release.sh` against v1.0.0 PASS locally (cosign verify-blob OK, identity = `release.yml@refs/heads/main`, issuer = `token.actions.githubusercontent.com`, Rekor inclusion, sha256 cross-check OK). Issue #269 filed during the recovery and closed by the chain above. Unblocks E3 (#260) and D4 default-flip (#249).
 
