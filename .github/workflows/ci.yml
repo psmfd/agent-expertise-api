@@ -360,6 +360,10 @@ jobs:
   install-smoke-macos:
     name: install.sh end-to-end smoke (macOS / launchd / postgres-17)
     runs-on: macos-latest
+    # Non-blocking until the upstream Homebrew postgresql@17 bottle is fixed (#366):
+    # the runner bottle has a share-dir path mismatch that fails initdb. The job
+    # still runs and reports; it just does not gate merges. REMOVE when #366 closes.
+    continue-on-error: true
     timeout-minutes: 15
     # E2 of #166 / closes #259. Sibling of install-smoke-linux above: same
     # harness (scripts/test/test-install-smoke.sh), different OS provisioning.
@@ -456,6 +460,9 @@ jobs:
   install-smoke-macos-system:
     name: install.sh end-to-end smoke (macOS / LaunchDaemon / system scope / #145)
     runs-on: macos-latest
+    # Non-blocking until the upstream Homebrew postgresql@17 bottle is fixed (#366).
+    # REMOVE when #366 closes.
+    continue-on-error: true
     timeout-minutes: 15
     # System-scope LaunchDaemon smoke (#145). GHA macOS runners have passwordless
     # sudo, so a real root install is exercisable here. Gated behind

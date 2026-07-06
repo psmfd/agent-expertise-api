@@ -165,6 +165,9 @@ jobs:
   install-smoke-macos-from-release:
     name: install.sh --from-release smoke (macOS / launchd / postgres-17)
     runs-on: macos-latest
+    # Non-blocking until the upstream Homebrew postgresql@17 bottle is fixed (#366).
+    # REMOVE when #366 closes.
+    continue-on-error: true
     timeout-minutes: 15
     # macOS GHA runners have no Docker daemon. Unlike the Linux job there is
     # no privileged-container requirement so no fork-PR guard is needed —
