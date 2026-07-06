@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Coverage collection settings for the XPlat Code Coverage collector (#355).
+  Excludes generated / non-product code so the ratchet in
+  scripts/check-coverage.sh measures product code only:
+    * EF Core migrations (generated; asserting on them is meaningless)
+    * the source-generated JsonSerializerContext partials
+  The Cli namespace is intentionally NOT excluded: reembed/rehash/backup/restore
+  have real tests (#354, #340) and a coverage drop there is a real regression.
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+          <ExcludeByFile>**/Migrations/*.cs</ExcludeByFile>
+          <Exclude>[*]ExpertiseApi.Migrations.*</Exclude>
+          <ExcludeByAttribute>GeneratedCodeAttribute</ExcludeByAttribute>
+          <SkipAutoProps>true</SkipAutoProps>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
