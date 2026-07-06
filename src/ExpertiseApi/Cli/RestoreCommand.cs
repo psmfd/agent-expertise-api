@@ -282,12 +282,17 @@ internal static class RestoreCommand
 
             // Record the vintage of the imported vectors so the runbook's post-restore
             // check (and a future automated check, issue #345) has ground truth.
-            if (importEmbeddings && manifest.EmbeddingModel is not null && liveModel is null)
+            // importEmbeddings (set above) is true only when manifest.EmbeddingModel
+            // is non-null, so the null-forgiving access is safe; the extra
+            // `manifest.EmbeddingModel is not null` here was redundant (CodeQL
+            // cs/constant-condition — always true given importEmbeddings).
+            if (importEmbeddings && liveModel is null)
             {
+                var embeddingModel = manifest.EmbeddingModel!;
                 db.EmbeddingMetadata.Add(new EmbeddingMetadata
                 {
-                    ModelName = manifest.EmbeddingModel.Name,
-                    Dimensions = manifest.EmbeddingModel.Dims,
+                    ModelName = embeddingModel.Name,
+                    Dimensions = embeddingModel.Dims,
                     LastReembedAt = manifest.ExportedAt,
                 });
                 await db.SaveChangesAsync();

@@ -299,7 +299,9 @@ public class BackupRestoreCommandTests : IAsyncLifetime
 
     private static string FreshDir()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "backup-tests", Guid.NewGuid().ToString("N"));
+        // Path.Join (not Path.Combine) — Join never drops earlier segments if a
+        // later one looks rooted (CodeQL cs/path-combine on the 3-arg Combine).
+        var dir = Path.Join(Path.GetTempPath(), "backup-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }
