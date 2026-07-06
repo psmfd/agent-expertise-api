@@ -381,18 +381,10 @@ jobs:
           global-json-file: global.json
 
       - name: Install Postgres 17 + pgvector via Homebrew
-        # `pgvector` is a separate formula that drops the extension into
-        # every Homebrew Postgres formula's share dir, so it must be
-        # installed *after* postgresql@17 is present (brew handles the
-        # ordering when both are on the same `brew install` line).
-        # `postgresql@17` is keg-only — its bin/ is not on PATH by default.
-        run: |
-          brew update >/dev/null
-          brew install postgresql@17 pgvector
-          # Surface the keg-only PATH for every subsequent step. GITHUB_PATH
-          # is the cross-step PATH-prepend channel; exporting in this step
-          # alone would not carry to the harness run-step below.
-          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+        # Shared script installs pg17 + pgvector, self-heals a corrupt pre-cached
+        # postgresql@17 bottle (missing postgres.bki on some runner images), and
+        # exports the keg-only bin/ via GITHUB_PATH. See the script header.
+        run: bash scripts/test/brew-install-postgres17.sh
 
       - name: Start Postgres via brew services
         run: |
@@ -481,10 +473,7 @@ jobs:
           global-json-file: global.json
 
       - name: Install Postgres 17 + pgvector via Homebrew
-        run: |
-          brew update >/dev/null
-          brew install postgresql@17 pgvector
-          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+        run: bash scripts/test/brew-install-postgres17.sh
 
       - name: Start Postgres via brew services
         run: |
