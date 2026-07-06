@@ -371,9 +371,14 @@ scripts/validate-pr.sh --title "fix: patch concurrency mapping" --branch fix/foo
 
 ## Testing
 
+See [`docs/testing-and-coverage.md`](docs/testing-and-coverage.md) for the durable testing
+conventions and the silent-bug guardrails (query-translation tests, content-derived mock
+embeddings, the frozen enum-name guard, the coverage regression ratchet, and testability
+seams) — read it before adding a repository query, endpoint, or enum member.
+
 ### Test Prerequisites
 
-- **Docker** must be running — integration tests use [Testcontainers](https://dotnet.testcontainers.org/) to spin up a PostgreSQL + pgvector instance per test run.
+- **Docker** must be running — integration tests use [Testcontainers](https://dotnet.testcontainers.org/) to spin up a PostgreSQL + pgvector instance per test run. Any Docker-compatible runtime works; for **podman** set `DOCKER_HOST` to the machine socket and `TESTCONTAINERS_RYUK_DISABLED=true` (see the testing guide).
 - Unit tests run without Docker.
 
 ### Commands
