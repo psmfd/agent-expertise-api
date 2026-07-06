@@ -19,13 +19,6 @@ internal interface IExpertiseRepository
 {
     Task<ExpertiseEntry?> GetByIdAsync(Guid id, TenantContext ctx, CancellationToken ct = default);
 
-    /// <summary>
-    /// Reads an entry without filtering on <c>ReviewState</c>. Used by approve/reject paths
-    /// that must load <see cref="ReviewState.Draft"/> entries the default <see cref="GetByIdAsync"/>
-    /// would exclude. Tenant filter is still applied — cross-tenant returns null.
-    /// </summary>
-    Task<ExpertiseEntry?> GetByIdIncludingDraftsAsync(Guid id, TenantContext ctx, CancellationToken ct = default);
-
     Task<List<ExpertiseEntry>> ListAsync(
         TenantContext ctx,
         string? domain = null,
