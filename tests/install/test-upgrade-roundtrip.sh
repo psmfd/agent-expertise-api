@@ -176,10 +176,15 @@ run_install() {
   local prefix="$1"; shift
   shift  # _config_dir (unused under --prefix layout)
   shift  # _log_dir   (unused under --prefix layout)
+  # This suite exercises the source-build (local publish) atomicity path, so it
+  # must pin --from-source explicitly since the D4 default-flip (#249) made
+  # --from-release the default; --i-accept-unverified-source is now mandatory
+  # with --from-source.
   PATH="${SHIM_DIR}:${PATH}" \
   HOME="${SCRATCH}/home" \
   FAIL_PUBLISH="${FAIL_PUBLISH:-0}" \
-  "${INSTALL}" --prefix "${prefix}" --allow-system-prefix --skip-preflight --publish-mode fdd "$@"
+  "${INSTALL}" --prefix "${prefix}" --allow-system-prefix --skip-preflight --publish-mode fdd \
+    --from-source --i-accept-unverified-source "$@"
 }
 
 mkdir -p "${SCRATCH}/home"
@@ -386,19 +391,23 @@ assert "c9: lock released"             [ ! -e "${PREFIX9}/.install.lock" ]
 # ===========================================================================
 # Case 10: --prefix validation now rejects catastrophic paths (parity with uninstall.sh)
 # ===========================================================================
+# These exercise --prefix rejection independent of install mode; pin
+# --from-source --i-accept-unverified-source so the D4 default-flip (#249)
+# does not push them onto the release path and make the assertion depend on
+# check ordering.
 out=$(PATH="${SHIM_DIR}:${PATH}" HOME="${SCRATCH}/home" \
-  "${INSTALL}" --prefix "/etc/expertise-api" --skip-preflight --publish-mode fdd 2>&1)
+  "${INSTALL}" --prefix "/etc/expertise-api" --skip-preflight --publish-mode fdd --from-source --i-accept-unverified-source 2>&1)
 rc=$?
 assert "c10a: install rejects --prefix /etc/expertise-api" [ "${rc}" -ne 0 ]
 if [[ "${out}" == *"blocked"* ]]; then PASS=$((PASS+1)); else printf 'FAIL: c10a expected block message. Got:\n%s\n' "${out}" >&2; FAIL=$((FAIL+1)); fi
 
 out=$(PATH="${SHIM_DIR}:${PATH}" HOME="${SCRATCH}/home" \
-  "${INSTALL}" --prefix "/" --skip-preflight --publish-mode fdd 2>&1)
+  "${INSTALL}" --prefix "/" --skip-preflight --publish-mode fdd --from-source --i-accept-unverified-source 2>&1)
 rc=$?
 assert "c10b: install rejects --prefix /" [ "${rc}" -ne 0 ]
 
 out=$(PATH="${SHIM_DIR}:${PATH}" HOME="${SCRATCH}/home" \
-  "${INSTALL}" --prefix "/Users/foo/notexpertise" --skip-preflight --publish-mode fdd 2>&1)
+  "${INSTALL}" --prefix "/Users/foo/notexpertise" --skip-preflight --publish-mode fdd --from-source --i-accept-unverified-source 2>&1)
 rc=$?
 assert "c10c: install rejects prefix missing expertise-api component (no --allow-system-prefix)" [ "${rc}" -ne 0 ]
 
