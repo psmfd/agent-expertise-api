@@ -1,0 +1,5 @@
+# Coverage regression floors (#355). Measured 84.6% line / 70.9% branch; floors set
+# ~2-3pts below so normal variation never trips CI but a removed test file does.
+# Raise these when coverage improves; never lower without a recorded reason.
+line=82.0
+branch=68.0

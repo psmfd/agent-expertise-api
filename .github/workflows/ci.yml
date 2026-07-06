@@ -81,8 +81,16 @@ jobs:
             --configuration Release \
             --no-build \
             --verbosity normal \
+            --settings coverlet.runsettings \
+            --collect:"XPlat Code Coverage" \
             --logger "trx;LogFileName=test-results.trx" \
             --results-directory test-results
+
+      # Coverage regression ratchet (#355). Fails only if line/branch coverage drops
+      # below the committed floor in .coverage-baseline — catches a removed test file,
+      # not a green build with a silent gap.
+      - name: Coverage regression ratchet
+        run: bash scripts/check-coverage.sh "" test-results
 
       - name: Upload test results on failure
         if: failure()

@@ -340,7 +340,7 @@ Scope shorthand (`read`, `draft`, `approve`, `admin`) expands to full scope stri
 
 | Workflow | Trigger | What it does |
 | -------- | ------- | ------------ |
-| `ci.yml` | PRs to main/dev, push to dev | Jobs: build & test (SCA vulnerable-package check, openapi.json artifact check, `dotnet format analyzers` gate), pi extension typecheck + tests, Helm lint + render tests, release-manifest generator, semver-comparator unit tests, install/uninstall script-guard unit tests, apictl restart-race (macOS + Debian 13), apictl stop→start lifecycle (macOS), install-smoke `--from-source` (Linux + macOS), install-smoke `--system` LaunchDaemon (macOS, `SMOKE_SYSTEM_SCOPE=1`, #145), OpenAPI breaking-change gate (PR-only, see below) |
+| `ci.yml` | PRs to main/dev, push to dev | Jobs: build & test (SCA vulnerable-package check, openapi.json artifact check, `dotnet format analyzers` gate, **coverage regression ratchet** via `scripts/check-coverage.sh` against `.coverage-baseline` — see below), pi extension typecheck + tests, Helm lint + render tests, release-manifest generator, semver-comparator unit tests, install/uninstall script-guard unit tests, apictl restart-race (macOS + Debian 13), apictl stop→start lifecycle (macOS), install-smoke `--from-source` (Linux + macOS), install-smoke `--system` LaunchDaemon (macOS, `SMOKE_SYSTEM_SCOPE=1`, #145), OpenAPI breaking-change gate (PR-only, see below) |
 | `install-smoke-from-release.yml` | Push to dev / PRs, path-filtered to the release-consumer chain | `install.sh --from-release` end-to-end against the latest cosign-signed release (Linux + macOS) — E3 of the readiness track; gates the D4 default-flip per ADR-011 |
 | `release.yml` | Push to main | semantic-release version bump + tag, Docker build linux/amd64+arm64 to GHCR, cosign-signed A2 tarball + manifest as release assets, Helm chart OCI push, deploy dispatch to the infra repo (only when a new version is released) |
 | `lint-pr-title.yml` | PR to dev | Validates PR title follows Conventional Commits format |
@@ -354,6 +354,10 @@ GHCR image: `ghcr.io/psmfd/agent-expertise-api` (multi-arch: amd64 + arm64).
 ### OpenAPI breaking-change gate
 
 The build emits the OpenAPI document to `src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json` (build-time emission; `release.yml` attaches it as a release asset). On every PR, the `openapi-diff` job in `ci.yml` builds the spec from both the PR head and the base SHA and runs `oasdiff breaking` between them. Breaking API changes **fail the check** unless the PR carries the `breaking-change-approved` label (which `openapi-label-cleanup.yml` strips on merge). If an endpoint change is intentionally breaking, apply that label rather than reworking the diff.
+
+### Coverage regression ratchet
+
+The `Test` step collects coverage (`--collect:"XPlat Code Coverage"` with `coverlet.runsettings`, which excludes `Migrations/`), and `scripts/check-coverage.sh` fails the build if line or branch coverage drops below the floor in `.coverage-baseline` (currently `line=82.0`, `branch=68.0` against a measured ≈84.6% / ≈70.9%). It is a **regression ratchet, not a target**: the floors sit a few points below the measured value so normal variation never trips CI, but removing a test file does. Raise the floors when coverage improves; never lower them without a recorded reason. Mutation testing (Stryker.NET) was deliberately **not** adopted — it strengthens existing tests rather than covering unexecuted paths, and its per-mutant cost is disproportionate against the Testcontainers-backed suite (revisit only as a scheduled, file-scoped run).
 
 ### Pre-flight PR validator
 
