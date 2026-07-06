@@ -165,6 +165,9 @@ jobs:
   install-smoke-macos-from-release:
     name: install.sh --from-release smoke (macOS / launchd / postgres-17)
     runs-on: macos-latest
+    # Non-blocking until the upstream Homebrew postgresql@17 bottle is fixed (#366).
+    # REMOVE when #366 closes.
+    continue-on-error: true
     timeout-minutes: 15
     # macOS GHA runners have no Docker daemon. Unlike the Linux job there is
     # no privileged-container requirement so no fork-PR guard is needed —
@@ -207,10 +210,9 @@ jobs:
           echo "Resolved latest release tag: ${tag}"
 
       - name: Install Postgres 17 + pgvector via Homebrew
-        run: |
-          brew update >/dev/null
-          brew install postgresql@17 pgvector
-          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+        # Shared script installs pg17 + pgvector, self-heals a corrupt pre-cached
+        # postgresql@17 bottle (missing postgres.bki), and exports the keg-only bin/.
+        run: bash scripts/test/brew-install-postgres17.sh
 
       - name: Start Postgres via brew services
         run: |
