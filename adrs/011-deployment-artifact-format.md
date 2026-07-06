@@ -1,6 +1,6 @@
 # Cosign-signed published tarball over SDK-on-host for Archetype A2 install
 
-- Status: accepted (commitment to migrate; default flip tracked separately)
+- Status: accepted; **default flip landed** (#249, 2026-07-06 — `install.sh` defaults to `--from-release`, `--from-source` gated behind `--i-accept-unverified-source`)
 - Date: 2026-05-22
 - Companion: `scripts/install.sh`, `.github/workflows/release.yml`, [README §Archetype A2](../README.md#archetype-a2-native-os-service-install-no-docker)
 - Tracking issue: [#245](https://github.com/TheSemicolon/agent-expertise-api/issues/245)

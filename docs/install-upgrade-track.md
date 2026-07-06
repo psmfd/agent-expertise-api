@@ -2,7 +2,7 @@
 
 Persistent TODO for the multi-PR effort that gets the native-service install path (Archetype A2) ready for pi-agent integration. Updated at the end of every working session.
 
-**Last updated:** 2026-07-06 (E3 from-release smoke #260 landed; Debian/Ubuntu bootstrap #246 landed via #335; headless boot + macOS LaunchDaemon #145 landed via #307; migrate log-flush #263 and env-export #262 bugs closed. Remaining: D4 default-flip #249 and RHEL/Fedora bootstrap #247.)
+**Last updated:** 2026-07-06 (D4 default-flip #249 landed — `install.sh` now defaults to `--from-release`. Earlier same day: E3 smoke #260, Debian bootstrap #335, headless/LaunchDaemon #307, migrate bugs #263/#262. Remaining: RHEL/Fedora bootstrap #247 only.)
 **Driver issue:** [#230 readiness sweep](https://github.com/psmfd/agent-expertise-api/issues/230)
 **Goal:** make `scripts/install.sh` safe, upgrade-aware, and capable of bootstrapping host dependencies on macOS (primary) and Linux, so the pi-agent integration session has a turn-key target.
 
@@ -21,17 +21,18 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
   - **Headless boot + macOS LaunchDaemon (#145): DONE** via #307; macOS `--system` hard-errors
     until LaunchDaemon support is present (#291).
   - **migrate log-flush (#263) and env-export (#262) bugs: CLOSED.**
-- `install.sh` **still defaults to `--from-source`** — the D4 default-flip has not landed
-  (see Remaining stack).
+  - **D4 default-flip (#249): DONE** — `install.sh` now defaults to `--from-release`
+    (cosign-verified tarball); `--from-source` is the opt-in escape hatch and requires
+    `--i-accept-unverified-source`. The macOS gate (E3 red under #366) was satisfied by a
+    local `verify-release.sh` + bsdtar-extract run against v1.2.0 on Apple Silicon (cosign
+    verify PASS, sha bind PASS, osx-arm64 ONNX native present) in lieu of the #366-blocked
+    CI smoke.
+- `install.sh` **now defaults to `--from-release`.**
 
 ### Remaining stack
 
-1. **D4 default-flip (#249, OPEN)** — flip `install.sh`'s default from `--from-source` to
-   `--from-release`. The E3 gate is now satisfied (from-release smoke exists and runs); the
-   flip itself is the remaining action, subject to ADR-011's binding-flip rule (one release
-   cycle of green E3 on `dev`).
-2. **C3 RHEL/Fedora bootstrap (#247, OPEN)** — `dnf` equivalent of the Debian module (#246),
-   scoped to `cosign + bsdtar` per ADR-011 Option B. Independent of D4; no shared files.
+1. **C3 RHEL/Fedora bootstrap (#247, OPEN)** — `dnf` equivalent of the Debian module (#246),
+   scoped to `cosign + bsdtar` per ADR-011 Option B. The last open install-hardening item.
 
 ### Other open follow-ups (lower priority)
 
@@ -76,7 +77,7 @@ Persistent TODO for the multi-PR effort that gets the native-service install pat
 | D1 | csproj `<RuntimeIdentifiers>` + `<RollForward>` precondition | #249 | ☑ merged as `a54aabf` (#251) | One-line csproj addition. Hard precondition for D2 portable publish (ONNX RID natives). Zero behavior change to docker/helm/`dotnet run`/existing A2 installs. |
 | D2 | release.yml portable publish + manifest + cosign sign-blob | #249 | ☑ merged as `6929bdb` (#252) | `scripts/build/generate-manifest.sh` + 30-assertion test suite; release.yml publish/manifest/sign/upload steps; README §Supply-chain verification stanza for the tarball-via-manifest recipe; CI `release-manifest-generator` job seeds #166 incrementally. First D2 production run gates the D4 default-flip per ADR-011. |
 | D3 | install.sh `--from-release` opt-in (cosign verify + bsdtar extract + downgrade defense + runtime semver tighten) | #249 | ☑ merged as `88d20b1` (#258) | Load-bearing PR. Ships `scripts/verify-release.sh` (sanctioned cosign-verify entrypoint), `scripts/lib/release-consumer.sh` (fetch/verify/inspect/extract/markers), install.sh wiring (`--from-release` / `--from-source` / `--version` / `--allow-downgrade` / `--accept-republished-version` / `--skip-release-api-crosscheck`), and `tests/install/test-release-tarball-flow.sh` (39 assertions). Pre-PR fan-out folded 2 HIGH + 4 MED + 5 LOW. Follow-up flags deferred to #255 (`--tarball-url`) and #256 (`--allow-offline-verify`); SemVer §11 comparator deferred to #257 (closed by feat/semver-aware-downgrade-defense). |
-| D4 | Cosign as managed dep in `bootstrap-*.sh`; default flip `--from-source` → `--from-release` | #249 | ◐ macOS half landed (#267, `549e6cc`); Linux halves bundle with C2/C3; default-flip still gated | macOS half adds `_macos_ensure_cosign` to `bootstrap-macos.sh` (Homebrew, idempotent, honors any cosign on PATH). bsdtar intentionally not installed (macOS `/usr/bin/tar` IS bsdtar; release-consumer.sh::rc_select_tar already auto-detects). Debian cosign folded into #335; RHEL half pending in C3 (#247). E3 (#260) is now merged and running, so the gate is satisfied — **the default-flip itself (#249, OPEN) is the remaining action.** D2 production-verified by the v1.0.0 cut on 2026-05-23. |
+| D4 | Cosign as managed dep in `bootstrap-*.sh`; default flip `--from-source` → `--from-release` | #249 | ☑ **default-flip landed** — `install.sh` defaults to `--from-release`; `--from-source` requires `--i-accept-unverified-source` | macOS cosign dep landed (#267, `549e6cc`); Debian cosign folded into #335; RHEL half pending in C3 (#247). Default-flip: unset `INSTALL_MODE` resolves to release; source mode gated behind the ack flag. macOS gate (E3 red under #366) satisfied by a local `verify-release.sh` + bsdtar run against v1.2.0 on Apple Silicon (cosign PASS, sha bind PASS, osx-arm64 ONNX native present). |
 | E1 | install.sh end-to-end smoke (Linux / systemd-user / postgres-17 in privileged container) | #166 | ☑ merged as `122542d` (#261) | Ships `scripts/test/Dockerfile.install-smoke` (debian13 + systemd + postgres17 + dotnet-sdk-10) + `scripts/test/test-install-smoke.sh` (12-assertion harness) + new `install-smoke-linux` job in `ci.yml`. Covers the primary AC of #166 (Linux + Postgres + service install + restart + health + orphan check). Container approach mirrors the existing apictl-restart-race-debian13 precedent (privileged systemd-in-container with cgroup v2 unified mount + host-uid 1000 user); deviates from #166's suggested GHA `services:` shape because the smoke needs systemd-user for service-install/restart parity with real hosts, which GHA's host runner does not give cleanly. Harness is OS-agnostic by design so E2 (macOS) reuses it without modification. First run on dev: 1m58s, all 12 assertions PASS. |
 | E2 | macOS install.sh smoke (`brew install postgresql@17`, reuses E1 harness) | #259 | ☑ merged as `731cba3` (#264) | Closes the stretch AC of #166. Adds `install-smoke-macos` to `ci.yml` (macos-latest / arm64, brew-installed postgresql@17 + pgvector, no privileged container). Reuses `scripts/test/test-install-smoke.sh` — the macOS branches seeded in E1 (`start_postgres_macos`, Darwin psql dispatch, BSD-pgrep guard) ran for the first time and exposed one harness bug: hardcoded `DOTNET_ROOT=/usr/share/dotnet` overrode the GHA-runner's `/Users/runner/.dotnet`, breaking the FDD apphost. Fixed in the same PR (honor caller `DOTNET_ROOT`; per-OS fallback). Pre-PR fan-out (code-review + security + linter) PASS; two Info-level hardening notes folded in (postgresql@14 collision check + pgvector hard-fail probe). First green run on dev: 1m58s wall clock, 12/12 assertions PASS. |
 | E3 | `--from-release` install.sh smoke (both OSes; gates D4 default-flip) | #260 | ☑ merged (#260, asset-name fix #293) — `.github/workflows/install-smoke-from-release.yml` runs `install-smoke-linux-from-release` + `install-smoke-macos-from-release` | Runs `install.sh --from-release --version <latest-tag>` against the latest cosign-signed release. Path-filter trigger on `scripts/install.sh`, `scripts/verify-release.sh`, `scripts/lib/release-consumer.sh`, `.github/workflows/release.yml`. Asserts D3 post-install markers (`.install-mode == release`, `.install-version-semver` non-empty with correct appVersion, `.install-history` non-empty). The D4 gate is now satisfied. |
@@ -180,6 +181,16 @@ Status legend: ☐ todo · ◐ in progress · ☑ merged · ✗ abandoned.
 - Doc-sync pairs touched: README Archetype A2 section, CLAUDE.md Quick Start.
 
 ## Session log
+
+- **2026-07-06 (later)** — **D4 default-flip (#249) landed.** `install.sh` now defaults to
+  `--from-release` (unset `INSTALL_MODE` resolves to release); `--from-source` is the opt-in
+  escape hatch and requires `--i-accept-unverified-source`. Migrated the source-default
+  assumption out of the test suite (`run_install` in test-upgrade-roundtrip; the smoke
+  harness source leg + both `--system` calls; flow-test cases 17/18 + new 18b). The ADR-011
+  macOS gate — E3 red under #366 (Homebrew bottle) — was satisfied out-of-band by a local
+  `verify-release.sh` + bsdtar-extract of v1.2.0 on Apple Silicon (cosign verify PASS, sha
+  bind PASS, `runtimes/osx-arm64/native/libonnxruntime.dylib` present). Only #247 (RHEL
+  bootstrap) remains on the readiness track.
 
 - **2026-07-06** — Tracker refreshed to current state (no new install work this session; audit
   of issue states + org-URL fix). Since the 2026-05-23 v1.0.0 cut, the readiness track

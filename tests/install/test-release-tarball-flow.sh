@@ -333,18 +333,37 @@ assert "case 16c: short sha refused with length error" \
   bash -c "printf '%s' '$out' | grep -q REFUSED && printf '%s' '$out' | grep -q 'length != 64'"
 
 # ---------------------------------------------------------------------------
-# Case 17: argparse — --version without --from-release refused at install.sh.
+# Case 17: argparse — --version rejected in source mode. Since the D4 flip
+# (#249) made release the default, source mode must be requested explicitly
+# (--from-source --i-accept-unverified-source) to exercise this rejection.
 # ---------------------------------------------------------------------------
-out=$(bash "${SCRIPT_DIR}/scripts/install.sh" --version 1.2.3 2>&1 || true)
-assert "case 17: --version without --from-release is rejected" \
+out=$(bash "${SCRIPT_DIR}/scripts/install.sh" --from-source --i-accept-unverified-source --version 1.2.3 2>&1 || true)
+assert "case 17: --version in source mode is rejected" \
   bash -c "printf '%s' '$out' | grep -q 'only meaningful with --from-release'"
 
 # ---------------------------------------------------------------------------
-# Case 18: argparse — --allow-downgrade without --from-release refused.
+# Case 18: argparse — --allow-downgrade rejected in source mode.
 # ---------------------------------------------------------------------------
-out=$(bash "${SCRIPT_DIR}/scripts/install.sh" --allow-downgrade 2>&1 || true)
-assert "case 18: --allow-downgrade without --from-release is rejected" \
+out=$(bash "${SCRIPT_DIR}/scripts/install.sh" --from-source --i-accept-unverified-source --allow-downgrade 2>&1 || true)
+assert "case 18: --allow-downgrade in source mode is rejected" \
   bash -c "printf '%s' '$out' | grep -q 'release-mode-only'"
+
+# ---------------------------------------------------------------------------
+# Case 18b (D4 flip, #249): --from-source WITHOUT --i-accept-unverified-source
+# is refused — the flip made the unverified source path an explicit, ack'd choice.
+# ---------------------------------------------------------------------------
+out=$(bash "${SCRIPT_DIR}/scripts/install.sh" --from-source 2>&1 || true)
+assert "case 18b: --from-source requires --i-accept-unverified-source" \
+  bash -c "printf '%s' '$out' | grep -q 'i-accept-unverified-source'"
+
+# ---------------------------------------------------------------------------
+# Case 18c (D4 flip, #249): --i-accept-unverified-source WITHOUT a mode flag
+# must error, not silently resolve to the default (release) with the flag
+# ignored. Regression guard for the resolve-before-guard ordering.
+# ---------------------------------------------------------------------------
+out=$(bash "${SCRIPT_DIR}/scripts/install.sh" --i-accept-unverified-source 2>&1 || true)
+assert "case 18c: bare --i-accept-unverified-source (no mode) is rejected" \
+  bash -c "printf '%s' '$out' | grep -q 'meaningful only with --from-source'"
 
 # ---------------------------------------------------------------------------
 # Case 19: verify-release.sh CLI — missing flag yields exit code 2.
