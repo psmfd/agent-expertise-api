@@ -863,6 +863,8 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 |------|---------|
 | [CLAUDE.md](CLAUDE.md) | Full build/run commands, local dev guide |
 | [.agents/skills/expertise-api/references/DESIGN.md](.agents/skills/expertise-api/references/DESIGN.md) | Authoritative design reference (data model, API, architecture) |
+| [docs/testing-and-coverage.md](docs/testing-and-coverage.md) | Testing conventions and silent-bug guardrails (translation tests, coverage ratchet, mock embeddings, enum guard) |
+| [docs/operations/backup-restore-runbook.md](docs/operations/backup-restore-runbook.md) | Backup/restore operator procedures (pg_dump seed + signed-artifact CLI) |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | Copilot agent instructions |
 
 ## Security
