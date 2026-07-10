@@ -187,8 +187,7 @@ rc_crosscheck_release_api() {
   for name in "$expected_tarball" \
               "${expected_tarball}.sha256" \
               "$expected_manifest" \
-              "${expected_manifest}.sig" \
-              "${expected_manifest}.pem"; do
+              "${expected_manifest}.sigstore.json"; do
     if ! jq -e --arg n "$name" '.assets[] | select(.name == $n)' "$tmp" >/dev/null 2>&1; then
       missing="${missing} ${name}"
     fi
@@ -201,16 +200,16 @@ rc_crosscheck_release_api() {
   if [ -n "$missing" ]; then
     err "release-api cross-check FAILED: assets missing from release v${version}:${missing}"
   fi
-  log "release-api cross-check: tag_name=v${version}, all 5 expected assets present"
+  log "release-api cross-check: tag_name=v${version}, all 4 expected assets present"
 }
 
 # ---------------------------------------------------------------------------
-# rc_download_release_artifacts — fetch tarball + sha + manifest + sig + cert
-# into ${dest_dir}. Caller is responsible for prior validation (version
+# rc_download_release_artifacts — fetch tarball + sha + manifest + cosign
+# bundle into ${dest_dir}. Caller is responsible for prior validation (version
 # resolved, release-api cross-checked).
 #
 # Args: dest_dir version
-# Globals (export): TARBALL_PATH MANIFEST_PATH SIGNATURE_PATH CERTIFICATE_PATH
+# Globals (export): TARBALL_PATH MANIFEST_PATH BUNDLE_PATH
 # ---------------------------------------------------------------------------
 rc_download_release_artifacts() {
   local dest_dir=$1 version=$2
@@ -220,16 +219,16 @@ rc_download_release_artifacts() {
   local tarball="expertise-api-${version}-portable.tar.gz"
   local manifest="expertise-api-${version}.manifest.json"
 
-  rc_curl_https "${dest_dir}/${tarball}"        "${base}/${tarball}"
-  rc_curl_https "${dest_dir}/${tarball}.sha256" "${base}/${tarball}.sha256"
-  rc_curl_https "${dest_dir}/${manifest}"        "${base}/${manifest}"
-  rc_curl_https "${dest_dir}/${manifest}.sig"    "${base}/${manifest}.sig"
-  rc_curl_https "${dest_dir}/${manifest}.pem"    "${base}/${manifest}.pem"
+  rc_curl_https "${dest_dir}/${tarball}"                 "${base}/${tarball}"
+  rc_curl_https "${dest_dir}/${tarball}.sha256"          "${base}/${tarball}.sha256"
+  rc_curl_https "${dest_dir}/${manifest}"                "${base}/${manifest}"
+  # Single self-contained Sigstore bundle (sig + cert + Rekor proof) replaces
+  # the legacy detached .sig/.pem pair (ADR-011 Amendment 1, #399).
+  rc_curl_https "${dest_dir}/${manifest}.sigstore.json"  "${base}/${manifest}.sigstore.json"
 
   TARBALL_PATH="${dest_dir}/${tarball}"
   MANIFEST_PATH="${dest_dir}/${manifest}"
-  SIGNATURE_PATH="${dest_dir}/${manifest}.sig"
-  CERTIFICATE_PATH="${dest_dir}/${manifest}.pem"
+  BUNDLE_PATH="${dest_dir}/${manifest}.sigstore.json"
 }
 
 # ---------------------------------------------------------------------------
@@ -713,7 +712,7 @@ rc_publish_from_release() {
   rc_download_release_artifacts "$dl_dir" "$version"
 
   # Verify in the canonical order: cosign → schema → tarball sha cross-check.
-  vr_verify_all "$TARBALL_PATH" "$MANIFEST_PATH" "$SIGNATURE_PATH" "$CERTIFICATE_PATH"
+  vr_verify_all "$TARBALL_PATH" "$MANIFEST_PATH" "$BUNDLE_PATH"
 
   # Trusted-content reads from the verified manifest.
   local app_version manifest_sha required_min

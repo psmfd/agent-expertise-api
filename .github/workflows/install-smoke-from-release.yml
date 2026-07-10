@@ -59,6 +59,8 @@ jobs:
         # that is only needed for signing. The verifier contacts Rekor over
         # HTTPS using its public read API.
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.1   # pin CLI; installer default drifted 2.4.3->3.0.6 (ADR-011 Amendment 1, #399)
 
       - name: Resolve latest release tag
         id: release
@@ -189,6 +191,8 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.1   # pin CLI; installer default drifted 2.4.3->3.0.6 (ADR-011 Amendment 1, #399)
 
       - name: Resolve latest release tag
         id: release
