@@ -15,10 +15,49 @@ public static class JwtTokenMinter
     public const string TestAudience = "test-audience";
     public const string TestSchemeName = "TestIssuer";
 
+    // ADR-014 static-LAN issuer: CompoundRole tenancy with scopes carried in a
+    // `roles` array claim (TenantSource=CompoundRole, ScopeClaims=["roles"],
+    // RoleSeparator=":"). Distinct issuer URL so the policy scheme routes by `iss`;
+    // shares SigningKey so JwtApiFactory can inject one OIDC config per scheme.
+    public const string CompoundRoleIssuer = "https://static-issuer.local/";
+    public const string CompoundRoleSchemeName = "StaticLan";
+
     public static readonly RsaSecurityKey SigningKey = new(RSA.Create(2048))
     {
         KeyId = "test-key-1"
     };
+
+    /// <summary>
+    /// Mints a static-LAN CompoundRole token exactly as <c>scripts/mint_token.py</c> emits:
+    /// each scope becomes a <c>roles</c> array entry of the form <c>{tenant}:{scope}</c>.
+    /// <paramref name="scopes"/> are fully-qualified scope strings (e.g.
+    /// <see cref="AuthConstants.WriteDraftScope"/>), matching the confirmed ADR-014 contract.
+    /// </summary>
+    public static string MintCompoundRole(
+        string tenant,
+        IEnumerable<string> scopes,
+        string? sub = null,
+        TimeSpan? expiresIn = null)
+    {
+        var handler = new JsonWebTokenHandler();
+
+        var claims = new Dictionary<string, object>
+        {
+            ["sub"] = sub ?? "static-lan-client",
+            ["roles"] = scopes.Select(s => $"{tenant}:{s}").ToArray()
+        };
+
+        var descriptor = new SecurityTokenDescriptor
+        {
+            Issuer = CompoundRoleIssuer,
+            Audience = TestAudience,
+            Claims = claims,
+            Expires = DateTime.UtcNow.Add(expiresIn ?? TimeSpan.FromHours(1)),
+            SigningCredentials = new SigningCredentials(SigningKey, SecurityAlgorithms.RsaSha256)
+        };
+
+        return handler.CreateToken(descriptor);
+    }
 
     public static string Mint(
         string tenant,
