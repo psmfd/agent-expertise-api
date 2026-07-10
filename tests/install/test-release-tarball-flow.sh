@@ -368,8 +368,8 @@ assert "case 18c: bare --i-accept-unverified-source (no mode) is rejected" \
 # ---------------------------------------------------------------------------
 # Case 19: verify-release.sh CLI — missing flag yields exit code 2.
 # ---------------------------------------------------------------------------
-bash "${LIB_VR}" --tarball /dev/null --manifest /dev/null --signature /dev/null >/dev/null 2>&1; rc=$?
-assert "case 19: verify-release.sh refuses missing --certificate with exit 2" \
+bash "${LIB_VR}" --tarball /dev/null --manifest /dev/null >/dev/null 2>&1; rc=$?
+assert "case 19: verify-release.sh refuses missing --bundle with exit 2" \
   bash -c "[ '$rc' = '2' ]"
 
 # ---------------------------------------------------------------------------
@@ -391,11 +391,14 @@ mkdir -p '${SCRATCH}/case20-bin'
 cat > '${SCRATCH}/case20-bin/cosign' <<'STUB'
 #!/usr/bin/env bash
 if [ \"\$1\" = 'version' ] && [ \"\$2\" = '--json' ]; then
-  printf '{\"gitVersion\":\"v2.4.0\"}\n'
+  printf '{\"gitVersion\":\"v3.1.1\"}\n'
 elif [ \"\$1\" = 'version' ]; then
-  printf 'GitVersion: v2.4.0\n'
+  printf 'GitVersion: v3.1.1\n'
 elif [ \"\$1\" = 'verify-blob' ]; then
-  exit 0
+  # bundle-format migration (#399): assert --bundle was passed so the stub is
+  # not flag-blind and a regression to the legacy detached flags is caught.
+  for a in \"\$@\"; do [ \"\$a\" = '--bundle' ] && exit 0; done
+  echo 'stub cosign: verify-blob called without --bundle' >&2; exit 3
 else
   exit 0
 fi
