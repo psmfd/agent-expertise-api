@@ -8,11 +8,11 @@ type: application
 # to .Chart.AppVersion when unset; image.pullPolicy default flipped from
 # Always to IfNotPresent; api.probes.{liveness,readiness,startup}.path
 # surfaced as values with `additionalProperties: false` on the probe block.
-version: 1.3.0
+version: 1.4.0
 # Application version — kept in sync with the released container image tag by
 # `.github/workflows/release.yml` after each successful semantic-release run.
 # Manual baseline: v0.1.3 (the latest tag on `main` at chart-floor introduction).
-appVersion: "1.3.0"
+appVersion: "1.4.0"
 # Floor — the chart uses networking.k8s.io/v1 Ingress (GA in 1.19) and Pod
 # Security Standards admission features (GA in 1.25). The `-0` suffix is the
 # Helm-conventional SemVer pre-release marker so >=1.25.0 also matches
