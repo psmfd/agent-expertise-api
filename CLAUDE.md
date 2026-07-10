@@ -321,6 +321,7 @@ Notes:
 - **Trailing slash on `Issuer`** must match the `iss` claim byte-exactly. Authentik includes one; Entra v2 does not. Copy from `.well-known/openid-configuration` verbatim.
 - **`TenantSource = "CompoundRole"`** is for Entra `client_credentials` flow, which does not emit `groups` for service principals. Roles are encoded as `{tenant}:{scope}` and parsed at validation time.
 - **`TenantSource = "Groups"`** is for delegated flows (and Authentik). Group claim values are mapped to tenant slugs.
+- **`JwksPath`** (ADR-014/ADR-015) — for LAN/offline issuers with no HTTPS discovery endpoint. Point it at a **public-only** `jwks.json` (produced by `scripts/mint_token.py build-jwks`); the API loads those keys at startup and skips `.well-known`/`Authority` discovery entirely (`Authority` is left unset for that issuer). Loaded **fail-closed**: a missing, malformed, private-key, or symmetric (`kty=oct`) JWKS aborts boot rather than 500ing on first request. Leave unset for cloud issuers (Entra/Authentik), which discover keys via `Authority`. The embedded-key path is pinned to RS256. See `deploy/lan-static-oidc/RUNBOOK.md`.
 
 ### LocalDev token format
 

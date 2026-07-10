@@ -196,6 +196,14 @@ internal static class AuthExtensions
                 options.Configuration = configuration;
                 options.ConfigurationManager = null;
                 options.TokenValidationParameters.IssuerSigningKeys = staticSigningKeys;
+
+                // Pin RS256 for the embedded-key path (mint_token.py emits RS256 only). Defense in
+                // depth: it constrains signature validation to the asymmetric algorithm these keys
+                // are for, so even a mis-provisioned symmetric/other-alg key that slipped past
+                // LoadStaticSigningKeys' screen cannot validate a forged token via alg substitution.
+                // Cloud/discovery issuers keep their metadata-driven algorithm set (unset here) so an
+                // IdP that signs with ES256/PS256 is not broken.
+                options.TokenValidationParameters.ValidAlgorithms = [SecurityAlgorithms.RsaSha256];
             }
             else
             {
@@ -258,6 +266,24 @@ internal static class AuthExtensions
                     $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' contains PRIVATE key material " +
                     $"(kid '{jwk.Kid}'). The API must load a PUBLIC-only JWKS — run 'mint_token.py build-jwks' to " +
                     "produce one; never point JwksPath at a *.priv.json file or the private key directory.");
+            }
+
+            // Reject symmetric (HMAC) keys. A `kty=oct` JWK carries its shared secret in `k`, and
+            // JsonWebKeySet.GetSigningKeys() surfaces it as a usable SymmetricSecurityKey
+            // (SkipUnresolvedJsonWebKeys defaults to false) — so anyone able to read this
+            // network-facing "public" JWKS could forge HS256 tokens the API would accept. An
+            // embedded-key issuer is RS256-only by construction (mint_token.py emits RSA), so any
+            // oct key is a misconfiguration: fail closed rather than load a forgeable secret. The
+            // ValidAlgorithms=RS256 pin on the static path is the compensating control if this is
+            // ever reached, but the shared secret has no business in the file at all.
+            if (string.Equals(jwk.Kty, "oct", StringComparison.OrdinalIgnoreCase)
+                || !string.IsNullOrEmpty(jwk.K))
+            {
+                throw new InvalidOperationException(
+                    $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' contains a SYMMETRIC (kty=oct) " +
+                    $"key (kid '{jwk.Kid}'). Embedded-key issuers are RS256-only (asymmetric); a shared-secret key " +
+                    "in a network-facing JWKS is forgeable by anyone who can read the file. Provide an RSA public " +
+                    "JWKS from 'mint_token.py build-jwks'.");
             }
         }
 

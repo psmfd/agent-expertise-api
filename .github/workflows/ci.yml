@@ -458,7 +458,7 @@ jobs:
         run: brew services stop postgresql@17 || true
 
   install-smoke-macos-system:
-    name: install.sh end-to-end smoke (macOS / LaunchDaemon / system scope / #145)
+    name: "install.sh end-to-end smoke (macOS / LaunchDaemon / system scope / #145)"
     runs-on: macos-latest
     # Non-blocking until the upstream Homebrew postgresql@17 bottle is fixed (#366).
     # REMOVE when #366 closes.

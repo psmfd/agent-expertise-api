@@ -925,6 +925,7 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | Cosign-signed published tarball over SDK-on-host for Archetype A2 install | [ADR-011](adrs/011-deployment-artifact-format.md) |
 | Application-level signed + encrypted backup artifact (format, trust policy) | [ADR-012](adrs/012-backup-artifact-format.md) |
 | Aggregator up-sync: draft-only scope as the knowledge-supply-chain control | [ADR-013](adrs/013-aggregator-upsync.md) |
+| LAN/offline embedded static-JWKS issuer (no HTTPS discovery on the API host; fail-closed key load) | [ADR-015](adrs/015-embedded-static-jwks.md) (supersedes [ADR-014](adrs/014-lightweight-oidc-static-jwks.md)) |
 
 ## License
 
