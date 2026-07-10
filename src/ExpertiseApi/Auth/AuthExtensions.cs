@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
 
 namespace ExpertiseApi.Auth;
@@ -43,7 +44,14 @@ internal static class AuthExtensions
         {
             foreach (var issuer in issuers)
             {
-                RegisterJwtBearer(authBuilder, issuer);
+                // Eagerly load embedded static keys (ADR-015) here, at service-configuration
+                // time, so a missing/malformed JwksPath fails startup closed rather than 500ing
+                // on the first authenticated request. Discovery-path issuers (JwksPath unset)
+                // pass null and fetch lazily via Authority as before.
+                var staticKeys = string.IsNullOrWhiteSpace(issuer.JwksPath)
+                    ? null
+                    : LoadStaticSigningKeys(issuer);
+                RegisterJwtBearer(authBuilder, issuer, staticKeys);
             }
         }
 
@@ -152,11 +160,13 @@ internal static class AuthExtensions
             .ToList();
     }
 
-    private static void RegisterJwtBearer(AuthenticationBuilder builder, OidcIssuerOptions issuer)
+    private static void RegisterJwtBearer(
+        AuthenticationBuilder builder,
+        OidcIssuerOptions issuer,
+        IList<SecurityKey>? staticSigningKeys)
     {
         builder.AddJwtBearer(issuer.Name, options =>
         {
-            options.Authority = issuer.Issuer;
             options.Audience = issuer.Audience;
             options.MapInboundClaims = false; // keep `sub`, `scp`, etc. as-is for parsing
 
@@ -171,11 +181,76 @@ internal static class AuthExtensions
                 NameClaimType = "sub"
             };
 
+            if (staticSigningKeys is not null)
+            {
+                // ADR-015 (Option D): embedded static JWKS. Preload the configuration with the
+                // issuer + signing keys and null the ConfigurationManager so JwtBearer treats
+                // this as static — it never fetches `.well-known/openid-configuration` or the
+                // `jwks_uri`, so there is no HTTPS metadata endpoint to stand up and no
+                // internal-CA root to trust on the API host. `Authority` is deliberately unset.
+                var configuration = new OpenIdConnectConfiguration { Issuer = issuer.Issuer };
+                foreach (var key in staticSigningKeys)
+                    configuration.SigningKeys.Add(key);
+                options.Configuration = configuration;
+                options.ConfigurationManager = null;
+                options.TokenValidationParameters.IssuerSigningKeys = staticSigningKeys;
+            }
+            else
+            {
+                // Discovery path (cloud issuers): Authority drives lazy `.well-known` + JWKS
+                // fetch. RequireHttpsMetadata stays at its default (true).
+                options.Authority = issuer.Issuer;
+            }
+
             options.Events = new JwtBearerEvents
             {
                 OnTokenValidated = ctx => JwtTenantContextEvents.BuildTenantContext(ctx, issuer)
             };
         });
+    }
+
+    /// <summary>
+    /// Loads and validates an embedded-key issuer's JWKS file (ADR-015, Option D). Runs at
+    /// service-configuration time so any problem fails startup closed — a deliberate parallel
+    /// to <see cref="EnforceOidcIssuersGuard"/>: a networked instance must never boot green
+    /// (<c>/health</c>, <c>/metrics</c>) while its only issuer's keys are missing or malformed
+    /// and every protected request would 500.
+    /// </summary>
+    internal static IList<SecurityKey> LoadStaticSigningKeys(OidcIssuerOptions issuer)
+    {
+        string json;
+        try
+        {
+            json = File.ReadAllText(issuer.JwksPath!);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            throw new InvalidOperationException(
+                $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' could not be read: {ex.Message} " +
+                "Provide a readable jwks.json for an embedded-key (ADR-015) issuer, or remove JwksPath to use " +
+                "HTTPS discovery via Authority.", ex);
+        }
+
+        IList<SecurityKey> keys;
+        try
+        {
+            keys = new JsonWebKeySet(json).GetSigningKeys();
+        }
+        catch (Exception ex) when (ex is ArgumentException or System.Text.Json.JsonException)
+        {
+            throw new InvalidOperationException(
+                $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' is not a valid JWKS document: " +
+                $"{ex.Message}", ex);
+        }
+
+        if (keys.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' contains no signing keys. " +
+                "A JWKS with at least one RSA/EC signing key is required for an embedded-key issuer.");
+        }
+
+        return keys;
     }
 
     [SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes",

@@ -1,6 +1,6 @@
 # Static JWKS + offline-minted JWTs as the lightweight OIDC issuer for A2/LAN consumption
 
-- Status: accepted
+- Status: superseded by [ADR-015](015-embedded-static-jwks.md) (metadata-delivery mechanism only — the lightweight-issuer decision over a full IdP stands; ADR-015 flips Option C → Option D)
 - Date: 2026-07-08
 - Companion: [ADR-003](003-scope-split.md) (scope semantics that gate what a minted token can do), [ADR-005](005-multi-issuer-jwt-policy-scheme.md) (multi-issuer JWT plumbing reused verbatim), [ADR-008](008-response-hygiene-and-actor-class.md) (actor-class resolution from the token), [ADR-011](011-deployment-artifact-format.md) (the A2 native-service install this pairs with), [ADR-013](013-aggregator-upsync.md) (distinct: hub↔spoke up-sync keeps `client_credentials` on a shared IdP — NOT in scope here)
 - Tracking issue: [#382](https://github.com/psmfd/agent-expertise-api/issues/382)

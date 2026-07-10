@@ -146,6 +146,99 @@ public class AuthModeStartupGuardTests
         act.Should().NotThrow();
     }
 
+    [Fact]
+    public void LoadStaticSigningKeys_MissingFile_FailsClosed()
+    {
+        // ADR-015: an embedded-key issuer whose JWKS file is absent must fail startup, not 500
+        // on first request. This is the embedded-key analogue of EnforceOidcIssuersGuard.
+        var issuer = new OidcIssuerOptions
+        {
+            Name = "LanStatic",
+            Issuer = "https://static-issuer.local/",
+            Audience = "expertise-api",
+            JwksPath = Path.Combine(Path.GetTempPath(), $"does-not-exist-{Guid.NewGuid():N}.json")
+        };
+
+        var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*could not be read*");
+    }
+
+    [Fact]
+    public void LoadStaticSigningKeys_EmptyKeySet_FailsClosed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"empty-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "{\"keys\":[]}");
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://static-issuer.local/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            act.Should().Throw<InvalidOperationException>().WithMessage("*no signing keys*");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadStaticSigningKeys_MalformedJson_FailsClosed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bad-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "this is not json");
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://static-issuer.local/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            act.Should().Throw<InvalidOperationException>();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadStaticSigningKeys_ValidJwks_ReturnsKeys()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"good-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, Infrastructure.JwtTokenMinter.StaticJwksJson());
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://static-issuer.local/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var keys = AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            keys.Should().ContainSingle();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private class HostingEnvironment : IHostEnvironment
     {
         public string EnvironmentName { get; set; } = Environments.Development;

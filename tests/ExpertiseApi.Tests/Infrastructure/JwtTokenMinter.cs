@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 
@@ -100,5 +101,24 @@ public static class JwtTokenMinter
         };
 
         return handler.CreateToken(descriptor);
+    }
+
+    /// <summary>
+    /// Public-only JWKS JSON for <see cref="SigningKey"/> — the shape an embedded-key
+    /// (ADR-015) issuer's <c>jwks.json</c> carries. Tests write this to a temp file and point
+    /// <c>Auth:Oidc:Issuers:N:JwksPath</c> at it so the real production embedded-key branch in
+    /// <c>AuthExtensions.RegisterJwtBearer</c> loads and validates against it.
+    /// </summary>
+    public static string StaticJwksJson()
+    {
+        var jwk = JsonWebKeyConverter.ConvertFromSecurityKey(SigningKey);
+        var doc = new
+        {
+            keys = new[]
+            {
+                new { kty = "RSA", kid = jwk.Kid, use = "sig", alg = SecurityAlgorithms.RsaSha256, n = jwk.N, e = jwk.E }
+            }
+        };
+        return JsonSerializer.Serialize(doc);
     }
 }

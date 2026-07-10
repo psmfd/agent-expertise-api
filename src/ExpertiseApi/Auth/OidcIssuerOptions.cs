@@ -50,6 +50,19 @@ internal class OidcIssuerOptions
     /// Group claim name (defaults to <c>"groups"</c>).
     /// </summary>
     public string GroupClaim { get; set; } = "groups";
+
+    /// <summary>
+    /// Path to a local JWKS (<c>jwks.json</c>) file. When set, this issuer's signing keys are
+    /// loaded from the file at startup and embedded directly into token validation — the API
+    /// performs <b>no</b> HTTPS discovery / <c>jwks_uri</c> fetch (ADR-015, Option D). This
+    /// removes the backchannel internal-CA-trust requirement on the API host that the
+    /// discovery-fetch path (<see cref="Issuer"/> as <c>Authority</c>) would otherwise impose.
+    /// Mutually exclusive with the discovery path: an issuer carrying a <c>JwksPath</c> never
+    /// contacts the network. <see cref="Issuer"/> is still required — it pins <c>ValidIssuer</c>
+    /// and must byte-match the token's <c>iss</c> claim. A blank/unreadable/empty JWKS fails
+    /// startup closed.
+    /// </summary>
+    public string? JwksPath { get; set; }
 }
 
 internal enum TenantSource

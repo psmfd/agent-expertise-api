@@ -1,0 +1,30 @@
+# ADR-015 LAN OIDC edge — step-ca ONLY.
+#
+# Caddy runs NATIVELY (launchd/systemd — see RUNBOOK.md), not here. That lets it
+# reach the native API over plain loopback (127.0.0.1) and reach step-ca via the
+# published port below — the well-supported direction on every Docker/Podman
+# runtime — instead of relying on host.docker.internal crossing into a native
+# process (ambiguous across Docker Desktop / colima / podman machine).
+#
+# step-ca is the internal ACME CA that issues Caddy's TLS cert for the API's
+# public hostname. Under ADR-015 (embedded JWKS) the API performs NO metadata
+# fetch, so the API host does NOT trust this CA — only the LAN CONSUMER VMs do.
+name: expertise-lan-oidc
+
+services:
+  step-ca:
+    # Pin to a digest before any real use — :latest mints your trust root.
+    image: smallstep/step-ca:0.28.4
+    restart: unless-stopped
+    environment:
+      DOCKER_STEPCA_INIT_NAME: "Expertise LAN CA"
+      DOCKER_STEPCA_INIT_DNS_NAMES: "localhost,step-ca"
+      DOCKER_STEPCA_INIT_ACME: "true"
+    ports:
+      # ACME directory, published to host loopback for the native Caddy service.
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - step-ca-data:/home/step
+
+volumes:
+  step-ca-data:
