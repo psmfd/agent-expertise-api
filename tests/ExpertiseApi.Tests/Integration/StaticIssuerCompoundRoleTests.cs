@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using ExpertiseApi.Auth;
 using ExpertiseApi.Tests.Infrastructure;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.IdentityModel.Tokens;
 
 namespace ExpertiseApi.Tests.Integration;
 
@@ -138,5 +140,23 @@ public class StaticIssuerCompoundRoleTests : IAsyncLifetime
         var response = await client.PostAsJsonAsync("/expertise", UniquePayload());
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task EmbeddedKeyToken_SignedWithKeyNotInJwks_IsUnauthorized()
+    {
+        // Revocation mechanism: a token signed with a key whose kid is absent from the embedded
+        // JWKS must be rejected (dropping a client's key + restart is how ADR-015 revokes it).
+        using var foreignKey = RSA.Create(2048);
+        var token = JwtTokenMinter.MintCompoundRole(
+            "test",
+            [AuthConstants.ReadScope],
+            signingKey: new RsaSecurityKey(foreignKey) { KeyId = "not-in-jwks" });
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.GetAsync("/expertise");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 }

@@ -51,6 +51,7 @@ def kid_for(client): return f"{client}"
 
 def keygen(a):
     os.makedirs(KEY_DIR, exist_ok=True)
+    os.chmod(KEY_DIR, 0o700)   # keys are more sensitive than any token; don't leave the dir world-listable
     path = os.path.join(KEY_DIR, f"{a.client}.priv.json")
     if os.path.exists(path) and not a.force:
         sys.exit(f"{path} exists; pass --force to overwrite (rotates the client's key)")

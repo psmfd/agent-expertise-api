@@ -38,7 +38,8 @@ public static class JwtTokenMinter
         string tenant,
         IEnumerable<string> scopes,
         string? sub = null,
-        TimeSpan? expiresIn = null)
+        TimeSpan? expiresIn = null,
+        SecurityKey? signingKey = null)
     {
         var handler = new JsonWebTokenHandler();
 
@@ -54,10 +55,34 @@ public static class JwtTokenMinter
             Audience = TestAudience,
             Claims = claims,
             Expires = DateTime.UtcNow.Add(expiresIn ?? TimeSpan.FromHours(1)),
-            SigningCredentials = new SigningCredentials(SigningKey, SecurityAlgorithms.RsaSha256)
+            // Defaults to the key embedded in the API's JWKS; pass a foreign key to prove a
+            // token whose kid is absent from the JWKS is rejected (the revocation mechanism).
+            SigningCredentials = new SigningCredentials(signingKey ?? SigningKey, SecurityAlgorithms.RsaSha256)
         };
 
         return handler.CreateToken(descriptor);
+    }
+
+    /// <summary>
+    /// PRIVATE JWKS JSON for <see cref="SigningKey"/> (carries <c>d</c>/<c>p</c>/<c>q</c>) — the
+    /// shape a JWKS would wrongly have if an operator pointed <c>JwksPath</c> at mint_token.py's
+    /// <c>*.priv.json</c>. Used to assert the loader rejects private-key material.
+    /// </summary>
+    public static string PrivateJwksJson()
+    {
+        var jwk = JsonWebKeyConverter.ConvertFromSecurityKey(SigningKey);
+        var doc = new
+        {
+            keys = new[]
+            {
+                new
+                {
+                    kty = "RSA", kid = jwk.Kid, use = "sig", alg = SecurityAlgorithms.RsaSha256,
+                    n = jwk.N, e = jwk.E, d = jwk.D, p = jwk.P, q = jwk.Q
+                }
+            }
+        };
+        return JsonSerializer.Serialize(doc);
     }
 
     public static string Mint(

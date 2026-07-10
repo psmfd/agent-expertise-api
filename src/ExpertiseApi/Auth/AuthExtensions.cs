@@ -184,10 +184,12 @@ internal static class AuthExtensions
             if (staticSigningKeys is not null)
             {
                 // ADR-015 (Option D): embedded static JWKS. Preload the configuration with the
-                // issuer + signing keys and null the ConfigurationManager so JwtBearer treats
-                // this as static — it never fetches `.well-known/openid-configuration` or the
-                // `jwks_uri`, so there is no HTTPS metadata endpoint to stand up and no
-                // internal-CA root to trust on the API host. `Authority` is deliberately unset.
+                // issuer + signing keys. Because Authority/MetadataAddress are unset, the
+                // framework's JwtBearerPostConfigureOptions wraps this Configuration in a
+                // StaticConfigurationManager (nulling ConfigurationManager here just prevents a
+                // discovery-backed one) — GetConfigurationAsync then performs no I/O, so there
+                // is no `.well-known`/`jwks_uri` fetch, no HTTPS metadata endpoint to stand up,
+                // and no internal-CA root to trust on the API host. `Authority` is deliberately unset.
                 var configuration = new OpenIdConnectConfiguration { Issuer = issuer.Issuer };
                 foreach (var key in staticSigningKeys)
                     configuration.SigningKeys.Add(key);
@@ -231,10 +233,10 @@ internal static class AuthExtensions
                 "HTTPS discovery via Authority.", ex);
         }
 
-        IList<SecurityKey> keys;
+        JsonWebKeySet keySet;
         try
         {
-            keys = new JsonWebKeySet(json).GetSigningKeys();
+            keySet = new JsonWebKeySet(json);
         }
         catch (Exception ex) when (ex is ArgumentException or System.Text.Json.JsonException)
         {
@@ -242,6 +244,24 @@ internal static class AuthExtensions
                 $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' is not a valid JWKS document: " +
                 $"{ex.Message}", ex);
         }
+
+        // Reject private-key material. The API loads a JWKS only to *validate* signatures, so it
+        // must be public-only. This fails closed on the operator footgun of pointing JwksPath at
+        // mint_token.py's `<client>.priv.json` (or its key dir) instead of the `build-jwks` output
+        // — which would otherwise load a token-forging private key into the network-facing process.
+        // `d` covers RSA and EC private keys; `p`/`q` are RSA CRT components.
+        foreach (var jwk in keySet.Keys)
+        {
+            if (!string.IsNullOrEmpty(jwk.D) || !string.IsNullOrEmpty(jwk.P) || !string.IsNullOrEmpty(jwk.Q))
+            {
+                throw new InvalidOperationException(
+                    $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' contains PRIVATE key material " +
+                    $"(kid '{jwk.Kid}'). The API must load a PUBLIC-only JWKS — run 'mint_token.py build-jwks' to " +
+                    "produce one; never point JwksPath at a *.priv.json file or the private key directory.");
+            }
+        }
+
+        var keys = keySet.GetSigningKeys();
 
         if (keys.Count == 0)
         {
