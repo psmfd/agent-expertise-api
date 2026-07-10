@@ -146,6 +146,171 @@ public class AuthModeStartupGuardTests
         act.Should().NotThrow();
     }
 
+    [Fact]
+    public void LoadStaticSigningKeys_MissingFile_FailsClosed()
+    {
+        // ADR-015: an embedded-key issuer whose JWKS file is absent must fail startup, not 500
+        // on first request. This is the embedded-key analogue of EnforceOidcIssuersGuard.
+        var issuer = new OidcIssuerOptions
+        {
+            Name = "LanStatic",
+            Issuer = "https://static-issuer.local/",
+            Audience = "expertise-api",
+            JwksPath = Path.Combine(Path.GetTempPath(), $"does-not-exist-{Guid.NewGuid():N}.json")
+        };
+
+        var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*could not be read*");
+    }
+
+    [Fact]
+    public void LoadStaticSigningKeys_EmptyKeySet_FailsClosed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"empty-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "{\"keys\":[]}");
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://static-issuer.local/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            act.Should().Throw<InvalidOperationException>().WithMessage("*no signing keys*");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadStaticSigningKeys_MalformedJson_FailsClosed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bad-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "this is not json");
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://static-issuer.local/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            act.Should().Throw<InvalidOperationException>();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadStaticSigningKeys_ValidJwks_ReturnsKeys()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"good-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, Infrastructure.JwtTokenMinter.StaticJwksJson());
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://static-issuer.local/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var keys = AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            keys.Should().ContainSingle();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadStaticSigningKeys_PrivateKeyMaterial_FailsClosed()
+    {
+        // Operator footgun: JwksPath points at mint_token.py's *.priv.json (private key) instead
+        // of the build-jwks public output. Must fail closed, not load a forging key into the API.
+        var path = Path.Combine(Path.GetTempPath(), $"private-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, Infrastructure.JwtTokenMinter.PrivateJwksJson());
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://static-issuer.local/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            act.Should().Throw<InvalidOperationException>().WithMessage("*PRIVATE key material*");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadStaticSigningKeys_RealMintTokenOutput_LoadsSuccessfully()
+    {
+        // Proves scripts/mint_token.py's ACTUAL `build-jwks` output shape (alg/e/kid/kty/n/use,
+        // public-only) is consumable by the production loader — locking the Python-tool ↔ API
+        // config contract that the C#-side StaticJwksJson() helper alone would not guarantee.
+        var path = Path.Combine(Path.GetTempPath(), $"real-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, RealMintTokenJwks);
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://auth.lan.example/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var keys = AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            keys.Should().ContainSingle();
+            keys[0].KeyId.Should().Be("vm-alpha");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // Verbatim output of `scripts/mint_token.py build-jwks` (public-only), captured 2026-07-10.
+    private const string RealMintTokenJwks = """
+        {
+          "keys": [
+            {
+              "alg": "RS256",
+              "e": "AQAB",
+              "kid": "vm-alpha",
+              "kty": "RSA",
+              "n": "2Cy1UNsX24KYM-Sqo6qAY5XFPa68v1fgUKMCf2qgUTx2-eHz3Tfs1iIusxrQfaAKzMIbaSwWhP5MExqWP-0O6vexZktmU2erTICZNzbielVeMwR0iZI5TmZYEwj2upr8Eprf8ujKAKFeQZ8SNd6pa1NgKdc9IDVhgT5GiXSoIx-89e0Ns4JdZnqp7D23AC9l3V2bYu6MATANXa7A8oXp4QqpXA3UIe5OT4k5c-HEcngP_vmMVCnrSLd6pNxAhvMZ--67wipjTYRJzg-iE2hNSAWFmehnHGyE5-C58mqbMydUG4aAE34QiwmvHGhmPrWyUX9Gykco3vUWe42InpO-gw",
+              "use": "sig"
+            }
+          ]
+        }
+        """;
+
     private class HostingEnvironment : IHostEnvironment
     {
         public string EnvironmentName { get; set; } = Environments.Development;
