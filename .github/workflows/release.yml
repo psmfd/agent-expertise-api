@@ -157,6 +157,13 @@ jobs:
       # artifacts (.sig) in GHCR. Verification recipe in README.
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign CLI explicitly. The installer Action's default cosign-release
+          # silently drifted 2.4.3 -> 3.0.6 on the v3.8.1 -> v4.1.2 bump (#203), and cosign
+          # 3.0.0 defaults --new-bundle-format=true, which broke the sign-blob steps below
+          # (ADR-011 Amendment 1, #399). Pinning makes a CLI upgrade a reviewed change, not
+          # a side effect of an installer-Action bump.
+          cosign-release: v3.1.1
 
       - name: Sign Docker image by digest (keyless)
         env:
@@ -280,13 +287,15 @@ jobs:
         run: |
           set -euo pipefail
           out_dir=dist/openapi
+          # cosign v3 emits a self-contained Sigstore bundle (signature + Fulcio cert
+          # chain + Rekor inclusion proof) in one file; the legacy detached
+          # --output-signature/--output-certificate pair is deprecated (ADR-011
+          # Amendment 1, #399). verify-release.sh + the README recipes verify via --bundle.
           cosign sign-blob --yes \
-            --output-signature "$out_dir/openapi.json.sig" \
-            --output-certificate "$out_dir/openapi.json.pem" \
+            --bundle "$out_dir/openapi.json.sigstore.json" \
             "$out_dir/openapi.json"
           gh release upload "$TAG" \
-            "$out_dir/openapi.json.sig" \
-            "$out_dir/openapi.json.pem" \
+            "$out_dir/openapi.json.sigstore.json" \
             --repo "${{ github.repository }}"
 
       # ---- Portable publish tarball + cosign-signed manifest (ADR-011) -----
@@ -392,22 +401,21 @@ jobs:
             --openapi-sha-file dist/openapi/openapi.json.sha256 \
             --output "$manifest"
 
-          # cosign sign-blob over the manifest. Signature binds bytes; the
-          # manifest's tarballSha256 transitively binds the tarball.
-          # Same Fulcio/Rekor keyless OIDC ceremony as image/chart/openapi.
+          # cosign v3 Sigstore bundle over the manifest (see the openapi step above /
+          # ADR-011 Amendment 1, #399). Signature binds bytes; the manifest's
+          # tarballSha256 transitively binds the tarball. Same Fulcio/Rekor keyless
+          # OIDC ceremony as image/chart/openapi.
           cosign sign-blob --yes \
-            --output-signature "${manifest}.sig" \
-            --output-certificate "${manifest}.pem" \
+            --bundle "${manifest}.sigstore.json" \
             "$manifest"
 
-          # Upload tarball, sha256 sidecar, manifest, sig, cert. Pinned
+          # Upload tarball, sha256 sidecar, manifest, and the cosign bundle. Pinned
           # to the immutable release tag created earlier in the job.
           gh release upload "$TAG" \
             "$tarball" \
             "${tarball}.sha256" \
             "$manifest" \
-            "${manifest}.sig" \
-            "${manifest}.pem" \
+            "${manifest}.sigstore.json" \
             --repo "${{ github.repository }}"
 
       - name: Dispatch deploy to infra repo

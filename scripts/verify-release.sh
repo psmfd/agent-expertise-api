@@ -18,8 +18,7 @@
 #   scripts/verify-release.sh \
 #       --tarball   expertise-api-vX.Y.Z-portable.tar.gz \
 #       --manifest  expertise-api-vX.Y.Z.manifest.json \
-#       --signature expertise-api-vX.Y.Z.manifest.json.sig \
-#       --certificate expertise-api-vX.Y.Z.manifest.json.pem
+#       --bundle    expertise-api-vX.Y.Z.manifest.json.sigstore.json
 #
 # Exit codes:
 #
@@ -65,10 +64,13 @@ readonly COSIGN_IDENTITIES='https://github.com/psmfd/agent-expertise-api/.github
 readonly COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 readonly REKOR_URL='https://rekor.sigstore.dev'
 
-# cosign 2.x stabilized the keyless verify-blob bundle format and the
-# --certificate-identity / --certificate-oidc-issuer flag pair; 1.x
-# rejects them. Pin a minimum.
-readonly COSIGN_MIN_VERSION='2.2.0'
+# The release workflow signs blobs as self-contained Sigstore bundles
+# (cosign sign-blob --bundle) since ADR-011 Amendment 1 (#399). cosign 3.0.0
+# made the new bundle format the default; verifying it via `verify-blob --bundle`
+# requires a cosign that understands the format. Pin the floor at 3.0.0 so an
+# older binary fails with this clear message rather than an opaque bundle-parse
+# error. (2.6.0 added opt-in bundle support, but the signer emits 3.x bundles.)
+readonly COSIGN_MIN_VERSION='3.0.0'
 
 # Manifest schema versions this script knows how to interpret. Strict —
 # refuses unknown values rather than silently forward-compatting (a
@@ -152,19 +154,21 @@ vr_require_cosign() {
 
 # ---------------------------------------------------------------------------
 # vr_cosign_verify_manifest — invoke cosign verify-blob with the pinned
-# trust-root constants. Returns 0 on success.
+# trust-root constants against the Sigstore bundle. Returns 0 on success.
 #
-# Args: signature_path cert_path manifest_path
+# Args: bundle_path manifest_path
 # ---------------------------------------------------------------------------
 vr_cosign_verify_manifest() {
-  local sig=$1 cert=$2 manifest=$3
-  [ -r "$sig" ]      || vr_die "signature unreadable: $sig" 2
-  [ -r "$cert" ]     || vr_die "certificate unreadable: $cert" 2
+  local bundle=$1 manifest=$2
+  [ -r "$bundle" ]   || vr_die "cosign bundle unreadable: $bundle" 2
   [ -r "$manifest" ] || vr_die "manifest unreadable: $manifest" 2
 
   vr_log "cosign verify-blob: issuer=${COSIGN_OIDC_ISSUER}"
-  vr_log "                    rekor=${REKOR_URL}"
-  # Try each pinned identity with EXACT-match semantics; first hit wins.
+  vr_log "                    rekor=${REKOR_URL} (inclusion proof embedded in bundle)"
+  # The Sigstore bundle (ADR-011 Amendment 1, #399) embeds the Fulcio cert chain
+  # AND the Rekor inclusion proof, so --certificate / --rekor-url are no longer
+  # passed — verification is self-contained. Try each pinned identity with
+  # EXACT-match semantics; first hit wins.
   # Intentionally unquoted: scalar word-split (identities contain no spaces).
   local identity verified=0
   for identity in ${COSIGN_IDENTITIES}; do
@@ -172,9 +176,7 @@ vr_cosign_verify_manifest() {
     if cosign verify-blob \
         --certificate-identity "$identity" \
         --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
-        --rekor-url "$REKOR_URL" \
-        --signature "$sig" \
-        --certificate "$cert" \
+        --bundle "$bundle" \
         "$manifest" >/dev/null 2>&1; then
       verified=1
       # Global (no `local`): release-consumer.sh records the matched
@@ -188,10 +190,11 @@ vr_cosign_verify_manifest() {
   done
   if [ "$verified" != "1" ]; then
     vr_die "cosign verify-blob FAILED. Possible causes:
-    1. Manifest tampered or signature does not match
+    1. Manifest tampered or bundle does not match
     2. Signer identity mismatch (accepted: ${COSIGN_IDENTITIES})
-    3. Rekor unreachable (try --from-source --i-accept-unverified-source
-       fallback; structured offline-verify support tracked by #256)" 1
+    3. cosign too old to parse the Sigstore bundle (need >= ${COSIGN_MIN_VERSION})
+    4. Rekor unreachable for the online inclusion check (structured
+       offline-verify support tracked by #256)" 1
   fi
 }
 
@@ -254,10 +257,10 @@ vr_crosscheck_tarball_sha() {
 # Returns 0 on full success. Callers (install.sh + CLI) use this entry point.
 # ---------------------------------------------------------------------------
 vr_verify_all() {
-  local tarball=$1 manifest=$2 sig=$3 cert=$4
+  local tarball=$1 manifest=$2 bundle=$3
   [ -r "$tarball" ] || vr_die "tarball unreadable: $tarball" 2
   vr_require_cosign
-  vr_cosign_verify_manifest "$sig" "$cert" "$manifest"
+  vr_cosign_verify_manifest "$bundle" "$manifest"
   vr_validate_manifest_schema "$manifest"
   vr_crosscheck_tarball_sha "$tarball" "$manifest"
   vr_log "verification: PASS"
@@ -267,22 +270,20 @@ vr_verify_all() {
 # CLI entrypoint (skipped when sourced via SOURCE_ONLY=1).
 # ---------------------------------------------------------------------------
 if [ "${SOURCE_ONLY:-0}" != "1" ]; then
-  TARBALL=""; MANIFEST=""; SIGNATURE=""; CERTIFICATE=""
+  TARBALL=""; MANIFEST=""; BUNDLE=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --tarball)     TARBALL="${2:?--tarball needs a path}"; shift 2 ;;
-      --manifest)    MANIFEST="${2:?--manifest needs a path}"; shift 2 ;;
-      --signature)   SIGNATURE="${2:?--signature needs a path}"; shift 2 ;;
-      --certificate) CERTIFICATE="${2:?--certificate needs a path}"; shift 2 ;;
+      --tarball)  TARBALL="${2:?--tarball needs a path}"; shift 2 ;;
+      --manifest) MANIFEST="${2:?--manifest needs a path}"; shift 2 ;;
+      --bundle)   BUNDLE="${2:?--bundle needs a path}"; shift 2 ;;
       --help|-h)
         sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
         exit 0 ;;
       *) vr_die "unknown flag: $1 (try --help)" 2 ;;
     esac
   done
-  [ -n "$TARBALL" ]     || vr_die "--tarball required" 2
-  [ -n "$MANIFEST" ]    || vr_die "--manifest required" 2
-  [ -n "$SIGNATURE" ]   || vr_die "--signature required" 2
-  [ -n "$CERTIFICATE" ] || vr_die "--certificate required" 2
-  vr_verify_all "$TARBALL" "$MANIFEST" "$SIGNATURE" "$CERTIFICATE"
+  [ -n "$TARBALL" ]  || vr_die "--tarball required" 2
+  [ -n "$MANIFEST" ] || vr_die "--manifest required" 2
+  [ -n "$BUNDLE" ]   || vr_die "--bundle required" 2
+  vr_verify_all "$TARBALL" "$MANIFEST" "$BUNDLE"
 fi

@@ -368,17 +368,16 @@ cosign verify ghcr.io/psmfd/charts/expertise-api:X.Y.Z \
   --certificate-identity 'https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-# Verify openapi.json (download .sig + .pem alongside it from the release page)
+# Verify openapi.json (download openapi.json.sigstore.json alongside it from the release page)
 cosign verify-blob \
   --certificate-identity 'https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --signature openapi.json.sig \
-  --certificate openapi.json.pem \
+  --bundle openapi.json.sigstore.json \
   openapi.json
 
 # Verify the Archetype A2 release tarball via its signed manifest (ADR-011).
 # Download expertise-api-X.Y.Z-portable.tar.gz, expertise-api-X.Y.Z.manifest.json,
-# .manifest.json.sig, .manifest.json.pem from the release page.
+# and expertise-api-X.Y.Z.manifest.json.sigstore.json (the cosign Sigstore bundle) from the release page.
 # The leading `set -euo pipefail` is load-bearing — without it an operator
 # copy-pasting this block would see cosign verify-blob fail with non-zero
 # exit, the shell would continue, and the SHA cross-check below would run
@@ -387,8 +386,7 @@ set -euo pipefail
 cosign verify-blob \
   --certificate-identity 'https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --signature expertise-api-X.Y.Z.manifest.json.sig \
-  --certificate expertise-api-X.Y.Z.manifest.json.pem \
+  --bundle expertise-api-X.Y.Z.manifest.json.sigstore.json \
   expertise-api-X.Y.Z.manifest.json
 
 # Manifest's artifacts.tarball.sha256 transitively binds the tarball.
@@ -735,9 +733,9 @@ Under `--from-release` the installer:
 
 1. Resolves the version (verbatim, or via the GitHub Releases API for `latest`).
 2. Cross-checks `https://api.github.com/repos/.../releases/tags/v${version}`
-   for the expected `tag_name` and the five expected asset filenames
+   for the expected `tag_name` and the four expected asset filenames
    (independent second trust path; skippable via `--skip-release-api-crosscheck`).
-3. Downloads the tarball + manifest + cosign signature + Fulcio cert
+3. Downloads the tarball + manifest + cosign Sigstore bundle
    over hardened curl (TLS ≥1.2, `--proto =https`, bounded retries).
 4. `cosign verify-blob`s the manifest with exact-match identity
    `https://github.com/psmfd/agent-expertise-api/.github/workflows/release.yml@refs/heads/main`
@@ -764,10 +762,9 @@ recipe cannot drift via copy-paste.
 
 ```bash
 scripts/verify-release.sh \
-  --tarball     expertise-api-X.Y.Z-portable.tar.gz \
-  --manifest    expertise-api-X.Y.Z.manifest.json \
-  --signature   expertise-api-X.Y.Z.manifest.json.sig \
-  --certificate expertise-api-X.Y.Z.manifest.json.pem
+  --tarball  expertise-api-X.Y.Z-portable.tar.gz \
+  --manifest expertise-api-X.Y.Z.manifest.json \
+  --bundle   expertise-api-X.Y.Z.manifest.json.sigstore.json
 ```
 
 Deferred to follow-ups: `--tarball-url` mirror flag for air-gapped
