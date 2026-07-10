@@ -272,7 +272,7 @@ public class AuthModeStartupGuardTests
         // A symmetric (kty=oct) JWK carries a shared secret in `k`. Loading it into a
         // network-facing JWKS would let anyone who can read the file forge HS256 tokens the API
         // accepts. Embedded-key issuers are RS256-only, so this must fail closed at startup.
-        var path = Path.Combine(Path.GetTempPath(), $"oct-jwks-{Guid.NewGuid():N}.json");
+        var path = Path.Join(Path.GetTempPath(), $"oct-jwks-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, """
             { "keys": [ { "kty": "oct", "kid": "sym-1", "alg": "HS256", "use": "sig",
               "k": "c2VjcmV0LXNoYXJlZC1obWFjLWtleS1tYXRlcmlhbA" } ] }
