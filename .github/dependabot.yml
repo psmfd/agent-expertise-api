@@ -18,6 +18,15 @@ updates:
       # AwesomeAssertions (Apache 2.0 community fork). Any future Dependabot PR
       # that tries to re-add FluentAssertions must be rejected.
       - dependency-name: "FluentAssertions"
+      # Microsoft.OpenApi is a direct security pin held at the 2.x major (see
+      # src/ExpertiseApi/ExpertiseApi.csproj). The 3.x major made
+      # IOpenApiMediaType.Example read-only, which the Microsoft.AspNetCore.OpenApi
+      # 10.0.x source generator still assigns to (CS0200 build failure). Ignore
+      # only the major bump so 2.x minor/patch security updates keep flowing.
+      # Drop this once Microsoft.AspNetCore.OpenApi's generator supports 3.x (#390).
+      - dependency-name: "Microsoft.OpenApi"
+        update-types:
+          - "version-update:semver-major"
     groups:
       ef-core:
         patterns:
