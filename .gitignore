@@ -62,9 +62,22 @@ src/ExpertiseApi/Models/tokenizer*.json
 ## Claude Code worktrees
 .claude/worktrees/
 
+## Claude Code per-agent runtime memory (subagent scratch; not part of the repo)
+.claude/agent-memory/
+
 ## Part D C8: build-time OpenAPI document emission (Microsoft.Extensions.ApiDescription.Server)
 ## Output of _GenerateOpenApiDocuments MSBuild target; published as a GitHub Release asset via release.yml.
 src/ExpertiseApi/artifacts/
 
 ## pi extension node_modules
 .pi/extensions/*/node_modules/
+
+## Python bytecode cache (scripts/mint_token.py and any future helper scripts)
+__pycache__/
+*.pyc
+
+## mint_token.py (ADR-015) private key material — NEVER commit. The default KEY_DIR is
+## ./keys and per-client private keys are *.priv.json ("d" JWK material the PEM-oriented
+## secrets-guard does not detect). The API only ever loads the PUBLIC build-jwks output.
+keys/
+*.priv.json

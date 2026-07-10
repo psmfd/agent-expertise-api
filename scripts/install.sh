@@ -741,8 +741,16 @@ ensure_config_stubs() {
 # EnvironmentFile= parser is literal and tolerates the unquoted form, but
 # the launchd-on-macOS path and the migrate scripts both use the bash sourcer.
 #
-# When Auth:Mode=Oidc, populate per-issuer overrides via Auth__Oidc__Issuers__N__*
-# environment variables — see appsettings.json for the shape.
+# When Auth:Mode=Oidc (the default outside Development), populate per-issuer
+# overrides via Auth__Oidc__Issuers__N__* env vars — see appsettings.json for the
+# shape. For the shipped LAN static issuer (index 2 = "LanStatic", ADR-015 embedded
+# JWKS), a networked A2 instance consumed by LAN clients needs:
+#   Auth__Oidc__Issuers__2__Issuer="https://auth.lan.example/"   # byte-exact w/ token iss
+#   Auth__Oidc__Issuers__2__JwksPath="${CONFIG_DIR}/jwks.json"   # local public JWKS; no HTTPS fetch
+#   AllowedHosts="your-lan-hostname"                             # else HostFiltering 400s the LAN Host
+#   ForwardedHeaders__KnownNetworks__0="10.0.0.0/24"             # proxy CIDR; else audit IP = the proxy
+# and a non-loopback bind (default is 127.0.0.1:8080): scripts/install.sh --bind 0.0.0.0:8080
+# Full runbook: deploy/lan-static-oidc/RUNBOOK.md
 #
 # Aggregator up-sync (ADR-013, spoke role only — leave unset for a standalone
 # instance). The hub credential must carry expertise.write.draft ONLY:

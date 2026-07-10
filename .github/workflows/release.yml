@@ -85,7 +85,7 @@ jobs:
 
       - name: Cache ONNX model files
         id: model-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: src/ExpertiseApi/models
           key: onnx-bge-micro-v2-quantized-${{ hashFiles('scripts/download-models.sh') }}
@@ -102,7 +102,7 @@ jobs:
       # release attaches as a pinned asset for downstream integrators (#147, #148).
       # See docs/security/integration-threat-model.md Part D C8.
       - name: Setup .NET (for build-time OpenAPI emission)
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
 
@@ -114,7 +114,7 @@ jobs:
           test -f src/ExpertiseApi/artifacts/openapi/ExpertiseApi.json
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
         with:
           platforms: arm64
 
@@ -130,7 +130,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -140,7 +140,7 @@ jobs:
 
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -156,7 +156,7 @@ jobs:
       # long-lived keys to manage; signatures land as adjacent OCI
       # artifacts (.sig) in GHCR. Verification recipe in README.
       - name: Install cosign
-        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign Docker image by digest (keyless)
         env:
@@ -178,7 +178,7 @@ jobs:
       # it with the same keyless OIDC identity. Consumers can install via
       # `helm install foo oci://ghcr.io/thesemicolon/charts/expertise-api`.
       - name: Install Helm
-        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.18.3
 

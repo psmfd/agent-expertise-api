@@ -70,8 +70,17 @@
       latest patched 2.x — API-compatible within the 2.x major, so the parent
       package resolves against it. Drop this once Microsoft.AspNetCore.OpenApi
       references a patched Microsoft.OpenApi transitively.
+
+      Held at the 2.x major deliberately. Microsoft.OpenApi 3.x made
+      IOpenApiMediaType.Example read-only, but the Microsoft.AspNetCore.OpenApi
+      10.0.9 XML-comment source generator still assigns to it, so a 3.x bump
+      fails to compile (CS0200). Microsoft.AspNetCore.OpenApi 10.0.9 depends on
+      Microsoft.OpenApi (>= 2.0.0) and does not require 3.x, so there is no
+      forward path until its generator supports the 3.x example model. The 3.x
+      major is Dependabot-ignored (.github/dependabot.yml) until then; 2.x
+      minor/patch security bumps still flow. Tracked in #390.
     -->
-    <PackageReference Include="Microsoft.OpenApi" Version="2.9.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="2.10.0" />
     <!--
       Build-time OpenAPI document generator (Part D C8). PrivateAssets=all keeps the
       package out of the published output (it's an MSBuild task, not a runtime dependency).
@@ -97,7 +106,7 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.2" />
     <PackageReference Include="Pgvector.EntityFrameworkCore" Version="0.3.0" />
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
-    <PackageReference Include="Scalar.AspNetCore" Version="2.16.6" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.16.11" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
   </ItemGroup>

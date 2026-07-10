@@ -1,0 +1,18 @@
+# ADR-015 — native Caddy (launchd/systemd). API inbound TLS only.
+#
+# Terminates HTTPS for LAN consumers and reverse-proxies to the native API over
+# loopback. Under ADR-015 the API validates tokens against a local embedded JWKS,
+# so this proxy does NOT serve any /.well-known or jwks.json — its only job is TLS
+# for the API endpoint.
+
+{
+	# step-ca's ACME directory (published to host loopback by compose.yaml).
+	acme_ca https://localhost:9000/acme/acme/directory
+	# step-ca root, exported per RUNBOOK.md step 3, so Caddy trusts the ACME API.
+	acme_ca_root /etc/caddy/step-root.crt
+}
+
+# Replace with the API's real LAN hostname (must also be in the API's AllowedHosts).
+expertise.lan.example {
+	reverse_proxy 127.0.0.1:8080
+}

@@ -441,6 +441,46 @@ Every value is overridable. On macOS/Linux, set the same variable in
 e.g. `DOTNET_gcServer=1` or `Metrics__Enabled=true`. On Windows, edit the
 `Environment` `REG_MULTI_SZ` value on the service key and restart the service.
 
+#### Networked LAN consumers (OIDC without standing up an IdP)
+
+The lightweight local defaults above assume loopback. To let **other hosts on your
+LAN** (e.g. container VMs running agents) consume one A2 instance, three things
+change — and because `Auth:Mode` is hard-`Oidc` outside Development, you need an
+OIDC issuer. You do **not** need a full identity provider. See
+[ADR-015](adrs/015-embedded-static-jwks.md) (which supersedes
+[ADR-014](adrs/014-lightweight-oidc-static-jwks.md)) for the decision, and
+[`deploy/lan-static-oidc/`](deploy/lan-static-oidc/RUNBOOK.md) for the turnkey
+runbook. The short version:
+
+1. **Bind off loopback.** `scripts/install.sh --bind 0.0.0.0:8080` (or a specific
+   LAN interface IP). Remote clients target the host's **LAN IP**, not
+   `host.docker.internal`.
+2. **Allow the LAN Host header.** The default `AllowedHosts`
+   (`localhost;127.0.0.1;[::1]`) makes ASP.NET Core's host-filtering return **400**
+   to a remote `Host:` — set `AllowedHosts=<your-lan-hostname>` in `secrets.env`,
+   and add the reverse proxy's network to `ForwardedHeaders__KnownNetworks__0` so
+   audit IPs are the real client, not the proxy.
+3. **Terminate TLS.** Nothing in the A2 path serves HTTPS. Front the API with a
+   reverse proxy (Caddy, run natively) using an internal ACME CA (step-ca) —
+   TLS-ALPN-01 works LAN-to-LAN with no public DNS. Distribute the CA root to
+   **every consumer VM** so they trust the API's endpoint. Under ADR-015 the
+   **API host itself trusts no CA** (it performs no metadata fetch).
+
+**The issuer, without a daemon or an HTTPS endpoint:** mint per-client RS256 JWTs
+offline (`scripts/mint_token.py`) carrying a `{tenant}:{scope}` `roles` claim, build
+a public `jwks.json`, and point the shipped `LanStatic` issuer
+(`Auth:Oidc:Issuers[2]`, `TenantSource: CompoundRole`, `RoleSeparator: ":"`) at that
+file via `Auth__Oidc__Issuers__2__JwksPath`. The API loads the keys at startup and
+validates **with no discovery fetch** (ADR-015 embedded JWKS) — so there is no
+`.well-known` endpoint to host and no backchannel CA trust on the API host; a
+missing/empty JWKS fails startup closed. The existing scope
+([ADR-003](adrs/003-scope-split.md)) and actor-class
+([ADR-008](adrs/008-response-hygiene-and-actor-class.md)) semantics apply to minted
+tokens unchanged. Never mint `expertise.write.approve` for an unattended client.
+Rotation is edit-`jwks.json` + restart (not zero-downtime); when you outgrow that or
+need synchronous revocation, escalate to a headless OP (Ory Hydra) — config-only on
+the API side.
+
 #### Survives reboot?
 
 | OS | Mode | Survives reboot? | Notes |
@@ -885,6 +925,7 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | Cosign-signed published tarball over SDK-on-host for Archetype A2 install | [ADR-011](adrs/011-deployment-artifact-format.md) |
 | Application-level signed + encrypted backup artifact (format, trust policy) | [ADR-012](adrs/012-backup-artifact-format.md) |
 | Aggregator up-sync: draft-only scope as the knowledge-supply-chain control | [ADR-013](adrs/013-aggregator-upsync.md) |
+| LAN/offline embedded static-JWKS issuer (no HTTPS discovery on the API host; fail-closed key load) | [ADR-015](adrs/015-embedded-static-jwks.md) (supersedes [ADR-014](adrs/014-lightweight-oidc-static-jwks.md)) |
 
 ## License
 

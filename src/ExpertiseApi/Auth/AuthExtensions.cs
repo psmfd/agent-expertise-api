@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
 
 namespace ExpertiseApi.Auth;
@@ -43,7 +44,14 @@ internal static class AuthExtensions
         {
             foreach (var issuer in issuers)
             {
-                RegisterJwtBearer(authBuilder, issuer);
+                // Eagerly load embedded static keys (ADR-015) here, at service-configuration
+                // time, so a missing/malformed JwksPath fails startup closed rather than 500ing
+                // on the first authenticated request. Discovery-path issuers (JwksPath unset)
+                // pass null and fetch lazily via Authority as before.
+                var staticKeys = string.IsNullOrWhiteSpace(issuer.JwksPath)
+                    ? null
+                    : LoadStaticSigningKeys(issuer);
+                RegisterJwtBearer(authBuilder, issuer, staticKeys);
             }
         }
 
@@ -152,11 +160,13 @@ internal static class AuthExtensions
             .ToList();
     }
 
-    private static void RegisterJwtBearer(AuthenticationBuilder builder, OidcIssuerOptions issuer)
+    private static void RegisterJwtBearer(
+        AuthenticationBuilder builder,
+        OidcIssuerOptions issuer,
+        IList<SecurityKey>? staticSigningKeys)
     {
         builder.AddJwtBearer(issuer.Name, options =>
         {
-            options.Authority = issuer.Issuer;
             options.Audience = issuer.Audience;
             options.MapInboundClaims = false; // keep `sub`, `scp`, etc. as-is for parsing
 
@@ -171,11 +181,122 @@ internal static class AuthExtensions
                 NameClaimType = "sub"
             };
 
+            if (staticSigningKeys is not null)
+            {
+                // ADR-015 (Option D): embedded static JWKS. Preload the configuration with the
+                // issuer + signing keys. Because Authority/MetadataAddress are unset, the
+                // framework's JwtBearerPostConfigureOptions wraps this Configuration in a
+                // StaticConfigurationManager (nulling ConfigurationManager here just prevents a
+                // discovery-backed one) — GetConfigurationAsync then performs no I/O, so there
+                // is no `.well-known`/`jwks_uri` fetch, no HTTPS metadata endpoint to stand up,
+                // and no internal-CA root to trust on the API host. `Authority` is deliberately unset.
+                var configuration = new OpenIdConnectConfiguration { Issuer = issuer.Issuer };
+                foreach (var key in staticSigningKeys)
+                    configuration.SigningKeys.Add(key);
+                options.Configuration = configuration;
+                options.ConfigurationManager = null;
+                options.TokenValidationParameters.IssuerSigningKeys = staticSigningKeys;
+
+                // Pin RS256 for the embedded-key path (mint_token.py emits RS256 only). Defense in
+                // depth: it constrains signature validation to the asymmetric algorithm these keys
+                // are for, so even a mis-provisioned symmetric/other-alg key that slipped past
+                // LoadStaticSigningKeys' screen cannot validate a forged token via alg substitution.
+                // Cloud/discovery issuers keep their metadata-driven algorithm set (unset here) so an
+                // IdP that signs with ES256/PS256 is not broken.
+                options.TokenValidationParameters.ValidAlgorithms = [SecurityAlgorithms.RsaSha256];
+            }
+            else
+            {
+                // Discovery path (cloud issuers): Authority drives lazy `.well-known` + JWKS
+                // fetch. RequireHttpsMetadata stays at its default (true).
+                options.Authority = issuer.Issuer;
+            }
+
             options.Events = new JwtBearerEvents
             {
                 OnTokenValidated = ctx => JwtTenantContextEvents.BuildTenantContext(ctx, issuer)
             };
         });
+    }
+
+    /// <summary>
+    /// Loads and validates an embedded-key issuer's JWKS file (ADR-015, Option D). Runs at
+    /// service-configuration time so any problem fails startup closed — a deliberate parallel
+    /// to <see cref="EnforceOidcIssuersGuard"/>: a networked instance must never boot green
+    /// (<c>/health</c>, <c>/metrics</c>) while its only issuer's keys are missing or malformed
+    /// and every protected request would 500.
+    /// </summary>
+    internal static IList<SecurityKey> LoadStaticSigningKeys(OidcIssuerOptions issuer)
+    {
+        string json;
+        try
+        {
+            json = File.ReadAllText(issuer.JwksPath!);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            throw new InvalidOperationException(
+                $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' could not be read: {ex.Message} " +
+                "Provide a readable jwks.json for an embedded-key (ADR-015) issuer, or remove JwksPath to use " +
+                "HTTPS discovery via Authority.", ex);
+        }
+
+        JsonWebKeySet keySet;
+        try
+        {
+            keySet = new JsonWebKeySet(json);
+        }
+        catch (Exception ex) when (ex is ArgumentException or System.Text.Json.JsonException)
+        {
+            throw new InvalidOperationException(
+                $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' is not a valid JWKS document: " +
+                $"{ex.Message}", ex);
+        }
+
+        // Reject private-key material. The API loads a JWKS only to *validate* signatures, so it
+        // must be public-only. This fails closed on the operator footgun of pointing JwksPath at
+        // mint_token.py's `<client>.priv.json` (or its key dir) instead of the `build-jwks` output
+        // — which would otherwise load a token-forging private key into the network-facing process.
+        // `d` covers RSA and EC private keys; `p`/`q` are RSA CRT components.
+        foreach (var jwk in keySet.Keys)
+        {
+            if (!string.IsNullOrEmpty(jwk.D) || !string.IsNullOrEmpty(jwk.P) || !string.IsNullOrEmpty(jwk.Q))
+            {
+                throw new InvalidOperationException(
+                    $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' contains PRIVATE key material " +
+                    $"(kid '{jwk.Kid}'). The API must load a PUBLIC-only JWKS — run 'mint_token.py build-jwks' to " +
+                    "produce one; never point JwksPath at a *.priv.json file or the private key directory.");
+            }
+
+            // Reject symmetric (HMAC) keys. A `kty=oct` JWK carries its shared secret in `k`, and
+            // JsonWebKeySet.GetSigningKeys() surfaces it as a usable SymmetricSecurityKey
+            // (SkipUnresolvedJsonWebKeys defaults to false) — so anyone able to read this
+            // network-facing "public" JWKS could forge HS256 tokens the API would accept. An
+            // embedded-key issuer is RS256-only by construction (mint_token.py emits RSA), so any
+            // oct key is a misconfiguration: fail closed rather than load a forgeable secret. The
+            // ValidAlgorithms=RS256 pin on the static path is the compensating control if this is
+            // ever reached, but the shared secret has no business in the file at all.
+            if (string.Equals(jwk.Kty, "oct", StringComparison.OrdinalIgnoreCase)
+                || !string.IsNullOrEmpty(jwk.K))
+            {
+                throw new InvalidOperationException(
+                    $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' contains a SYMMETRIC (kty=oct) " +
+                    $"key (kid '{jwk.Kid}'). Embedded-key issuers are RS256-only (asymmetric); a shared-secret key " +
+                    "in a network-facing JWKS is forgeable by anyone who can read the file. Provide an RSA public " +
+                    "JWKS from 'mint_token.py build-jwks'.");
+            }
+        }
+
+        var keys = keySet.GetSigningKeys();
+
+        if (keys.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Auth:Oidc issuer '{issuer.Name}' JwksPath '{issuer.JwksPath}' contains no signing keys. " +
+                "A JWKS with at least one RSA/EC signing key is required for an embedded-key issuer.");
+        }
+
+        return keys;
     }
 
     [SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes",
