@@ -56,8 +56,14 @@ def keygen(a):
     if os.path.exists(path) and not a.force:
         sys.exit(f"{path} exists; pass --force to overwrite (rotates the client's key)")
     key = jwk.JWK.generate(kty="RSA", size=2048, kid=kid_for(a.client), use="sig", alg="RS256")
-    with open(path, "w") as f: f.write(key.export_private())
-    os.chmod(path, 0o600)
+    # Create the private-key file pre-restricted (0o600) instead of chmod-after-write, which would
+    # leave a brief TOCTOU window where the key inherits the umask default (often world/group
+    # readable). The existence/rotation gate above already owns overwrite intent (--force), so
+    # O_TRUNC replaces in place; O_EXCL is intentionally not used because rotation overwrites.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(key.export_private())
+    os.chmod(path, 0o600)  # re-assert mode on the rotate path (O_CREAT keeps a pre-existing file's perms)
     print(f"wrote {path} (kid={kid_for(a.client)})")
 
 def build_jwks(a):
@@ -73,10 +79,23 @@ def sign(a):
     path = os.path.join(KEY_DIR, f"{a.client}.priv.json")
     key = jwk.JWK.from_json(open(path).read())
     roles = []
+    privileged = []
     for s in a.scopes.split(","):
         s = s.strip()
         full = SCOPE_MAP.get(s, s)
+        if full in ("expertise.write.approve", "expertise.admin"):
+            privileged.append(full)
         roles.append(f"{a.tenant}:{full}")
+    # ADR-003/ADR-015: write.approve / admin must never be handed to an unattended M2M client.
+    # A stray `--scopes approve` (typo, copy-paste, automation) would otherwise silently mint a
+    # long-lived privileged credential. Require an explicit opt-in flag for attended/admin tokens.
+    if privileged and not a.allow_privileged:
+        sys.exit(
+            f"refusing to mint privileged scope(s) {privileged} for client '{a.client}': "
+            "expertise.write.approve / expertise.admin must not be granted to unattended M2M "
+            "clients (ADR-003/ADR-015). Re-run with --allow-privileged only if this is an "
+            "attended/administrative token you are issuing deliberately."
+        )
     now = int(time.time())
     claims = {
         "iss": ISSUER, "aud": AUDIENCE, "sub": a.client,
@@ -91,5 +110,5 @@ p = argparse.ArgumentParser(description="Offline JWT minter + JWKS builder (ADR-
 sub = p.add_subparsers(required=True)
 g = sub.add_parser("keygen"); g.add_argument("--client", required=True); g.add_argument("--force", action="store_true"); g.set_defaults(fn=keygen)
 b = sub.add_parser("build-jwks"); b.add_argument("--out", default="oidc/jwks.json"); b.set_defaults(fn=build_jwks)
-s = sub.add_parser("sign"); s.add_argument("--client", required=True); s.add_argument("--tenant", required=True); s.add_argument("--scopes", required=True); s.add_argument("--ttl-days", type=int, default=7); s.set_defaults(fn=sign)
+s = sub.add_parser("sign"); s.add_argument("--client", required=True); s.add_argument("--tenant", required=True); s.add_argument("--scopes", required=True); s.add_argument("--ttl-days", type=int, default=7); s.add_argument("--allow-privileged", action="store_true", help="required to mint expertise.write.approve / expertise.admin (ADR-003/ADR-015)"); s.set_defaults(fn=sign)
 a = p.parse_args(); a.fn(a)

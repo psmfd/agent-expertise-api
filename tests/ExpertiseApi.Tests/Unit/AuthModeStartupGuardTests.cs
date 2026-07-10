@@ -267,6 +267,37 @@ public class AuthModeStartupGuardTests
     }
 
     [Fact]
+    public void LoadStaticSigningKeys_SymmetricKeyMaterial_FailsClosed()
+    {
+        // A symmetric (kty=oct) JWK carries a shared secret in `k`. Loading it into a
+        // network-facing JWKS would let anyone who can read the file forge HS256 tokens the API
+        // accepts. Embedded-key issuers are RS256-only, so this must fail closed at startup.
+        var path = Path.Join(Path.GetTempPath(), $"oct-jwks-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """
+            { "keys": [ { "kty": "oct", "kid": "sym-1", "alg": "HS256", "use": "sig",
+              "k": "c2VjcmV0LXNoYXJlZC1obWFjLWtleS1tYXRlcmlhbA" } ] }
+            """);
+        try
+        {
+            var issuer = new OidcIssuerOptions
+            {
+                Name = "LanStatic",
+                Issuer = "https://static-issuer.local/",
+                Audience = "expertise-api",
+                JwksPath = path
+            };
+
+            var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
+
+            act.Should().Throw<InvalidOperationException>().WithMessage("*SYMMETRIC*");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void LoadStaticSigningKeys_RealMintTokenOutput_LoadsSuccessfully()
     {
         // Proves scripts/mint_token.py's ACTUAL `build-jwks` output shape (alg/e/kid/kty/n/use,
