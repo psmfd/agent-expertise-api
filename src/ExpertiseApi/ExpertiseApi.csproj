@@ -80,7 +80,7 @@
       major is Dependabot-ignored (.github/dependabot.yml) until then; 2.x
       minor/patch security bumps still flow. Tracked in #390.
     -->
-    <PackageReference Include="Microsoft.OpenApi" Version="2.10.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
     <!--
       Build-time OpenAPI document generator (Part D C8). PrivateAssets=all keeps the
       package out of the published output (it's an MSBuild task, not a runtime dependency).
