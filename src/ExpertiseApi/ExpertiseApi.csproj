@@ -88,7 +88,7 @@
       that the task uses across SDK styles.
     -->
     <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.9" PrivateAssets="all" IncludeAssets="build;buildMultitargeting;buildTransitive" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
