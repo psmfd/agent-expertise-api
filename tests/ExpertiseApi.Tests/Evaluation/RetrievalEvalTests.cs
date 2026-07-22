@@ -42,9 +42,12 @@ public sealed class RetrievalEvalTests(PostgresFixture postgres, ITestOutputHelp
     // 0.367 (hits identifier queries, returns empty for multi-word paraphrases —
     // websearch_to_tsquery ANDs all terms), semantic recall@5 0.967 / recall@10
     // 1.000 / MRR 0.894. The keyword-vs-semantic complementarity is the empirical
-    // case for the hybrid RRF endpoint (#428).
+    // case for the hybrid RRF endpoint (#428) — measured post-fusion (ADR-016):
+    // hybrid recall@5 1.000 / recall@10 1.000 / MRR 0.923, strictly better than
+    // either arm alone.
     private const double KeywordRecall10Floor = 0.30;
     private const double SemanticRecall10Floor = 0.60;
+    private const double HybridRecall10Floor = 0.60;
 
     private ServiceProvider? _onnxProvider;
     private ExpertiseDbContext _db = null!;
@@ -108,28 +111,34 @@ public sealed class RetrievalEvalTests(PostgresFixture postgres, ITestOutputHelp
         var ctx = TestHelpers.CreateTenantContext(tenant: EvalTenant);
         var keyword = new ModeMetrics("keyword");
         var semantic = new ModeMetrics("semantic");
+        var hybrid = new ModeMetrics("hybrid");
 
         foreach (var q in golden.Queries)
         {
-            var keywordResults = await _repo.KeywordSearchAsync(q.Query, ctx, includeDeprecated: false, limit: ReportDepth,
+            // Arms fetched at the hybrid candidate depth; per-mode metrics score the
+            // top ReportDepth slice (the lists are ranked, so slicing == a lower limit).
+            var keywordResults = await _repo.KeywordSearchAsync(q.Query, ctx, includeDeprecated: false, limit: RankFusion.CandidatePoolSize,
                 domain: null, tags: null, entryType: null, severity: null, CancellationToken.None);
-            keyword.Score(q, keywordResults.Select(r => r.Entry.Title).ToList());
+            keyword.Score(q, keywordResults.Take(ReportDepth).Select(r => r.Entry.Title).ToList());
 
             var queryVector = await _embedding.GenerateQueryEmbeddingAsync(q.Query);
-            var semanticResults = await _repo.SemanticSearchAsync(queryVector, ctx, limit: ReportDepth, includeDeprecated: false,
+            var semanticResults = await _repo.SemanticSearchAsync(queryVector, ctx, limit: RankFusion.CandidatePoolSize, includeDeprecated: false,
                 domain: null, tags: null, entryType: null, severity: null, CancellationToken.None);
-            semantic.Score(q, semanticResults.Select(r => r.Entry.Title).ToList());
+            semantic.Score(q, semanticResults.Take(ReportDepth).Select(r => r.Entry.Title).ToList());
+
+            var fused = RankFusion.ReciprocalRankFusion(keywordResults, semanticResults, ReportDepth);
+            hybrid.Score(q, fused.Select(r => r.Entry.Title).ToList());
         }
 
         // ---- Report ----
         output.WriteLine($"Golden set: {golden.Corpus.Count} corpus entries, {golden.Queries.Count} queries");
         output.WriteLine("");
         output.WriteLine($"{"mode",-10} {"recall@5",9} {"recall@10",10} {"MRR@10",8}");
-        foreach (var m in new[] { keyword, semantic })
+        foreach (var m in new[] { keyword, semantic, hybrid })
             output.WriteLine($"{m.Name,-10} {m.RecallAt5,9:F3} {m.RecallAt10,10:F3} {m.Mrr,8:F3}");
         output.WriteLine("");
 
-        foreach (var m in new[] { keyword, semantic })
+        foreach (var m in new[] { keyword, semantic, hybrid })
         {
             if (m.Misses.Count == 0)
                 continue;
@@ -144,6 +153,8 @@ public sealed class RetrievalEvalTests(PostgresFixture postgres, ITestOutputHelp
             "keyword retrieval collapsing below the floor indicates a broken query path, not normal variation");
         semantic.RecallAt10.Should().BeGreaterThanOrEqualTo(SemanticRecall10Floor,
             "semantic retrieval collapsing below the floor indicates a broken embedding or query path");
+        hybrid.RecallAt10.Should().BeGreaterThanOrEqualTo(HybridRecall10Floor,
+            "hybrid fusion collapsing below the floor indicates a broken fusion or arm path");
     }
 
     private static readonly JsonSerializerOptions GoldenSetJsonOptions =

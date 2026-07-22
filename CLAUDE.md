@@ -152,7 +152,7 @@ curl "http://localhost:5000/expertise/search/semantic?q=test&limit=5" \
 
 AI agents (Claude Code, GitHub Copilot, Codex CLI, pi) consume this API via HTTP with a bearer token. Typical agent workflow:
 
-1. **Search** existing expertise before solving a problem: `GET /expertise/search?q=<query>` or `GET /expertise/search/semantic?q=<query>`
+1. **Search** existing expertise before solving a problem: `GET /expertise/search/hybrid?q=<query>` (recommended default — keyword + semantic fused via RRF, ADR-016); keyword-only `GET /expertise/search?q=` and semantic-only `GET /expertise/search/semantic?q=` remain available
 2. **Create** a new entry when discovering a fix, caveat, or pattern: `POST /expertise`
 3. **Update** an entry when information changes: `PATCH /expertise/{id}`
 
@@ -178,7 +178,7 @@ An action-oriented skill ships in-tree at [`.agents/skills/expertise-api/`](.age
 { "skills": [".agents/skills/expertise-api"] }
 ```
 
-pi users additionally get the in-tree extension at [`.pi/extensions/expertise-api/`](.pi/extensions/expertise-api/README.md) which registers eight typed tools (`expertise_search`, `expertise_search_semantic`, `expertise_get`, `expertise_create`, `expertise_update`, `expertise_approve`, `expertise_reject`, `expertise_delete`). The LLM calls them via `fetch()` so the bearer token does not appear in `ps`/`/proc`. Symlink `.pi/extensions/expertise-api/` into `~/.pi/agent/extensions/` to enable globally.
+pi users additionally get the in-tree extension at [`.pi/extensions/expertise-api/`](.pi/extensions/expertise-api/README.md) which registers nine typed tools (`expertise_search`, `expertise_search_semantic`, `expertise_search_hybrid`, `expertise_get`, `expertise_create`, `expertise_update`, `expertise_approve`, `expertise_reject`, `expertise_delete`). The LLM calls them via `fetch()` so the bearer token does not appear in `ps`/`/proc`. Symlink `.pi/extensions/expertise-api/` into `~/.pi/agent/extensions/` to enable globally.
 
 Three slash-command prompt templates at [`.pi/prompts/`](.pi/prompts/) layer on top: `/expertise-search <query>` (semantic-first), `/expertise-create <title> [summary]`, `/expertise-approve <id> [visibility]`. They appear in `/` autocomplete with `argument-hint` annotations.
 
