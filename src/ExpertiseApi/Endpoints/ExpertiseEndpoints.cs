@@ -198,6 +198,21 @@ internal static class ExpertiseEndpoints
         !string.IsNullOrWhiteSpace(request.Body) &&
         !string.IsNullOrWhiteSpace(request.Source);
 
+    // MaxBodyLength derivation (#429): bge-micro-v2 embeds at most 512 wordpiece tokens
+    // (510 content + [CLS]/[SEP]) and the ONNX connector silently truncates beyond that
+    // with no signal. BuildInputText embeds "{title} {body}" in one pass; reserving
+    // ~40 tokens for Title leaves ~470 for Body. Measured density across the 60 longest
+    // real entries is 2.97–4.24 chars/token (median 3.46), so 1500 chars keeps a
+    // median-density Body fully embedded (~476/512 tokens); only the densest tail loses
+    // a few trailing tokens. Re-derive this constant if the embedding model changes (#437).
+    private const int MaxBodyLength = 1500;
+
+    private static string? BodyLengthError(string? body) =>
+        body is { Length: > MaxBodyLength }
+            ? $"Body exceeds maximum length of {MaxBodyLength} characters (got {body.Length}). " +
+              "Content past the embedding window is invisible to semantic search; shorten the body or split the entry."
+            : null;
+
     private static async Task<IResult> CreateEntry(
         CreateExpertiseRequest request,
         HttpContext httpContext,
@@ -210,6 +225,9 @@ internal static class ExpertiseEndpoints
     {
         if (!IsRequestValid(request))
             return Results.Problem("Domain, Title, Body, and Source are required.", statusCode: 400);
+
+        if (BodyLengthError(request.Body) is { } bodyError)
+            return Results.Problem(bodyError, statusCode: 400);
 
         var tenantContext = httpContext.RequireTenantContext();
 
@@ -249,6 +267,10 @@ internal static class ExpertiseEndpoints
         CancellationToken ct)
     {
         var tenantContext = httpContext.RequireTenantContext();
+
+        if (BodyLengthError(request.Body) is { } bodyError)
+            return Results.Problem(bodyError, statusCode: 400);
+
         var needsReembed = request.Title is not null || request.Body is not null;
 
         var (outcome, updated) = await repo.UpdateAsync(id, tenantContext, async entry =>
@@ -322,6 +344,12 @@ internal static class ExpertiseEndpoints
             {
                 results[i] = new BatchEntryResult(i, BatchEntryStatus.Rejected, null,
                     "Domain, Title, Body, and Source are required.");
+                continue;
+            }
+
+            if (BodyLengthError(requests[i].Body) is { } bodyError)
+            {
+                results[i] = new BatchEntryResult(i, BatchEntryStatus.Rejected, null, bodyError);
                 continue;
             }
 

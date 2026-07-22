@@ -118,12 +118,15 @@ This is the mechanism that makes every subsequent retrieval decision
 
 ## Caveats / unverified claims
 
-- **Body-length truncation (unverified):** `Body` has no length limit and the
-  embedding path concatenates title+body into one forward pass with no
-  chunking; bge-micro-v2 has a ~512-token ceiling, so long bodies are likely
-  silently truncated in their embeddings. Confirm empirically before citing in
-  an ADR; if real, a soft `MaxLength` guard is the right-sized fix, not
-  chunking.
+- **Body-length truncation (CONFIRMED, #429 closed 2026-07-22):** empirically
+  verified by bisection against the shipped model — the connector silently
+  truncates at exactly 512 total tokens (510 content + `[CLS]`/`[SEP]`) with no
+  exception or log at any level, corroborated at source level
+  (`BertOnnxOptions.MaximumTokens` default 512; fixed-capacity span into
+  `FastBertTokenizer.Encode`; no throw-on-overflow option exists). Fixed as
+  predicted: `MaxBodyLength = 1500` guard (hard 400) on create/PATCH/batch,
+  derived from measured 2.97–4.24 chars/token density on the 60 longest real
+  entries. Follow-ups: Title bound (#436), long-context model swap (#437).
 - Reranker latency/memory figures above are estimates for MiniLM-L-6-class
   models on modern CPU, not measurements on the target hosts.
 - Related open defect on the search path: #329 (missing `q` returns 500
