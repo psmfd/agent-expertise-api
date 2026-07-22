@@ -207,7 +207,7 @@ PATCH state regression (ADR-003): a `write.draft`-only caller editing an `Approv
 
 Dedup queries (exact-match and semantic) exclude `Rejected` entries — otherwise a Rejected entry would permanently block resubmission of identical content. Drafts and Approved entries still dedup as before.
 
-Soft-deleting a `Tenant = "shared"` entry requires `expertise.write.approve` (returns 403 otherwise — 404 would mislead since the caller can read the entry). Changing `Visibility` on PATCH (Private ↔ Shared, either direction) is the symmetric inverse of `/approve`'s Visibility selection and also requires `expertise.write.approve`; the check is value-based, so a no-op PATCH that supplies the current Visibility does not escalate.
+Mutating a `Tenant = "shared"` entry — content PATCH or soft-delete — requires `expertise.write.approve` (returns 403 otherwise — 404 would mislead since the caller can read the entry). The PATCH gate (#330) prevents a `write.draft` caller in any tenant from editing a shared Approved entry, which would regress it to `Draft + Tenant="shared"` — a state no tenant's draft queue surfaces, stranding the entry. Changing `Visibility` on PATCH (Private ↔ Shared, either direction) is the symmetric inverse of `/approve`'s Visibility selection and also requires `expertise.write.approve`; the check is value-based, so a no-op PATCH that supplies the current Visibility does not escalate.
 
 ### Audit log
 

@@ -298,7 +298,7 @@ internal static class ExpertiseEndpoints
             WriteOutcome.NotFound => Results.NotFound(),
             WriteOutcome.InsufficientScope => Results.Problem(
                 title: "Insufficient scope",
-                detail: "Changing Visibility requires expertise.write.approve.",
+                detail: "Changing Visibility or modifying a shared entry requires expertise.write.approve.",
                 statusCode: StatusCodes.Status403Forbidden),
             WriteOutcome.ConcurrentConflict => Results.Problem(
                 title: "Concurrent modification",
