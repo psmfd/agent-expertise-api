@@ -81,9 +81,9 @@ internal interface IExpertiseRepository
     /// </summary>
     Task<ExpertiseAuditLog?> GetAuditByIdAsync(Guid id, CancellationToken ct = default);
 
-    Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated = false, CancellationToken ct = default);
+    Task<List<ScoredEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated = false, int limit = 50, string? domain = null, List<string>? tags = null, EntryType? entryType = null, Severity? severity = null, CancellationToken ct = default);
 
-    Task<List<ExpertiseEntry>> SemanticSearchAsync(Vector queryVector, TenantContext ctx, int limit = 10, bool includeDeprecated = false, CancellationToken ct = default);
+    Task<List<ScoredEntry>> SemanticSearchAsync(Vector queryVector, TenantContext ctx, int limit = 10, bool includeDeprecated = false, string? domain = null, List<string>? tags = null, EntryType? entryType = null, Severity? severity = null, CancellationToken ct = default);
 
     Task<ExpertiseEntry?> FindExactMatchAsync(string domain, string title, TenantContext ctx, CancellationToken ct = default);
 
@@ -136,3 +136,24 @@ internal record AuditLogFilter(
     int Limit = 50,
     DateTime? AfterTimestamp = null,
     Guid? AfterId = null);
+
+/// <summary>
+/// A search hit paired with its relevance score (#427). Score semantics are
+/// per-search-mode and comparable only WITHIN a single result set: keyword search
+/// returns the PostgreSQL <c>ts_rank_cd</c> value (unbounded, document-length
+/// dependent); semantic search returns cosine similarity (<c>1 - cosine distance</c>,
+/// higher is closer). Do not compare a keyword score against a semantic score —
+/// cross-mode combination is rank-based (RRF, #428), not score-based.
+/// </summary>
+internal sealed record ScoredEntry(ExpertiseEntry Entry, double Score);
+
+/// <summary>
+/// Raw <c>(Id, Score)</c> row from the ranked keyword-search SQL (#427), materialized
+/// via <c>SqlQueryRaw</c> as an unmapped type — property names must match the SQL
+/// column aliases exactly. <c>Score</c> is <c>ts_rank_cd</c> cast to <c>float8</c>.
+/// </summary>
+internal sealed class KeywordHit
+{
+    public Guid Id { get; set; }
+    public double Score { get; set; }
+}

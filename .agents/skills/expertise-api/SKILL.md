@@ -7,7 +7,7 @@ description: Search, create, approve, and reject expertise entries in the agent-
 
 Invoke this skill when the user wants to:
 
-- **Search** existing expertise — by keyword (`/expertise/search`), by semantic similarity (`/expertise/search/semantic`), or by filter (`domain`, `tags`, `entryType`, `severity`).
+- **Search** existing expertise — hybrid keyword+semantic fusion (`/expertise/search/hybrid`, the recommended default), by keyword (`/expertise/search`), by semantic similarity (`/expertise/search/semantic`), or by filter (`domain`, `tags`, `entryType`, `severity`).
 - **Read** a specific entry by id (`/expertise/{id}`).
 - **Create** a new draft entry (`POST /expertise`).
 - **Approve** a draft (`POST /expertise/{id}/approve`).
@@ -47,6 +47,7 @@ All scripts live under this skill's `scripts/` directory and emit machine-readab
 | --- | --- | --- |
 | `scripts/search.sh` | Filter-style listing (`GET /expertise`) when called with no `--q`; full-text search (`GET /expertise/search?q=`) when called with `--q`. | `--q TEXT`, `--domain D`, `--tags a,b`, `--entry-type T`, `--severity S`, `--include-deprecated` |
 | `scripts/search-semantic.sh` | Semantic vector search (`GET /expertise/search/semantic?q=`). | `--q TEXT` (required), `--limit N` (1-100, default 10), `--include-deprecated` |
+| `scripts/search-hybrid.sh` | Hybrid RRF search (`GET /expertise/search/hybrid?q=`) — keyword + semantic arms fused; covers exact identifiers and paraphrases (ADR-016). Recommended default. | `--q TEXT` (required), `--limit N`, `--domain D`, `--tags a,b`, `--entry-type T`, `--severity S`, `--include-deprecated` |
 | `scripts/get.sh` | Fetch one entry (`GET /expertise/{id}`). | `<id>` (positional, GUID) |
 | `scripts/create.sh` | Create a draft (`POST /expertise`). Reads JSON body from stdin or `--file PATH`. | `--file PATH` _or_ pipe JSON via stdin |
 | `scripts/approve.sh` | Approve a draft (`POST /expertise/{id}/approve`). | `<id>` |
@@ -65,6 +66,9 @@ All scripts live under this skill's `scripts/` directory and emit machine-readab
 # Semantic search
 ./scripts/search-semantic.sh --q "connection pool advisory locks" --limit 5
 
+# Hybrid search (recommended default — exact identifiers AND paraphrases)
+./scripts/search-hybrid.sh --q "pgbouncer prepared statements" --limit 5
+
 # Create from a JSON file
 cat > /tmp/entry.json <<'EOF'
 {
@@ -79,6 +83,9 @@ cat > /tmp/entry.json <<'EOF'
 }
 EOF
 ./scripts/create.sh --file /tmp/entry.json
+# NOTE: body is capped at 1500 characters (HTTP 400 beyond that). The embedding
+# model sees at most ~510 tokens of "title + body"; longer text would be silently
+# invisible to semantic search, so keep bodies focused or split into entries.
 
 # Approve / reject (requires expertise.write.approve)
 ./scripts/approve.sh 0193b8c4-...

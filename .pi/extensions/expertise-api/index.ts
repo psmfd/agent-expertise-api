@@ -350,7 +350,7 @@ export default function (pi: ExtensionAPI): void {
 			"Search the expertise corpus by keyword or filter (domain/tags/type/severity).",
 		promptGuidelines: [
 			"Use expertise_search before solving any non-trivial problem to check for prior tribal knowledge — it is cheap and often saves rediscovery.",
-			"Prefer expertise_search_semantic when the user's query is conceptual or paraphrased rather than keyword-exact.",
+			"Prefer expertise_search_hybrid as the default; use expertise_search when you specifically want keyword-only matching or filter-only listing.",
 		],
 		parameters: Type.Object({
 			q: Type.Optional(
@@ -428,6 +428,75 @@ export default function (pi: ExtensionAPI): void {
 				return toolResult(result, "expertise_search_semantic");
 			} catch (err) {
 				return errorResult("expertise_search_semantic", err);
+			}
+		},
+	});
+
+	// --- expertise_search_hybrid ------------------------------------------
+	pi.registerTool({
+		name: "expertise_search_hybrid",
+		label: "Expertise Search (Hybrid)",
+		description:
+			"Hybrid search via /expertise/search/hybrid?q=. Keyword and semantic arms are fused server-side with Reciprocal Rank Fusion (ADR-016), so it covers exact identifiers AND paraphrases in one call. Recommended default search.",
+		promptSnippet:
+			"Hybrid keyword+semantic search over expertise — the recommended default.",
+		promptGuidelines: [
+			"Prefer expertise_search_hybrid as the default search — it covers both exact identifiers and conceptual paraphrases; fall back to the keyword or semantic tools only when you specifically want one arm's behavior.",
+		],
+		parameters: Type.Object({
+			q: Type.String({
+				minLength: 1,
+				description: "Free-text query — identifiers and paraphrases both work.",
+			}),
+			domain: Type.Optional(Type.String()),
+			tags: Type.Optional(
+				Type.String({
+					description: "Comma-separated tags; every tag must match.",
+				}),
+			),
+			entryType: Type.Optional(
+				Type.Union([
+					Type.Literal("IssueFix"),
+					Type.Literal("Caveat"),
+					Type.Literal("Requirement"),
+					Type.Literal("Pattern"),
+				]),
+			),
+			severity: Type.Optional(
+				Type.Union([
+					Type.Literal("Info"),
+					Type.Literal("Warning"),
+					Type.Literal("Critical"),
+				]),
+			),
+			limit: Type.Optional(
+				Type.Integer({
+					minimum: 1,
+					maximum: 100,
+					description: "Max results (server default 10).",
+				}),
+			),
+			includeDeprecated: Type.Optional(Type.Boolean()),
+		}),
+		async execute(_id, params, signal) {
+			try {
+				const qs = buildQuery({
+					q: params.q,
+					domain: params.domain,
+					tags: params.tags,
+					entryType: params.entryType,
+					severity: params.severity,
+					limit: params.limit,
+					includeDeprecated: params.includeDeprecated,
+				});
+				const result = await apiCall(
+					`/expertise/search/hybrid${qs}`,
+					{ method: "GET" },
+					signal,
+				);
+				return toolResult(result, "expertise_search_hybrid");
+			} catch (err) {
+				return errorResult("expertise_search_hybrid", err);
 			}
 		},
 	});

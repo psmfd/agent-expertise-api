@@ -117,8 +117,9 @@ Single-row `EmbeddingMetadata` table tracks model name, dimensions, and `LastRee
 | GET | `/expertise/drafts` | `expertise.write.approve` | List Draft + Rejected entries in caller's tenant | |
 | POST | `/expertise/{id}/approve` | `expertise.write.approve` | Transition Draft → Approved | |
 | POST | `/expertise/{id}/reject` | `expertise.write.approve` | Transition Draft → Rejected (requires reason) | |
-| GET | `/expertise/search?q=` | `expertise.read` | Keyword full-text search (tsvector) | `includeDeprecated` |
-| GET | `/expertise/search/semantic?q=` | `expertise.read` | Semantic vector search (pgvector) | `limit` (1-100, default 10), `includeDeprecated` |
+| GET | `/expertise/search?q=` | `expertise.read` | Keyword full-text search (`websearch_to_tsquery` over tsvector, `ts_rank_cd` ranked; supports quoted phrases, OR, `-negation`) | `domain`, `tags` (comma-separated, all must match), `entryType`, `severity`, `limit` (1-100, default 50), `includeDeprecated` |
+| GET | `/expertise/search/semantic?q=` | `expertise.read` | Semantic vector search (pgvector) | `domain`, `tags` (comma-separated, all must match), `entryType`, `severity`, `limit` (1-100, default 10), `includeDeprecated` |
+| GET | `/expertise/search/hybrid?q=` | `expertise.read` | Hybrid search — keyword + semantic arms fused with Reciprocal Rank Fusion (k=60, ties newest-first; ADR-016). Recommended default for agent callers | `domain`, `tags` (comma-separated, all must match), `entryType`, `severity`, `limit` (1-100, default 10), `includeDeprecated` |
 | GET | `/audit` | `expertise.admin` | Cross-tenant audit log | `entryId`, `principal`, `action`, `from`, `to`, `limit` (1-200, default 50), cursor (`afterTimestamp` + `afterId`) |
 | GET | `/health` | none | Liveness probe | |
 | GET | `/metrics` | none | Prometheus scrape endpoint | |
@@ -262,7 +263,10 @@ scripts/                   # download-models.sh
 - **SOPS key:** Back up age private key separately — if lost, encrypted secrets are unrecoverable.
 - **k3s:** Must disable Traefik with `--disable=traefik` at install time.
 - **`reembed` CLI:** Run as a one-off k8s Job, not from a running API replica, to avoid concurrent row writes.
-- **Keyword search uses raw SQL:** The stored `SearchVector` column cannot be queried via LINQ — `KeywordSearchAsync` uses `FromSqlInterpolated`.
+- **Keyword search uses raw SQL:** The stored `SearchVector` column cannot be queried via LINQ — `KeywordSearchAsync` uses `FromSqlInterpolated` (`websearch_to_tsquery` + `ts_rank_cd` + `LIMIT`; all filtering and ordering must stay inside the SQL string — composing LINQ on top wraps it in a subquery and can drop the inner ORDER BY).
+- **Search `score` field semantics:** search responses carry a server-computed `score` per hit (#427) — keyword: raw `ts_rank_cd` (unbounded, comparable only within one response); semantic: cosine similarity (`1 - distance`, higher is closer); hybrid: the fused RRF sum (`Σ 1/(60+rank)` across arms, ADR-016). Never compare scores across modes; every score is comparable only within one response. Non-search reads emit no score.
+- **bge query-instruction prefix:** bge-family embedding models are trained asymmetrically — QUERY-side text must be prefixed with `Represent this sentence for searching relevant passages:` plus a trailing space (see `EmbeddingService.QueryInstruction`); document-side text is embedded unprefixed. Semantic search uses `GenerateQueryEmbeddingAsync`; create/reembed/dedup paths use the unprefixed document path. A model swap must re-verify the instruction wording against the new model's card.
+- **512-token embedding ceiling / `MaxBodyLength`:** bge-micro-v2 embeds at most 512 wordpiece tokens (510 content + `[CLS]`/`[SEP]`); the ONNX connector **silently truncates** anything longer — no exception, no log, confirmed empirically to the exact token (#429, 2026-07-22). `BuildInputText` embeds `"{title} {body}"` in one pass, so Title and Body share the budget. Writes enforce `MaxBodyLength = 1500` chars (hard 400; derivation: ~470 body tokens × ~3 chars/token measured on real entries). Entries created before the guard may exceed the cap: they are grandfathered (readable, non-Body PATCHes fine) but their embeddings only reflect the first ~510 tokens, and a Body PATCH must come in under the cap. Title remains unbounded (#436); re-derive the constant on any model swap (#437).
 - **ONNX model files not committed:** `src/ExpertiseApi/models/` is gitignored. Model files must be present at runtime for embedding generation and semantic search. CRUD and keyword search work without them.
 - **`EmbeddingMetadata` not auto-updated:** The metadata row is only written by the `reembed` CLI command, not by normal POST/PATCH operations.
 

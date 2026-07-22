@@ -585,6 +585,7 @@ app.MapHealthEndpoints();
 app.MapExpertiseEndpoints();
 app.MapSearchEndpoints();
 app.MapSemanticSearchEndpoints();
+app.MapHybridSearchEndpoints();
 app.MapAuditEndpoints();
 if (metricsEnabled)
     app.MapMetrics().AllowAnonymous();

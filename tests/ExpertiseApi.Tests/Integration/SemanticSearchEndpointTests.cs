@@ -69,6 +69,52 @@ public class SemanticSearchEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Semantic_HitsCarryCosineSimilarityScore()
+    {
+        await SeedApproved(2, "score-domain");
+
+        var response = await ReadClient().GetAsync("/expertise/search/semantic?q=anything&domain=score-domain&limit=10");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var results = await response.Content.ReadFromJsonAsync<JsonElement>();
+        results.GetArrayLength().Should().Be(2);
+        foreach (var entry in results.EnumerateArray())
+        {
+            // Cosine similarity = 1 - distance; bounded regardless of embedding content.
+            entry.GetProperty("score").GetDouble().Should().BeInRange(-1.0, 1.0,
+                "semantic hits carry cosine similarity (#427)");
+        }
+    }
+
+    [Fact]
+    public async Task Semantic_FiltersByDomain()
+    {
+        await SeedApproved(3, "filter-alpha");
+        await SeedApproved(2, "filter-beta");
+
+        var response = await ReadClient().GetAsync("/expertise/search/semantic?q=anything&domain=filter-alpha&limit=50");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var results = await response.Content.ReadFromJsonAsync<JsonElement>();
+        results.GetArrayLength().Should().Be(3, "the domain filter applies before ranking");
+        foreach (var entry in results.EnumerateArray())
+            entry.GetProperty("domain").GetString().Should().Be("filter-alpha");
+    }
+
+    [Fact]
+    public async Task Semantic_FiltersByEntryType()
+    {
+        await SeedApproved(2, "type-domain");
+
+        var none = await ReadClient().GetAsync("/expertise/search/semantic?q=anything&domain=type-domain&entryType=Requirement&limit=50");
+        (await none.Content.ReadFromJsonAsync<JsonElement>()).GetArrayLength()
+            .Should().Be(0, "seeded entries are Pattern, not Requirement");
+
+        var all = await ReadClient().GetAsync("/expertise/search/semantic?q=anything&domain=type-domain&entryType=Pattern&limit=50");
+        (await all.Content.ReadFromJsonAsync<JsonElement>()).GetArrayLength().Should().Be(2);
+    }
+
+    [Fact]
     public async Task Semantic_LimitAboveMax_IsClampedTo100()
     {
         await SeedApproved(105, "clamp-domain");

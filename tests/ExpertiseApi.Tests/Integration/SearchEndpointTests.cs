@@ -42,13 +42,61 @@ public class SearchEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task KeywordSearch_WhenMissingQuery_ReturnsError()
+    public async Task KeywordSearch_WhenMissingQuery_Returns400()
     {
-        // When 'q' is completely absent, ASP.NET Core binding fails before the handler runs.
-        // This produces a 500 rather than a clean 400 — a known gap (see #28 for similar issue).
+        // When 'q' is completely absent, binding throws BadHttpRequestException before
+        // the handler runs; UnhandledExceptionLogger maps it to the exception's own
+        // status code instead of a generic 500 (#329).
         var response = await _client.GetAsync("/expertise/search");
 
-        ((int)response.StatusCode).Should().BeOneOf(400, 500);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task KeywordSearch_WhenMissingQuery_ProblemDetailsCarriesTraceId()
+    {
+        var response = await _client.GetAsync("/expertise/search");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetProperty("status").GetInt32().Should().Be(400);
+        json.TryGetProperty("traceId", out _).Should().BeTrue(
+            "the AddProblemDetails customizer must fire on the binding-failure path");
+    }
+
+    [Fact]
+    public async Task KeywordSearch_RespectsLimit()
+    {
+        await SeedEntryViaRepo("dotnet", "Migration ordering first entry",
+            "Notes about migration ordering in EF Core, entry one.");
+        await SeedEntryViaRepo("dotnet", "Migration ordering second entry",
+            "Notes about migration ordering in EF Core, entry two.");
+        await SeedEntryViaRepo("dotnet", "Migration ordering third entry",
+            "Notes about migration ordering in EF Core, entry three.");
+
+        var response = await _client.GetAsync("/expertise/search?q=migration&limit=2");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().Be(2);
+    }
+
+    [Fact]
+    public async Task KeywordSearch_SupportsWebsearchSyntax()
+    {
+        await SeedEntryViaRepo("dotnet", "EF Core migration conflict resolution",
+            "When running migrations against a shared database, conflicts can arise.");
+        await SeedEntryViaRepo("kubernetes", "Pod scheduling strategy",
+            "Kubernetes pod scheduling uses taints and tolerations.");
+
+        // websearch_to_tsquery: -negation excludes; malformed operator input must not throw.
+        var negated = await _client.GetAsync("/expertise/search?q=migration%20-kubernetes");
+        negated.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await negated.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().BeGreaterThan(0);
+
+        var malformed = await _client.GetAsync("/expertise/search?q=%22unbalanced%20AND%20OR%20(");
+        malformed.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
@@ -65,6 +113,26 @@ public class SearchEndpointTests : IAsyncLifetime
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().BeGreaterThan(0);
         json[0].GetProperty("domain").GetString().Should().Be("dotnet");
+        json[0].GetProperty("score").GetDouble().Should().BeGreaterThan(0,
+            "keyword search hits carry their ts_rank_cd score (#427)");
+    }
+
+    [Fact]
+    public async Task KeywordSearch_ScoresAreDescending()
+    {
+        // Title+body both matching ranks above body-only under cover-density ranking.
+        await SeedEntryViaRepo("dotnet", "Migration ordering migration notes",
+            "Detailed migration ordering guidance, migration steps included.");
+        await SeedEntryViaRepo("dotnet", "Unrelated title",
+            "One passing mention of migration.");
+
+        var response = await _client.GetAsync("/expertise/search?q=migration");
+
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().Be(2);
+        var first = json[0].GetProperty("score").GetDouble();
+        var second = json[1].GetProperty("score").GetDouble();
+        first.Should().BeGreaterThanOrEqualTo(second, "results are ordered by score descending");
     }
 
     [Fact]
@@ -116,16 +184,70 @@ public class SearchEndpointTests : IAsyncLifetime
         json.GetArrayLength().Should().Be(0);
     }
 
+    [Fact]
+    public async Task KeywordSearch_FiltersByDomain()
+    {
+        await SeedEntryViaRepo("dotnet", "Caching strategy for dotnet services",
+            "Response caching guidance for dotnet minimal APIs.");
+        await SeedEntryViaRepo("kubernetes", "Caching strategy for cluster workloads",
+            "Response caching guidance for kubernetes ingress layers.");
+
+        var response = await _client.GetAsync("/expertise/search?q=caching&domain=dotnet");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().Be(1);
+        json[0].GetProperty("domain").GetString().Should().Be("dotnet");
+    }
+
+    [Fact]
+    public async Task KeywordSearch_FiltersByTagsEntryTypeAndSeverity()
+    {
+        await SeedEntryViaRepo("dotnet", "Caching pitfall with stale keys",
+            "Stale cache keys cause subtle caching bugs.",
+            entryType: EntryType.Caveat, severity: Severity.Warning, tags: ["cache", "redis"]);
+        await SeedEntryViaRepo("dotnet", "Caching pattern for hot paths",
+            "Memoize hot-path caching lookups.",
+            entryType: EntryType.Pattern, severity: Severity.Info, tags: ["cache"]);
+
+        var byTags = await _client.GetAsync("/expertise/search?q=caching&tags=cache,redis");
+        byTags.StatusCode.Should().Be(HttpStatusCode.OK);
+        var tagsJson = await byTags.Content.ReadJsonElementAsync();
+        tagsJson.GetArrayLength().Should().Be(1, "both requested tags must match (AND semantics)");
+        tagsJson[0].GetProperty("title").GetProperty("value").GetString().Should().Contain("Caching pitfall with stale keys");
+
+        var byTypeAndSeverity = await _client.GetAsync("/expertise/search?q=caching&entryType=Pattern&severity=Info");
+        byTypeAndSeverity.StatusCode.Should().Be(HttpStatusCode.OK);
+        var typeJson = await byTypeAndSeverity.Content.ReadJsonElementAsync();
+        typeJson.GetArrayLength().Should().Be(1);
+        typeJson[0].GetProperty("title").GetProperty("value").GetString().Should().Contain("Caching pattern for hot paths");
+    }
+
+    [Fact]
+    public async Task KeywordSearch_InvalidEnumFilter_Returns400()
+    {
+        var response = await _client.GetAsync("/expertise/search?q=caching&entryType=NotAType");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            "an unparseable enum filter is a binding failure surfaced as 400, not a 500");
+    }
+
     private async Task<ExpertiseEntry> SeedEntryViaRepo(
         string domain,
         string title,
         string body = "Default test body content",
-        string tenant = TestHelpers.TestTenant)
+        string tenant = TestHelpers.TestTenant,
+        EntryType entryType = EntryType.Pattern,
+        Severity severity = Severity.Info,
+        string[]? tags = null)
     {
         using var scope = _factory.Services.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
-        return await repo.CreateAsync(
-            TestHelpers.SeedEntry(domain: domain, title: title, body: body, tenant: tenant),
-            TestHelpers.CreateTenantContext(tenant));
+        var entry = TestHelpers.SeedEntry(
+            domain: domain, title: title, body: body,
+            entryType: entryType, severity: severity, tenant: tenant);
+        if (tags is not null)
+            entry.Tags = [.. tags];
+        return await repo.CreateAsync(entry, TestHelpers.CreateTenantContext(tenant));
     }
 }

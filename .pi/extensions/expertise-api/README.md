@@ -7,6 +7,7 @@ LLM can call directly — no shelling to `curl`.
 | --- | --- | --- |
 | `expertise_search` | `GET /expertise` (filter) or `/expertise/search?q=` | `expertise.read` |
 | `expertise_search_semantic` | `GET /expertise/search/semantic?q=` | `expertise.read` |
+| `expertise_search_hybrid` | `GET /expertise/search/hybrid?q=` (keyword + semantic fused via RRF — recommended default) | `expertise.read` |
 | `expertise_get` | `GET /expertise/{id}` | `expertise.read` |
 | `expertise_create` | `POST /expertise` | `expertise.write.draft` |
 | `expertise_update` | `PATCH /expertise/{id}` | `expertise.write.draft` |

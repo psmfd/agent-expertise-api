@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.WebUtilities;
 
 namespace ExpertiseApi.Diagnostics;
 
@@ -7,11 +8,15 @@ namespace ExpertiseApi.Diagnostics;
 /// — the .NET 8+ preferred shape for global exception logging without claiming the
 /// response body (Part D C4).
 ///
-/// Returns <c>false</c> from <see cref="TryHandleAsync"/> so the framework's default
+/// Returns <c>false</c> from <see cref="TryHandleAsync"/> for genuinely unhandled
+/// exceptions so the framework's default
 /// <see cref="Microsoft.AspNetCore.Http.IProblemDetailsService"/> writer produces the
 /// response, which means the sanitizer registered in <c>AddProblemDetails(...)</c> in
 /// <c>Program.cs</c> fires for both <c>Results.Problem(...)</c> and unhandled-exception
-/// paths.
+/// paths. The one handled case is <see cref="BadHttpRequestException"/> (minimal-API
+/// binding failures), which is written with the exception's own status code instead of
+/// the middleware's generic 500 (#329) — still via <c>IProblemDetailsService</c>, so the
+/// same customizer fires.
 ///
 /// Critically, the full exception (message, type, stack) is logged server-side with
 /// the request path here; the customizer then strips Detail/Instance from the wire
@@ -29,20 +34,50 @@ namespace ExpertiseApi.Diagnostics;
 /// also be routed through <see cref="SanitizeForLog"/>.
 /// </para>
 /// </summary>
-internal sealed class UnhandledExceptionLogger(ILogger<UnhandledExceptionLogger> log)
+internal sealed class UnhandledExceptionLogger(
+    ILogger<UnhandledExceptionLogger> log,
+    IProblemDetailsService problemDetails)
     : IExceptionHandler
 {
-    public ValueTask<bool> TryHandleAsync(
+    public async ValueTask<bool> TryHandleAsync(
         HttpContext ctx,
         Exception ex,
         CancellationToken ct)
     {
+        // Minimal-API model binding throws BadHttpRequestException (e.g. a missing
+        // required [FromQuery] parameter, or a non-numeric value for an int param)
+        // BEFORE the handler's own validation guards run. Left to the default path,
+        // the exception middleware writes a generic 500 — a misleading "server error"
+        // for what is a malformed request (#329). Surface the exception's own status
+        // code via IProblemDetailsService so the AddProblemDetails customizer still
+        // fires (traceId + non-Development Detail scrub).
+        if (ex is BadHttpRequestException badRequest)
+        {
+            log.LogWarning("Bad request ({StatusCode}) for {Method} {Path}: {Reason}",
+                badRequest.StatusCode,
+                SanitizeForLog(ctx.Request.Method),
+                SanitizeForLog(ctx.Request.Path.Value),
+                SanitizeForLog(badRequest.Message));
+
+            ctx.Response.StatusCode = badRequest.StatusCode;
+            return await problemDetails.TryWriteAsync(new ProblemDetailsContext
+            {
+                HttpContext = ctx,
+                ProblemDetails =
+                {
+                    Status = badRequest.StatusCode,
+                    Title = ReasonPhrases.GetReasonPhrase(badRequest.StatusCode),
+                    Detail = badRequest.Message,
+                },
+            });
+        }
+
         log.LogError(ex, "Unhandled exception for {Method} {Path}",
             SanitizeForLog(ctx.Request.Method),
             SanitizeForLog(ctx.Request.Path.Value));
         // false = let the default IProblemDetailsService writer handle the response body
         // so the AddProblemDetails customizer in Program.cs runs (correlation ID + sanitization).
-        return ValueTask.FromResult(false);
+        return false;
     }
 
     /// <summary>
