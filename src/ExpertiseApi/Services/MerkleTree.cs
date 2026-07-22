@@ -19,6 +19,7 @@ internal static class MerkleTree
     private const byte LeafPrefix = 0x00;
     private const byte NodePrefix = 0x01;
 
+    /// <summary>Computes the RFC 6962 Merkle Tree Hash over an ordered list of leaf record hashes.</summary>
     /// <param name="leafData">Ordered record hashes (lowercase hex strings), export order.</param>
     /// <returns>Lowercase hex Merkle Tree Hash.</returns>
     public static string ComputeRoot(IReadOnlyList<string> leafData)

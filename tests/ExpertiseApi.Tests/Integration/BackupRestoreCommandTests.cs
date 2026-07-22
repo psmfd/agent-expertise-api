@@ -104,7 +104,7 @@ public class BackupRestoreCommandTests : IAsyncLifetime
         // Tamper the CONTENT only — the stored recordHash goes stale, which is
         // exactly the per-record quarantine case (root still matches, because
         // the root covers the stored hashes).
-        var entriesPath = Path.Combine(dir, "entries.jsonl");
+        var entriesPath = Path.Join(dir, "entries.jsonl");
         var tampered = (await File.ReadAllTextAsync(entriesPath))
             .Replace("approved body", "poisoned body", StringComparison.Ordinal);
         await File.WriteAllTextAsync(entriesPath, tampered);
@@ -143,7 +143,7 @@ public class BackupRestoreCommandTests : IAsyncLifetime
         // passes, but the Merkle root no longer matches the manifest — the
         // manifest (signed in production) is the trust anchor, so this must
         // abort entirely, not quarantine.
-        var entriesPath = Path.Combine(dir, "entries.jsonl");
+        var entriesPath = Path.Join(dir, "entries.jsonl");
         var lines = await File.ReadAllLinesAsync(entriesPath);
         var record = JsonSerializer.Deserialize(lines[0], BackupJsonContext.Default.BackupEntryRecord)!;
         record = record with { Body = "silently rewritten" };

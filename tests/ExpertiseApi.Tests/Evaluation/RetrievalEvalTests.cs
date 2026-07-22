@@ -138,10 +138,8 @@ public sealed class RetrievalEvalTests(PostgresFixture postgres, ITestOutputHelp
             output.WriteLine($"{m.Name,-10} {m.RecallAt5,9:F3} {m.RecallAt10,10:F3} {m.Mrr,8:F3}");
         output.WriteLine("");
 
-        foreach (var m in new[] { keyword, semantic, hybrid })
+        foreach (var m in new[] { keyword, semantic, hybrid }.Where(m => m.Misses.Count > 0))
         {
-            if (m.Misses.Count == 0)
-                continue;
             output.WriteLine($"-- {m.Name}: {m.Misses.Count} miss(es) at depth {ReportDepth} --");
             foreach (var (query, kind, top) in m.Misses)
                 output.WriteLine($"  [{kind}] \"{query}\" -> top-3: {string.Join(" | ", top.Take(3))}");
@@ -162,7 +160,7 @@ public sealed class RetrievalEvalTests(PostgresFixture postgres, ITestOutputHelp
 
     private static GoldenSet LoadGoldenSet()
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "Evaluation", "golden-set.json");
+        var path = Path.Join(AppContext.BaseDirectory, "Evaluation", "golden-set.json");
         var json = File.ReadAllText(path);
         var set = JsonSerializer.Deserialize<GoldenSet>(json, GoldenSetJsonOptions);
         set.Should().NotBeNull();

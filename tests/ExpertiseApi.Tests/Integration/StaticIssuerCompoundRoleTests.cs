@@ -36,7 +36,7 @@ public class StaticIssuerCompoundRoleTests : IAsyncLifetime
     public Task InitializeAsync()
     {
         // A real on-disk public JWKS for the embedded-key issuer — the production code reads it.
-        _jwksPath = Path.Combine(Path.GetTempPath(), $"adr015-jwks-{Guid.NewGuid():N}.json");
+        _jwksPath = Path.Join(Path.GetTempPath(), $"adr015-jwks-{Guid.NewGuid():N}.json");
         File.WriteAllText(_jwksPath, JwtTokenMinter.StaticJwksJson());
 
         _baseFactory = new JwtApiFactory(_postgres.ConnectionString);

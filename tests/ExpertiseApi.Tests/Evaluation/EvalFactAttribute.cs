@@ -44,14 +44,14 @@ internal static class ModelFiles
     static ModelFiles()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "ExpertiseApi.slnx")))
+        while (dir is not null && !File.Exists(Path.Join(dir.FullName, "ExpertiseApi.slnx")))
             dir = dir.Parent;
 
         if (dir is null)
             return;
 
-        var model = Path.Combine(dir.FullName, "src", "ExpertiseApi", "models", "model.onnx");
-        var vocab = Path.Combine(dir.FullName, "src", "ExpertiseApi", "models", "vocab.txt");
+        var model = Path.Join(dir.FullName, "src", "ExpertiseApi", "models", "model.onnx");
+        var vocab = Path.Join(dir.FullName, "src", "ExpertiseApi", "models", "vocab.txt");
         if (File.Exists(model) && File.Exists(vocab))
         {
             ModelPath = model;
