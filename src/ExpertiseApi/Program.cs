@@ -29,6 +29,12 @@ Log.Logger = new LoggerConfiguration()
     .WriteTo.Console(formatProvider: CultureInfo.InvariantCulture)
     .CreateBootstrapLogger();
 
+// NOTE (#404): the content root — and with it appsettings*.json and wwwroot/ —
+// follows the process CWD for a framework-dependent launch. The A2 service
+// templates and launch wrapper therefore pin WorkingDirectory / cd to bin/.
+// Pinning ContentRootPath = AppContext.BaseDirectory here instead was tried
+// and rejected: it defeats WebApplicationFactory's content-root override and
+// breaks the integration suite's wwwroot resolution.
 var builder = WebApplication.CreateBuilder(args);
 
 // Service-host integration. Both calls are no-ops when the corresponding host

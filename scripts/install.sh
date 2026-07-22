@@ -866,6 +866,12 @@ if [[ -n "${dotnet_root}" ]]; then
   export DOTNET_ROOT="\${DOTNET_ROOT:-${dotnet_root}}"
 fi
 
+# #404: appsettings*.json and wwwroot/ resolve from the process CWD for a
+# framework-dependent launch. cd into bin/ so config loads even when this
+# wrapper is invoked manually from an arbitrary directory (the service
+# templates additionally pin WorkingDirectory to bin/).
+cd "\${BIN_DIR}"
+
 if [[ -x "\${BIN_DIR}/ExpertiseApi" ]]; then
   exec "\${BIN_DIR}/ExpertiseApi"
 elif [[ -n "\${DOTNET_BIN}" && -x "\${DOTNET_BIN}" ]]; then
@@ -967,7 +973,7 @@ install_systemd_user() {
   # sed substitutions (avoid envsubst dependency)
   sed \
     -e "s|@@WRAPPER@@|${WRAPPER_SCRIPT}|g" \
-    -e "s|@@WORKDIR@@|${PREFIX}|g" \
+    -e "s|@@WORKDIR@@|${BIN_DIR}|g" \
     -e "s|@@SECRETS_FILE@@|${SECRETS_FILE}|g" \
     -e "s|@@LOG_DIR@@|${LOG_DIR}|g" \
     "${tpl}" > "${unit_path}.tmp"
@@ -1030,7 +1036,7 @@ install_launchd() {
   sed \
     -e "s|@@LABEL@@|${label}|g" \
     -e "s|@@WRAPPER@@|${WRAPPER_SCRIPT}|g" \
-    -e "s|@@WORKDIR@@|${PREFIX}|g" \
+    -e "s|@@WORKDIR@@|${BIN_DIR}|g" \
     -e "s|@@LOG_DIR@@|${LOG_DIR}|g" \
     "${tpl}" > "${plist_path}.tmp"
   mv -f -- "${plist_path}.tmp" "${plist_path}"
@@ -1088,7 +1094,7 @@ install_launchd_system() {
   sed \
     -e "s|@@LABEL@@|${label}|g" \
     -e "s|@@WRAPPER@@|${WRAPPER_SCRIPT}|g" \
-    -e "s|@@WORKDIR@@|${PREFIX}|g" \
+    -e "s|@@WORKDIR@@|${BIN_DIR}|g" \
     -e "s|@@LOG_DIR@@|${LOG_DIR}|g" \
     -e "s|@@SERVICE_USER@@|${service_user}|g" \
     -e "s|@@SERVICE_GROUP@@|${service_group}|g" \
