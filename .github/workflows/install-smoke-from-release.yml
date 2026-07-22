@@ -185,7 +185,7 @@ jobs:
         # for the migrate step. The SDK (sdk ⊇ runtime) is installed so
         # rc_check_aspnetcore_runtime_floor passes and the migrate verb runs.
         # Matches the setup used by install-smoke-macos in ci.yml.
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
 
