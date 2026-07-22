@@ -44,7 +44,8 @@ internal sealed record ExpertiseEntryResponse(
     string? ReviewedBy,
     DateTime? ReviewedAt,
     HygienizedField? RejectionReason,
-    [property: JsonPropertyName("_hygiene")] HygieneEnvelope Hygiene)
+    [property: JsonPropertyName("_hygiene")] HygieneEnvelope Hygiene,
+    double? Score = null)
 {
     /// <summary>
     /// Hygienize a single entry. Caller is responsible for providing a fresh nonce \u2014
@@ -111,5 +112,17 @@ internal sealed record ExpertiseEntryResponse(
     {
         var nonce = hygiene.MintNonce();
         return entries.Select(e => From(e, hygiene, nonce)).ToList();
+    }
+
+    /// <summary>
+    /// Hygienize a list of scored search hits under a single shared nonce (#427).
+    /// <c>Score</c> is trusted-structured (server-computed) and is emitted as a plain
+    /// number; its semantics are per-search-mode and comparable only within one
+    /// response — see <see cref="Data.ScoredEntry"/>.
+    /// </summary>
+    public static List<ExpertiseEntryResponse> FromMany(IEnumerable<Data.ScoredEntry> results, IResponseHygiene hygiene)
+    {
+        var nonce = hygiene.MintNonce();
+        return results.Select(r => From(r.Entry, hygiene, nonce) with { Score = r.Score }).ToList();
     }
 }

@@ -413,15 +413,33 @@ internal class ExpertiseRepository(
             .FirstOrDefaultAsync(ct);
     }
 
-    public async Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated, int limit, string? domain, List<string>? tags, EntryType? entryType, Severity? severity, CancellationToken ct)
+    public async Task<List<ScoredEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated, int limit, string? domain, List<string>? tags, EntryType? entryType, Severity? severity, CancellationToken ct)
     {
-        return await BuildKeywordSearchQuery(query, ctx, includeDeprecated, limit, domain, tags, entryType, severity)
+        // Two round trips (#427): the ranked raw SQL yields (Id, Score) — mapping the
+        // score through the entity DbSet is not possible because FromSql extra columns
+        // are discarded during entity materialization — then the entities load through
+        // the standard tenant+approved LINQ seams. Order and score are reassembled from
+        // the first query, which remains the ranking authority.
+        var hits = await BuildKeywordSearchQuery(query, ctx, includeDeprecated, limit, domain, tags, entryType, severity)
             .ToListAsync(ct);
+        if (hits.Count == 0)
+            return [];
+
+        var ids = hits.Select(h => h.Id).ToList();
+        var entries = await ApplyApprovedReviewFilter(ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx))
+            .Where(e => ids.Contains(e.Id))
+            .ToDictionaryAsync(e => e.Id, ct);
+
+        return hits
+            .Where(h => entries.ContainsKey(h.Id))
+            .Select(h => new ScoredEntry(entries[h.Id], h.Score))
+            .ToList();
     }
 
     /// <summary>
-    /// Composes the keyword-search raw SQL. Extracted as an <c>internal</c> seam so the
-    /// query-translation test suite can render every filter combination via
+    /// Composes the keyword-search raw SQL, yielding ranked <c>(Id, Score)</c> hits where
+    /// <c>Score</c> is the <c>ts_rank_cd</c> value (#427). Extracted as an <c>internal</c>
+    /// seam so the query-translation test suite can render every filter combination via
     /// <c>ToQueryString()</c> against the exact production SQL builder.
     ///
     /// Tenant + ReviewState + DeprecatedAt + metadata predicates all live inside the raw
@@ -439,12 +457,13 @@ internal class ExpertiseRepository(
     /// <see cref="ApplyMetadataFilters"/> (#426): <c>"Tags" @&gt; @tags</c> is the raw-SQL
     /// form of <c>tags.All(t =&gt; e.Tags.Contains(t))</c>.
     /// </summary>
-    internal IQueryable<ExpertiseEntry> BuildKeywordSearchQuery(string query, TenantContext ctx, bool includeDeprecated, int limit, string? domain, List<string>? tags, EntryType? entryType, Severity? severity)
+    internal IQueryable<KeywordHit> BuildKeywordSearchQuery(string query, TenantContext ctx, bool includeDeprecated, int limit, string? domain, List<string>? tags, EntryType? entryType, Severity? severity)
     {
         var tenant = RequireTenant(ctx);
 
         var sql = new StringBuilder("""
-            SELECT *, xmin FROM "ExpertiseEntries"
+            SELECT "Id", ts_rank_cd("SearchVector", websearch_to_tsquery('english', @query))::float8 AS "Score"
+            FROM "ExpertiseEntries"
             WHERE "SearchVector" @@ websearch_to_tsquery('english', @query)
               AND ("Tenant" = @tenant OR "Tenant" = 'shared')
               AND "ReviewState" = @approvedState
@@ -483,14 +502,14 @@ internal class ExpertiseRepository(
             parameters.Add(new NpgsqlParameter("tags", tags.ToArray()));
         }
 
-        sql.Append("\nORDER BY ts_rank_cd(\"SearchVector\", websearch_to_tsquery('english', @query)) DESC");
+        sql.Append("\nORDER BY \"Score\" DESC");
         sql.Append("\nLIMIT @limit");
         parameters.Add(new NpgsqlParameter("limit", limit));
 
-        return db.ExpertiseEntries.FromSqlRaw(sql.ToString(), parameters.ToArray<object>());
+        return db.Database.SqlQueryRaw<KeywordHit>(sql.ToString(), parameters.ToArray<object>());
     }
 
-    public async Task<List<ExpertiseEntry>> SemanticSearchAsync(Vector queryVector, TenantContext ctx, int limit, bool includeDeprecated, string? domain, List<string>? tags, EntryType? entryType, Severity? severity, CancellationToken ct)
+    public async Task<List<ScoredEntry>> SemanticSearchAsync(Vector queryVector, TenantContext ctx, int limit, bool includeDeprecated, string? domain, List<string>? tags, EntryType? entryType, Severity? severity, CancellationToken ct)
     {
         var query = ApplyApprovedReviewFilter(ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx))
             .Where(e => e.Embedding != null);
@@ -498,10 +517,16 @@ internal class ExpertiseRepository(
         if (!includeDeprecated)
             query = query.Where(e => e.DeprecatedAt == null);
 
-        return await ApplyMetadataFilters(query, domain, tags, entryType, severity)
+        // Cosine SIMILARITY (1 - distance), so higher is better like every other score
+        // surface (#427). Distance is projected alongside the entity in one query —
+        // ordering still happens server-side on the raw distance.
+        var scored = await ApplyMetadataFilters(query, domain, tags, entryType, severity)
             .OrderBy(e => e.Embedding!.CosineDistance(queryVector))
             .Take(limit)
+            .Select(e => new { Entry = e, Distance = e.Embedding!.CosineDistance(queryVector) })
             .ToListAsync(ct);
+
+        return scored.Select(s => new ScoredEntry(s.Entry, 1.0 - s.Distance)).ToList();
     }
 
     [SuppressMessage("Globalization", "CA1304:Specify CultureInfo",

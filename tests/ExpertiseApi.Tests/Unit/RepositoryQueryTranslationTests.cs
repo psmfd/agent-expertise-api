@@ -269,7 +269,10 @@ public class RepositoryQueryTranslationTests
                     entryType: (mask & 4) != 0 ? EntryType.Pattern : null,
                     severity: (mask & 8) != 0 ? Severity.Warning : null)
                 .OrderBy(e => e.Embedding!.CosineDistance(queryVector))
-                .Take(10);
+                .Take(10)
+                // #427: the production shape projects the cosine distance alongside the
+                // entity so the score survives materialization.
+                .Select(e => new { Entry = e, Distance = e.Embedding!.CosineDistance(queryVector) });
 
             AssertTranslates(query, $"semantic-search filter mask {mask} must translate to SQL");
         }

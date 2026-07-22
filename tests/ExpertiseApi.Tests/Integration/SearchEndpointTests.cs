@@ -113,6 +113,26 @@ public class SearchEndpointTests : IAsyncLifetime
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().BeGreaterThan(0);
         json[0].GetProperty("domain").GetString().Should().Be("dotnet");
+        json[0].GetProperty("score").GetDouble().Should().BeGreaterThan(0,
+            "keyword search hits carry their ts_rank_cd score (#427)");
+    }
+
+    [Fact]
+    public async Task KeywordSearch_ScoresAreDescending()
+    {
+        // Title+body both matching ranks above body-only under cover-density ranking.
+        await SeedEntryViaRepo("dotnet", "Migration ordering migration notes",
+            "Detailed migration ordering guidance, migration steps included.");
+        await SeedEntryViaRepo("dotnet", "Unrelated title",
+            "One passing mention of migration.");
+
+        var response = await _client.GetAsync("/expertise/search?q=migration");
+
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().Be(2);
+        var first = json[0].GetProperty("score").GetDouble();
+        var second = json[1].GetProperty("score").GetDouble();
+        first.Should().BeGreaterThanOrEqualTo(second, "results are ordered by score descending");
     }
 
     [Fact]

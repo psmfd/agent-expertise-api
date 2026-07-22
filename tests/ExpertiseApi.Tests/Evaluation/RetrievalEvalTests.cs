@@ -113,12 +113,12 @@ public sealed class RetrievalEvalTests(PostgresFixture postgres, ITestOutputHelp
         {
             var keywordResults = await _repo.KeywordSearchAsync(q.Query, ctx, includeDeprecated: false, limit: ReportDepth,
                 domain: null, tags: null, entryType: null, severity: null, CancellationToken.None);
-            keyword.Score(q, keywordResults.Select(e => e.Title).ToList());
+            keyword.Score(q, keywordResults.Select(r => r.Entry.Title).ToList());
 
             var queryVector = await _embedding.GenerateQueryEmbeddingAsync(q.Query);
             var semanticResults = await _repo.SemanticSearchAsync(queryVector, ctx, limit: ReportDepth, includeDeprecated: false,
                 domain: null, tags: null, entryType: null, severity: null, CancellationToken.None);
-            semantic.Score(q, semanticResults.Select(e => e.Title).ToList());
+            semantic.Score(q, semanticResults.Select(r => r.Entry.Title).ToList());
         }
 
         // ---- Report ----
