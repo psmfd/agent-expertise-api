@@ -42,8 +42,19 @@ Exit codes:
 EOF
 }
 
-PREFIX="${HOME}/.local/share/expertise-api"
-SECRETS_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/secrets.env"
+# Per-OS user-scope defaults, mirroring install.sh's path layout (#328/#332).
+# The previous unconditional XDG layout pointed macOS runs at a nonexistent
+# PREFIX, so Onnx__ModelPath/Onnx__VocabPath resolved to missing files and
+# Program.cs silently skipped IEmbeddingGenerator registration (fatal under
+# Development's ValidateOnBuild). System-scope or custom installs pass
+# --prefix/--secrets-file explicitly — install.sh now always does.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  PREFIX="${HOME}/Library/Application Support/expertise-api"
+  SECRETS_FILE="${PREFIX}/secrets.env"
+else
+  PREFIX="${HOME}/.local/share/expertise-api"
+  SECRETS_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/expertise-api/secrets.env"
+fi
 BIN_DIR_OVERRIDE=""
 MIGRATE_TIMEOUT=300
 
@@ -71,11 +82,28 @@ err()  { printf '[migrate] ERROR: %s\n' "$1" >&2; exit 2; }
 # Load secrets — required because the connection string is sensitive and
 # never embedded in the wrapper or service unit on the filesystem.
 if [[ -f "${SECRETS_FILE}" ]]; then
+  # #332: standalone invocations get the same secrets.env guards install.sh
+  # runs before its identical `. "${SECRETS_FILE}"`. Logic kept in lockstep
+  # with install.sh's check_secrets_line_endings / unquoted-conn heuristic
+  # (duplication-with-lockstep-comment, same pattern as the secrets-guard
+  # hooks — migrate.sh must stay standalone-runnable). Only filename and
+  # line number are echoed, never matched content.
+  if LC_ALL=C grep -l $'\r' "${SECRETS_FILE}" >/dev/null 2>&1; then
+    crlf_line=$(LC_ALL=C grep -n -m1 $'\r' "${SECRETS_FILE}" 2>/dev/null | cut -d: -f1 || echo "?")
+    err "CRLF line endings detected at ${SECRETS_FILE}:${crlf_line} — the bash sourcer would silently corrupt values. Remediate: tr -d '\\r' < ${SECRETS_FILE} > ${SECRETS_FILE}.tmp && mv ${SECRETS_FILE}.tmp ${SECRETS_FILE} && chmod 600 ${SECRETS_FILE} (or re-run scripts/install.sh --fix-line-endings)"
+  fi
   log "sourcing secrets from ${SECRETS_FILE}"
   set -a
   # shellcheck disable=SC1090
   . "${SECRETS_FILE}"
   set +a
+  # Legacy unquoted connection string: `set -a; . file` splits on `;` and
+  # keeps only the Host= segment. Same heuristic as install.sh (PR #157).
+  if [[ "${ConnectionStrings__DefaultConnection:-}" == *Host=* \
+      && "${ConnectionStrings__DefaultConnection:-}" != *\;* ]] \
+      && grep -qE '^[[:space:]]*Port=' "${SECRETS_FILE}" 2>/dev/null; then
+    err "detected legacy unquoted ConnectionStrings__DefaultConnection in ${SECRETS_FILE}: the bash sourcer split on ';' and only kept the Host= segment. Wrap the value in double quotes and re-run."
+  fi
 else
   warn "no secrets file at ${SECRETS_FILE} — relying on environment"
 fi
