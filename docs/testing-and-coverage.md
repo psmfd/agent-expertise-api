@@ -116,6 +116,29 @@ that could drift. Current seams: `ApplyTenantFilter`, `ApplyApprovedReviewFilter
 `MigrationStateRefresher.RefreshOnceAsync`. `InternalsVisibleTo("ExpertiseApi.Tests")` in
 the csproj makes them reachable. Prefer this over re-deriving the logic in the test.
 
+## Retrieval-quality evaluation (golden-query harness)
+
+Correctness tests use the content-derived mock embeddings above; retrieval *quality*
+cannot be measured that way. `tests/ExpertiseApi.Tests/Evaluation/` holds an opt-in
+harness (#425) that seeds the corpus in `golden-set.json` with **real** bge-micro-v2
+embeddings (via `AddBertOnnxEmbeddingGenerator`), runs every golden query through
+keyword and semantic search, and reports recall@5 / recall@10 / MRR@10 per mode plus
+every miss:
+
+```bash
+# Requires Docker/podman and the ONNX model files (scripts/download-models.sh)
+EXPERTISE_EVAL=1 dotnet test --filter "FullyQualifiedName~RetrievalEval"
+```
+
+It is env-gated (`[EvalFact]` skips without `EXPERTISE_EVAL=1`), so CI and normal
+`dotnet test` runs skip it. The report is the product — run it before and after any
+retrieval change (hybrid RRF #428, model swap, reranking) and compare; the in-test
+assertions are only catastrophic-regression floors set well below measured values.
+Baseline 2026-07-22 (post PR #431): keyword 0.367 recall@10 (identifier queries hit,
+paraphrases return empty — `websearch_to_tsquery` ANDs all terms), semantic 1.000
+recall@10 / 0.894 MRR. Grow `golden-set.json` whenever a real agent query misses:
+add the query with its expected entry titles.
+
 ## Verifying a guard actually guards
 
 When adding or changing a guard, prove it catches the failure it targets: reintroduce the
