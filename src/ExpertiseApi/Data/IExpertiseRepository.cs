@@ -81,7 +81,7 @@ internal interface IExpertiseRepository
     /// </summary>
     Task<ExpertiseAuditLog?> GetAuditByIdAsync(Guid id, CancellationToken ct = default);
 
-    Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated = false, CancellationToken ct = default);
+    Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated = false, int limit = 50, CancellationToken ct = default);
 
     Task<List<ExpertiseEntry>> SemanticSearchAsync(Vector queryVector, TenantContext ctx, int limit = 10, bool includeDeprecated = false, CancellationToken ct = default);
 

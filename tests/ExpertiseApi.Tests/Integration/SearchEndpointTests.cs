@@ -42,13 +42,61 @@ public class SearchEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task KeywordSearch_WhenMissingQuery_ReturnsError()
+    public async Task KeywordSearch_WhenMissingQuery_Returns400()
     {
-        // When 'q' is completely absent, ASP.NET Core binding fails before the handler runs.
-        // This produces a 500 rather than a clean 400 — a known gap (see #28 for similar issue).
+        // When 'q' is completely absent, binding throws BadHttpRequestException before
+        // the handler runs; UnhandledExceptionLogger maps it to the exception's own
+        // status code instead of a generic 500 (#329).
         var response = await _client.GetAsync("/expertise/search");
 
-        ((int)response.StatusCode).Should().BeOneOf(400, 500);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task KeywordSearch_WhenMissingQuery_ProblemDetailsCarriesTraceId()
+    {
+        var response = await _client.GetAsync("/expertise/search");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetProperty("status").GetInt32().Should().Be(400);
+        json.TryGetProperty("traceId", out _).Should().BeTrue(
+            "the AddProblemDetails customizer must fire on the binding-failure path");
+    }
+
+    [Fact]
+    public async Task KeywordSearch_RespectsLimit()
+    {
+        await SeedEntryViaRepo("dotnet", "Migration ordering first entry",
+            "Notes about migration ordering in EF Core, entry one.");
+        await SeedEntryViaRepo("dotnet", "Migration ordering second entry",
+            "Notes about migration ordering in EF Core, entry two.");
+        await SeedEntryViaRepo("dotnet", "Migration ordering third entry",
+            "Notes about migration ordering in EF Core, entry three.");
+
+        var response = await _client.GetAsync("/expertise/search?q=migration&limit=2");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().Be(2);
+    }
+
+    [Fact]
+    public async Task KeywordSearch_SupportsWebsearchSyntax()
+    {
+        await SeedEntryViaRepo("dotnet", "EF Core migration conflict resolution",
+            "When running migrations against a shared database, conflicts can arise.");
+        await SeedEntryViaRepo("kubernetes", "Pod scheduling strategy",
+            "Kubernetes pod scheduling uses taints and tolerations.");
+
+        // websearch_to_tsquery: -negation excludes; malformed operator input must not throw.
+        var negated = await _client.GetAsync("/expertise/search?q=migration%20-kubernetes");
+        negated.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await negated.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().BeGreaterThan(0);
+
+        var malformed = await _client.GetAsync("/expertise/search?q=%22unbalanced%20AND%20OR%20(");
+        malformed.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
