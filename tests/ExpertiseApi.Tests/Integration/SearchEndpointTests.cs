@@ -164,16 +164,70 @@ public class SearchEndpointTests : IAsyncLifetime
         json.GetArrayLength().Should().Be(0);
     }
 
+    [Fact]
+    public async Task KeywordSearch_FiltersByDomain()
+    {
+        await SeedEntryViaRepo("dotnet", "Caching strategy for dotnet services",
+            "Response caching guidance for dotnet minimal APIs.");
+        await SeedEntryViaRepo("kubernetes", "Caching strategy for cluster workloads",
+            "Response caching guidance for kubernetes ingress layers.");
+
+        var response = await _client.GetAsync("/expertise/search?q=caching&domain=dotnet");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetArrayLength().Should().Be(1);
+        json[0].GetProperty("domain").GetString().Should().Be("dotnet");
+    }
+
+    [Fact]
+    public async Task KeywordSearch_FiltersByTagsEntryTypeAndSeverity()
+    {
+        await SeedEntryViaRepo("dotnet", "Caching pitfall with stale keys",
+            "Stale cache keys cause subtle caching bugs.",
+            entryType: EntryType.Caveat, severity: Severity.Warning, tags: ["cache", "redis"]);
+        await SeedEntryViaRepo("dotnet", "Caching pattern for hot paths",
+            "Memoize hot-path caching lookups.",
+            entryType: EntryType.Pattern, severity: Severity.Info, tags: ["cache"]);
+
+        var byTags = await _client.GetAsync("/expertise/search?q=caching&tags=cache,redis");
+        byTags.StatusCode.Should().Be(HttpStatusCode.OK);
+        var tagsJson = await byTags.Content.ReadJsonElementAsync();
+        tagsJson.GetArrayLength().Should().Be(1, "both requested tags must match (AND semantics)");
+        tagsJson[0].GetProperty("title").GetProperty("value").GetString().Should().Contain("Caching pitfall with stale keys");
+
+        var byTypeAndSeverity = await _client.GetAsync("/expertise/search?q=caching&entryType=Pattern&severity=Info");
+        byTypeAndSeverity.StatusCode.Should().Be(HttpStatusCode.OK);
+        var typeJson = await byTypeAndSeverity.Content.ReadJsonElementAsync();
+        typeJson.GetArrayLength().Should().Be(1);
+        typeJson[0].GetProperty("title").GetProperty("value").GetString().Should().Contain("Caching pattern for hot paths");
+    }
+
+    [Fact]
+    public async Task KeywordSearch_InvalidEnumFilter_Returns400()
+    {
+        var response = await _client.GetAsync("/expertise/search?q=caching&entryType=NotAType");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            "an unparseable enum filter is a binding failure surfaced as 400, not a 500");
+    }
+
     private async Task<ExpertiseEntry> SeedEntryViaRepo(
         string domain,
         string title,
         string body = "Default test body content",
-        string tenant = TestHelpers.TestTenant)
+        string tenant = TestHelpers.TestTenant,
+        EntryType entryType = EntryType.Pattern,
+        Severity severity = Severity.Info,
+        string[]? tags = null)
     {
         using var scope = _factory.Services.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IExpertiseRepository>();
-        return await repo.CreateAsync(
-            TestHelpers.SeedEntry(domain: domain, title: title, body: body, tenant: tenant),
-            TestHelpers.CreateTenantContext(tenant));
+        var entry = TestHelpers.SeedEntry(
+            domain: domain, title: title, body: body,
+            entryType: entryType, severity: severity, tenant: tenant);
+        if (tags is not null)
+            entry.Tags = [.. tags];
+        return await repo.CreateAsync(entry, TestHelpers.CreateTenantContext(tenant));
     }
 }
