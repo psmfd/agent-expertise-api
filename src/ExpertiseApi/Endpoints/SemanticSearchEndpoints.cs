@@ -20,8 +20,9 @@ internal static class SemanticSearchEndpoints
         group.MapGet("/", SemanticSearch)
             .WithSummary("Vector similarity search using cosine distance over title+body embeddings")
             .WithDescription("Generates an embedding for `q` via the configured ONNX/SBERT model and returns the top `limit` (clamped 1\u2013100) " +
-                             "Approved entries by cosine similarity. Tenant-scoped (own tenant + shared). Subject to the `semantic-search` " +
-                             "rate-limit policy (token bucket, 10/min) because each call runs ONNX inference.")
+                             "Approved entries by cosine similarity. Optional structured filters: `domain`, `tags` (comma-separated, all must " +
+                             "match), `entryType`, `severity` \u2014 applied before ranking. Tenant-scoped (own tenant + shared). Subject to the " +
+                             "`semantic-search` rate-limit policy (token bucket, 10/min) because each call runs ONNX inference.")
             .Produces<List<ExpertiseEntryResponse>>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status401Unauthorized)
@@ -37,6 +38,10 @@ internal static class SemanticSearchEndpoints
         EmbeddingService embeddingService,
         IResponseHygiene hygiene,
         [FromQuery] string q,
+        [FromQuery] string? domain = null,
+        [FromQuery] string? tags = null,
+        [FromQuery] EntryType? entryType = null,
+        [FromQuery] Severity? severity = null,
         [FromQuery] int limit = 10,
         [FromQuery] bool includeDeprecated = false,
         CancellationToken ct = default)
@@ -46,8 +51,9 @@ internal static class SemanticSearchEndpoints
 
         var tenantContext = httpContext.RequireTenantContext();
         var clampedLimit = Math.Clamp(limit, 1, 100);
+        var tagList = tags?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         var queryVector = await embeddingService.GenerateQueryEmbeddingAsync(q, ct);
-        var results = await repo.SemanticSearchAsync(queryVector, tenantContext, clampedLimit, includeDeprecated, ct);
+        var results = await repo.SemanticSearchAsync(queryVector, tenantContext, clampedLimit, includeDeprecated, domain, tagList, entryType, severity, ct);
         return Results.Ok(ExpertiseEntryResponse.FromMany(results, hygiene));
     }
 }

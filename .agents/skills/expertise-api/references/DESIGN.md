@@ -117,8 +117,8 @@ Single-row `EmbeddingMetadata` table tracks model name, dimensions, and `LastRee
 | GET | `/expertise/drafts` | `expertise.write.approve` | List Draft + Rejected entries in caller's tenant | |
 | POST | `/expertise/{id}/approve` | `expertise.write.approve` | Transition Draft → Approved | |
 | POST | `/expertise/{id}/reject` | `expertise.write.approve` | Transition Draft → Rejected (requires reason) | |
-| GET | `/expertise/search?q=` | `expertise.read` | Keyword full-text search (`websearch_to_tsquery` over tsvector, `ts_rank_cd` ranked; supports quoted phrases, OR, `-negation`) | `limit` (1-100, default 50), `includeDeprecated` |
-| GET | `/expertise/search/semantic?q=` | `expertise.read` | Semantic vector search (pgvector) | `limit` (1-100, default 10), `includeDeprecated` |
+| GET | `/expertise/search?q=` | `expertise.read` | Keyword full-text search (`websearch_to_tsquery` over tsvector, `ts_rank_cd` ranked; supports quoted phrases, OR, `-negation`) | `domain`, `tags` (comma-separated, all must match), `entryType`, `severity`, `limit` (1-100, default 50), `includeDeprecated` |
+| GET | `/expertise/search/semantic?q=` | `expertise.read` | Semantic vector search (pgvector) | `domain`, `tags` (comma-separated, all must match), `entryType`, `severity`, `limit` (1-100, default 10), `includeDeprecated` |
 | GET | `/audit` | `expertise.admin` | Cross-tenant audit log | `entryId`, `principal`, `action`, `from`, `to`, `limit` (1-200, default 50), cursor (`afterTimestamp` + `afterId`) |
 | GET | `/health` | none | Liveness probe | |
 | GET | `/metrics` | none | Prometheus scrape endpoint | |

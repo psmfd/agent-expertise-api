@@ -216,30 +216,62 @@ public class RepositoryQueryTranslationTests
         AssertTranslates(query, "the shared tenant+approved read seam must translate");
     }
 
-    // ---- Raw FromSqlInterpolated (keyword search) -------------------------
+    // ---- Raw keyword-search SQL builder (production seam) -----------------
 
     [Fact]
-    public void KeywordSearch_FromSqlInterpolated_Parameterizes()
+    public void KeywordSearchQuery_EveryFilterCombination_Renders()
     {
         using var db = NewContext();
-        var q = "postgres pgvector";
-        var tenant = "team-alpha";
-        var approvedState = nameof(ReviewState.Approved);
+        var repo = NewRepository(db);
+        var tags = new List<string> { "postgres", "ef-core" };
 
-        // ToQueryString on FromSql renders the raw SQL with its parameters — this pins the
-        // interpolation/parameterization (it does not validate the tsquery against a live
-        // server; SearchEndpointTests covers execution correctness).
-        var limit = 50;
-        var query = db.ExpertiseEntries.FromSqlInterpolated($"""
-            SELECT *, xmin FROM "ExpertiseEntries"
-            WHERE "SearchVector" @@ websearch_to_tsquery('english', {q})
-              AND ("Tenant" = {tenant} OR "Tenant" = 'shared')
-              AND "ReviewState" = {approvedState}
-              AND "DeprecatedAt" IS NULL
-            ORDER BY ts_rank_cd("SearchVector", websearch_to_tsquery('english', {q})) DESC
-            LIMIT {limit}
-            """);
+        // ToQueryString on FromSqlRaw renders the raw SQL with its parameters — this
+        // exercises the REAL BuildKeywordSearchQuery seam across all 32 combinations of
+        // the 5 conditional dimensions (#426), so the conditional SQL assembly and its
+        // NpgsqlParameter set can never drift from production. (It does not validate the
+        // tsquery against a live server; SearchEndpointTests covers execution.)
+        for (var mask = 0; mask < 32; mask++)
+        {
+            var query = repo.BuildKeywordSearchQuery(
+                "postgres pgvector",
+                Ctx(),
+                includeDeprecated: (mask & 16) != 0,
+                limit: 50,
+                domain: (mask & 1) != 0 ? "dotnet" : null,
+                tags: (mask & 2) != 0 ? tags : null,
+                entryType: (mask & 4) != 0 ? EntryType.Pattern : null,
+                severity: (mask & 8) != 0 ? Severity.Warning : null);
 
-        AssertTranslates(query, "keyword-search raw SQL must parameterize without throwing");
+            AssertTranslates(query, $"keyword-search SQL for filter mask {mask} must render without throwing");
+        }
+    }
+
+    // ---- SemanticSearchAsync — metadata filters + CosineDistance ----------
+
+    [Fact]
+    public void SemanticSearchFilters_EveryCombination_Translates()
+    {
+        using var db = NewContext();
+        var tags = new List<string> { "postgres", "ef-core" };
+        var queryVector = new Vector(new float[384]);
+
+        // Mirrors the production SemanticSearchAsync composition: shared tenant+approved
+        // seam -> ApplyMetadataFilters (shared with BuildListQuery, #426) -> pgvector
+        // CosineDistance ordering. 16 combinations of the 4 metadata dimensions.
+        for (var mask = 0; mask < 16; mask++)
+        {
+            var query = ExpertiseRepository.ApplyMetadataFilters(
+                    ExpertiseRepository.ApplyApprovedReviewFilter(
+                        ExpertiseRepository.ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), Ctx()))
+                        .Where(e => e.Embedding != null),
+                    domain: (mask & 1) != 0 ? "dotnet" : null,
+                    tags: (mask & 2) != 0 ? tags : null,
+                    entryType: (mask & 4) != 0 ? EntryType.Pattern : null,
+                    severity: (mask & 8) != 0 ? Severity.Warning : null)
+                .OrderBy(e => e.Embedding!.CosineDistance(queryVector))
+                .Take(10);
+
+            AssertTranslates(query, $"semantic-search filter mask {mask} must translate to SQL");
+        }
     }
 }
