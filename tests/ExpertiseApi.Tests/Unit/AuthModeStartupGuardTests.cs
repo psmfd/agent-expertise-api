@@ -156,7 +156,7 @@ public class AuthModeStartupGuardTests
             Name = "LanStatic",
             Issuer = "https://static-issuer.local/",
             Audience = "expertise-api",
-            JwksPath = Path.Combine(Path.GetTempPath(), $"does-not-exist-{Guid.NewGuid():N}.json")
+            JwksPath = Path.Join(Path.GetTempPath(), $"does-not-exist-{Guid.NewGuid():N}.json")
         };
 
         var act = () => AuthExtensions.LoadStaticSigningKeys(issuer);
@@ -167,7 +167,7 @@ public class AuthModeStartupGuardTests
     [Fact]
     public void LoadStaticSigningKeys_EmptyKeySet_FailsClosed()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"empty-jwks-{Guid.NewGuid():N}.json");
+        var path = Path.Join(Path.GetTempPath(), $"empty-jwks-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, "{\"keys\":[]}");
         try
         {
@@ -192,7 +192,7 @@ public class AuthModeStartupGuardTests
     [Fact]
     public void LoadStaticSigningKeys_MalformedJson_FailsClosed()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"bad-jwks-{Guid.NewGuid():N}.json");
+        var path = Path.Join(Path.GetTempPath(), $"bad-jwks-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, "this is not json");
         try
         {
@@ -217,7 +217,7 @@ public class AuthModeStartupGuardTests
     [Fact]
     public void LoadStaticSigningKeys_ValidJwks_ReturnsKeys()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"good-jwks-{Guid.NewGuid():N}.json");
+        var path = Path.Join(Path.GetTempPath(), $"good-jwks-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, Infrastructure.JwtTokenMinter.StaticJwksJson());
         try
         {
@@ -244,7 +244,7 @@ public class AuthModeStartupGuardTests
     {
         // Operator footgun: JwksPath points at mint_token.py's *.priv.json (private key) instead
         // of the build-jwks public output. Must fail closed, not load a forging key into the API.
-        var path = Path.Combine(Path.GetTempPath(), $"private-jwks-{Guid.NewGuid():N}.json");
+        var path = Path.Join(Path.GetTempPath(), $"private-jwks-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, Infrastructure.JwtTokenMinter.PrivateJwksJson());
         try
         {
@@ -303,7 +303,7 @@ public class AuthModeStartupGuardTests
         // Proves scripts/mint_token.py's ACTUAL `build-jwks` output shape (alg/e/kid/kty/n/use,
         // public-only) is consumable by the production loader — locking the Python-tool ↔ API
         // config contract that the C#-side StaticJwksJson() helper alone would not guarantee.
-        var path = Path.Combine(Path.GetTempPath(), $"real-jwks-{Guid.NewGuid():N}.json");
+        var path = Path.Join(Path.GetTempPath(), $"real-jwks-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, RealMintTokenJwks);
         try
         {

@@ -36,6 +36,7 @@ internal static class RestoreCommand
     private const int EmbeddingDimensions = 384;
     private const string QuarantinePrincipal = "restore-cli";
 
+    /// <summary>Imports a decrypted backup payload written by <see cref="BackupCommand"/>, verifying per-record hashes and Merkle roots against the manifest.</summary>
     /// <returns>0 on success; 1 on validation or import failure.</returns>
     public static async Task<int> RunAsync(WebApplication app, string[] args)
     {
@@ -63,9 +64,9 @@ internal static class RestoreCommand
 
         try
         {
-            var manifestPath = Path.Combine(inputDir, "manifest.json");
-            var entriesPath = Path.Combine(inputDir, "entries.jsonl");
-            var auditPath = Path.Combine(inputDir, "audit.jsonl");
+            var manifestPath = Path.Join(inputDir, "manifest.json");
+            var entriesPath = Path.Join(inputDir, "entries.jsonl");
+            var auditPath = Path.Join(inputDir, "audit.jsonl");
 
             foreach (var path in new[] { manifestPath, entriesPath, auditPath })
             {

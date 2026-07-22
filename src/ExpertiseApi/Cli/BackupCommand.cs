@@ -26,6 +26,7 @@ internal static class BackupCommand
     public static bool IsBackupRequested(string[] args) =>
         args.Length > 0 && args[0].Equals("backup", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Exports all entries and audit rows as NDJSON plus an RFC 6962 Merkle manifest (ADR-012).</summary>
     /// <returns>0 on success; 1 on any database or filesystem failure.</returns>
     public static async Task<int> RunAsync(WebApplication app, string[] args)
     {
@@ -41,9 +42,9 @@ internal static class BackupCommand
         try
         {
             Directory.CreateDirectory(outputDir);
-            var entriesPath = Path.Combine(outputDir, "entries.jsonl");
-            var auditPath = Path.Combine(outputDir, "audit.jsonl");
-            var manifestPath = Path.Combine(outputDir, "manifest.json");
+            var entriesPath = Path.Join(outputDir, "entries.jsonl");
+            var auditPath = Path.Join(outputDir, "audit.jsonl");
+            var manifestPath = Path.Join(outputDir, "manifest.json");
 
             foreach (var path in new[] { entriesPath, auditPath, manifestPath })
             {
