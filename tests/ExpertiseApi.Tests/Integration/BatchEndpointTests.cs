@@ -135,6 +135,25 @@ public class BatchEndpointTests : IAsyncLifetime
     // ---- Shared-tenant override scope escalation -------------------------
 
     [Fact]
+    public async Task Batch_OverlongBodyItem_RejectedWithoutFailingSiblings()
+    {
+        var freshDomain = UniqueDomain();
+        var client = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+
+        var response = await client.PostAsJsonAsync("/expertise/batch", new[]
+        {
+            Item(freshDomain, "within cap", "a normal-sized body"),
+            Item(freshDomain, "over cap", new string('a', 1501)), // #429 MaxBodyLength = 1500
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.MultiStatus);
+        var results = (await response.Content.ReadFromJsonAsync<List<BatchResult>>())!;
+        results[0].Status.Should().Be("Created");
+        results[1].Status.Should().Be("Rejected");
+        results[1].Error.Should().Contain("maximum length of 1500");
+    }
+
+    [Fact]
     public async Task Batch_SharedOverride_ByWriteDraftCaller_ItemRejected()
     {
         var client = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);

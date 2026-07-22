@@ -183,6 +183,39 @@ public class ExpertiseEndpointTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    public async Task CreateEntry_WithOverlongBody_Returns400()
+    {
+        // 1500 is the #429 embedding-window cap (MaxBodyLength in ExpertiseEndpoints).
+        var payload = new { domain = "shared", title = "Overlong", body = new string('a', 1501), entryType = "Pattern", severity = "Info", source = "test" };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("maximum length of 1500");
+    }
+
+    [Fact]
+    public async Task CreateEntry_WithBodyAtLimit_Returns201()
+    {
+        var payload = new { domain = "shared", title = "At limit", body = new string('a', 1500), entryType = "Pattern", severity = "Info", source = "test" };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task UpdateEntry_WithOverlongBody_Returns400()
+    {
+        var entry = await SeedEntryViaRepo("shared", "Patch target");
+
+        var response = await _client.PatchAsJsonAsync($"/expertise/{entry.Id}", new { body = new string('b', 1501) });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("maximum length of 1500");
+    }
+
     private async Task<ExpertiseEntry> SeedEntryViaRepo(
         string domain = "shared",
         string title = "Test",
