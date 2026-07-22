@@ -41,4 +41,9 @@
     <ProjectReference Include="..\..\src\ExpertiseApi\ExpertiseApi.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Golden retrieval-evaluation set (#425) — loaded at runtime by RetrievalEvalTests. -->
+    <None Include="Evaluation\golden-set.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
