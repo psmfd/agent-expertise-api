@@ -216,6 +216,17 @@ internal class ExpertiseRepository(
         if (entry is null)
             return (WriteOutcome.NotFound, null);
 
+        // #330: mutating a shared entry requires write.approve — the same gate
+        // SoftDeleteAsync applies. Without it, a write.draft caller in ANY tenant can
+        // reach a shared Approved entry (ApplyTenantFilter admits Tenant="shared"),
+        // and the ADR-003 regression below would demote it to Draft. A Draft with
+        // Tenant="shared" appears in no tenant's draft queue (ListDraftsAsync filters
+        // on the caller's literal tenant), stranding the entry outside every read and
+        // review surface. 403 (not 404) is correct: the caller can read the entry
+        // under the same TenantContext, so existence is already known.
+        if (entry.Tenant == "shared" && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
+            return (WriteOutcome.InsufficientScope, null);
+
         var beforeHash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
         var beforeVisibility = entry.Visibility;
 
