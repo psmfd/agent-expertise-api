@@ -46,7 +46,7 @@ internal static class SemanticSearchEndpoints
 
         var tenantContext = httpContext.RequireTenantContext();
         var clampedLimit = Math.Clamp(limit, 1, 100);
-        var queryVector = await embeddingService.GenerateEmbeddingAsync(q, ct);
+        var queryVector = await embeddingService.GenerateQueryEmbeddingAsync(q, ct);
         var results = await repo.SemanticSearchAsync(queryVector, tenantContext, clampedLimit, includeDeprecated, ct);
         return Results.Ok(ExpertiseEntryResponse.FromMany(results, hygiene));
     }

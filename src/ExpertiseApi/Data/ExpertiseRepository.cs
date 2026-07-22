@@ -394,31 +394,38 @@ internal class ExpertiseRepository(
             .FirstOrDefaultAsync(ct);
     }
 
-    public async Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated, CancellationToken ct)
+    public async Task<List<ExpertiseEntry>> KeywordSearchAsync(string query, TenantContext ctx, bool includeDeprecated, int limit, CancellationToken ct)
     {
         // Tenant + ReviewState + DeprecatedAt filters live inside the raw SQL alongside
-        // ORDER BY ts_rank because composing LINQ Where on top of FromSqlInterpolated
-        // wraps the original query in a subquery — the planner may then drop the inner
-        // ORDER BY since the subquery has no LIMIT, leaving result order undefined.
+        // ORDER BY because composing LINQ Where on top of FromSqlInterpolated wraps the
+        // original query in a subquery — the planner may then drop the inner ORDER BY
+        // since the subquery has no LIMIT, leaving result order undefined.
+        //
+        // websearch_to_tsquery over plainto_tsquery: adds phrase quoting, OR, and
+        // -negation while never throwing on malformed input. ts_rank_cd over ts_rank:
+        // cover-density ranking rewards term proximity, which performs better on the
+        // short few-word queries agent callers issue (#424).
         var tenant = RequireTenant(ctx);
         var approvedState = nameof(ReviewState.Approved);
 
         if (includeDeprecated)
             return await db.ExpertiseEntries.FromSqlInterpolated($"""
                 SELECT *, xmin FROM "ExpertiseEntries"
-                WHERE "SearchVector" @@ plainto_tsquery('english', {query})
+                WHERE "SearchVector" @@ websearch_to_tsquery('english', {query})
                   AND ("Tenant" = {tenant} OR "Tenant" = 'shared')
                   AND "ReviewState" = {approvedState}
-                ORDER BY ts_rank("SearchVector", plainto_tsquery('english', {query})) DESC
+                ORDER BY ts_rank_cd("SearchVector", websearch_to_tsquery('english', {query})) DESC
+                LIMIT {limit}
                 """).ToListAsync(ct);
 
         return await db.ExpertiseEntries.FromSqlInterpolated($"""
             SELECT *, xmin FROM "ExpertiseEntries"
-            WHERE "SearchVector" @@ plainto_tsquery('english', {query})
+            WHERE "SearchVector" @@ websearch_to_tsquery('english', {query})
               AND ("Tenant" = {tenant} OR "Tenant" = 'shared')
               AND "ReviewState" = {approvedState}
               AND "DeprecatedAt" IS NULL
-            ORDER BY ts_rank("SearchVector", plainto_tsquery('english', {query})) DESC
+            ORDER BY ts_rank_cd("SearchVector", websearch_to_tsquery('english', {query})) DESC
+            LIMIT {limit}
             """).ToListAsync(ct);
     }
 

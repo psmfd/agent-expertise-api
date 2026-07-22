@@ -229,13 +229,15 @@ public class RepositoryQueryTranslationTests
         // ToQueryString on FromSql renders the raw SQL with its parameters — this pins the
         // interpolation/parameterization (it does not validate the tsquery against a live
         // server; SearchEndpointTests covers execution correctness).
+        var limit = 50;
         var query = db.ExpertiseEntries.FromSqlInterpolated($"""
             SELECT *, xmin FROM "ExpertiseEntries"
-            WHERE "SearchVector" @@ plainto_tsquery('english', {q})
+            WHERE "SearchVector" @@ websearch_to_tsquery('english', {q})
               AND ("Tenant" = {tenant} OR "Tenant" = 'shared')
               AND "ReviewState" = {approvedState}
               AND "DeprecatedAt" IS NULL
-            ORDER BY ts_rank("SearchVector", plainto_tsquery('english', {q})) DESC
+            ORDER BY ts_rank_cd("SearchVector", websearch_to_tsquery('english', {q})) DESC
+            LIMIT {limit}
             """);
 
         AssertTranslates(query, "keyword-search raw SQL must parameterize without throwing");
