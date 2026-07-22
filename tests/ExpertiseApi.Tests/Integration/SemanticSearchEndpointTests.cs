@@ -69,6 +69,24 @@ public class SemanticSearchEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Semantic_HitsCarryCosineSimilarityScore()
+    {
+        await SeedApproved(2, "score-domain");
+
+        var response = await ReadClient().GetAsync("/expertise/search/semantic?q=anything&domain=score-domain&limit=10");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var results = await response.Content.ReadFromJsonAsync<JsonElement>();
+        results.GetArrayLength().Should().Be(2);
+        foreach (var entry in results.EnumerateArray())
+        {
+            // Cosine similarity = 1 - distance; bounded regardless of embedding content.
+            entry.GetProperty("score").GetDouble().Should().BeInRange(-1.0, 1.0,
+                "semantic hits carry cosine similarity (#427)");
+        }
+    }
+
+    [Fact]
     public async Task Semantic_FiltersByDomain()
     {
         await SeedApproved(3, "filter-alpha");
