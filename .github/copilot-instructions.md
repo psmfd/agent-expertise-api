@@ -51,13 +51,15 @@ dotnet run --project src/ExpertiseApi
 
 # 4. Test
 curl http://localhost:5000/health
+# POSTs hard-require an Idempotency-Key header (ADR-010) — 400 without one.
 curl -X POST http://localhost:5000/expertise \
   -H "Authorization: Bearer dev-api-key-change-me" \
+  -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
   -d '{"domain":"shared","title":"Test","body":"Test entry","entryType":"Pattern","severity":"Info","source":"human"}'
 ```
 
-All endpoints except `/health` require `Authorization: Bearer <api-key>`. OpenAPI docs at `/scalar/v1`.
+All endpoints require a Bearer token in the Authorization header except the anonymous surfaces: `/health`, `/health/live`, `/health/ready`, `/metrics`, `/openapi/v1.json`, and `/query`. OpenAPI docs at `/scalar/v1` (Development only).
 
 ## Model Files
 
@@ -72,8 +74,8 @@ This is required before `docker build` and for local semantic search. The script
 ## CI/CD
 
 - `ci.yml`: runs `dotnet build` + `dotnet test` on PRs to main and pushes to dev
-- `release.yml`: runs on merge to main — downloads models (cached), builds multi-arch Docker image (amd64 + arm64), pushes to `ghcr.io/thesemicolon/agent-expertise-api`
+- `release.yml`: runs on merge to main — downloads models (cached), builds multi-arch Docker image (amd64 + arm64), pushes to `ghcr.io/psmfd/agent-expertise-api`
 
 ## Architecture & Design
 
-For data model, API surface, authentication, embedding architecture, deployment topology, and known gotchas, see `.claude/skills/expertise-api-design/SKILL.md` (authoritative reference). Use the `@expertise-api-owner` agent for design and implementation questions.
+For data model, API surface, authentication, embedding architecture, deployment topology, and known gotchas, see `.agents/skills/expertise-api/references/DESIGN.md` (authoritative reference; the old `.claude/skills/expertise-api-design/` path is a deprecated shim). Use the `@expertise-api-owner` agent for design and implementation questions.

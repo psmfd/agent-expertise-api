@@ -69,10 +69,10 @@ The `package.json` pins `@earendil-works/pi-coding-agent` to a version that ship
 
 ## Schemas
 
-Hand-written `Type.Object(...)` from `typebox` for v1 (see issue [#148](https://github.com/TheSemicolon/agent-expertise-api/issues/148)). Codegen from the published OpenAPI document (`/openapi/v1.json` or the release-asset `openapi.json`) is a follow-up; the hand-written schemas only need to round-trip the public-facing fields, which are stable per ADR-008.
+Hand-written `Type.Object(...)` from `typebox` for v1 (issue [#148](https://github.com/psmfd/agent-expertise-api/issues/148)). Codegen from the published OpenAPI document (`/openapi/v1.json` or the release-asset `openapi.json`) is a follow-up; the hand-written schemas only need to round-trip the public-facing fields, which are stable per ADR-008.
 
 ## Out of scope (tracked separately)
 
-- Slash-command shortcuts (`/expertise-search`, `/expertise-create`, `/expertise-approve`) — issue [#149](https://github.com/TheSemicolon/agent-expertise-api/issues/149).
+- Slash-command shortcuts (`/expertise-search`, `/expertise-create`, `/expertise-approve`) — shipped at `.pi/prompts/` (issue [#149](https://github.com/psmfd/agent-expertise-api/issues/149)).
 - npm/git package publish for cross-repo install — follow-up once the extension stabilises.
 - Typebox-schema codegen from `openapi.json` — follow-up.

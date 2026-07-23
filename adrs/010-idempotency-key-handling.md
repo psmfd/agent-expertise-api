@@ -3,8 +3,8 @@
 - Status: accepted (hard-require since 2026-05-19; see [Amendment 1](#amendment-1--hard-require-flip-2026-05-19) and [Amendment 2](#amendment-2--warning-code-reconciliation-2026-05-19) at the bottom of this file)
 - Date: 2026-05-19
 - Companion: [`docs/security/integration-threat-model.md`](../docs/security/integration-threat-model.md) Part D C3
-- Tracking issue: [#188](https://github.com/TheSemicolon/agent-expertise-api/issues/188)
-- Follow-ups: [#205](https://github.com/TheSemicolon/agent-expertise-api/issues/205) (skill caller, shipped in PR #211), [#206](https://github.com/TheSemicolon/agent-expertise-api/issues/206) (pi extension caller, shipped in PR #212)
+- Tracking issue: [#188](https://github.com/psmfd/agent-expertise-api/issues/188)
+- Follow-ups: [#205](https://github.com/psmfd/agent-expertise-api/issues/205) (skill caller, shipped in PR #211), [#206](https://github.com/psmfd/agent-expertise-api/issues/206) (pi extension caller, shipped in PR #212)
 
 ## Context and Problem Statement
 

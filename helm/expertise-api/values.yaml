@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/thesemicolon/agent-expertise-api
+  repository: ghcr.io/psmfd/agent-expertise-api
   # Empty default falls back to .Chart.AppVersion in deployment.yaml. Override
   # only when pinning to a maintenance/preview tag distinct from the chart's
   # appVersion (image+chart skew is then surfaced in NOTES.txt as a warning).
