@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.SemanticKernel.Connectors.Onnx;
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
 using ExpertiseApi.Models;
@@ -60,7 +61,8 @@ public sealed class RetrievalEvalTests(PostgresFixture postgres, ITestOutputHelp
             return; // the [EvalFact] skip fires before the test body; nothing to set up.
 
         var services = new ServiceCollection();
-        services.AddBertOnnxEmbeddingGenerator(ModelFiles.ModelPath!, ModelFiles.VocabPath!);
+        services.AddBertOnnxEmbeddingGenerator(ModelFiles.ModelPath!, ModelFiles.VocabPath!,
+            new BertOnnxOptions { MaximumTokens = EmbeddingModelInfo.MaximumTokens });
         _onnxProvider = services.BuildServiceProvider();
         _embedding = new EmbeddingService(
             _onnxProvider.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>());
