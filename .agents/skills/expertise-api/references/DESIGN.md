@@ -112,7 +112,7 @@ Single-row `EmbeddingMetadata` table tracks model name, dimensions, and `LastRee
 | GET | `/expertise/{id}` | `expertise.read` | Single entry | |
 | POST | `/expertise` | `expertise.write.draft` | Create entry (generates embedding) | |
 | POST | `/expertise/batch` | `expertise.write.draft` | Create up to 100 entries (generates embeddings, deduplicates) | Max 100 entries per batch |
-| PATCH | `/expertise/{id}` | `expertise.write.draft` | Update entry (regenerates embedding if title/body changed). Changing `visibility` requires `expertise.write.approve`. | |
+| PATCH | `/expertise/{id}` | `expertise.write.draft` | Update entry (regenerates embedding if title/body changed). Changing `visibility` — or PATCHing a `shared` entry at all (#330) — requires `expertise.write.approve`. | Title ≤ 200 / Body ≤ 1500 chars |
 | DELETE | `/expertise/{id}` | `expertise.write.draft` | Soft delete (sets DeprecatedAt). Shared entries require `expertise.write.approve`. | |
 | GET | `/expertise/drafts` | `expertise.write.approve` | List Draft + Rejected entries in caller's tenant | |
 | POST | `/expertise/{id}/approve` | `expertise.write.approve` | Transition Draft → Approved | |
@@ -238,10 +238,10 @@ src/ExpertiseApi/
   Endpoints/               # Minimal API endpoint definitions
   Models/                  # ExpertiseEntry, EmbeddingMetadata, enums (EntryType, Severity)
   Data/                    # DbContext, IExpertiseRepository, ExpertiseRepository, DesignTimeDbContextFactory
-  Migrations/              # EF Core migrations (InitialCreate, AddSearchVector)
+  Migrations/              # EF Core migrations (nine and counting — InitialCreate through the secure-rebuild/search additions)
   Services/                # EmbeddingService, DeduplicationService
   Auth/                    # ApiKeyAuthHandler, AuthExtensions, AuthConstants
-  Cli/                     # ReembedCommand, RehashCommand
+  Cli/                     # ReembedCommand, RehashCommand, MigrateCommand, BackupCommand, RestoreCommand
   models/                  # ONNX model files (bge-micro-v2) — not committed, needed at runtime
 helm/expertise-api/        # Helm chart (shared templates, generic values)
 deploy/local/              # Docker Compose, .env.example, pgvector init script
