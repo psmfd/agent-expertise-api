@@ -72,7 +72,15 @@ jobs:
       - name: Format gate (analyzers must be clean)
         run: dotnet format analyzers ExpertiseApi.slnx --verify-no-changes
 
+      - name: Cache ONNX model files
+        id: model-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/ExpertiseApi/models
+          key: onnx-models-${{ hashFiles('scripts/download-models.sh') }}
+
       - name: Download ONNX model files
+        if: steps.model-cache.outputs.cache-hit != 'true'
         run: bash scripts/download-models.sh
 
       - name: Test
@@ -176,6 +184,9 @@ jobs:
 
       - name: Run version resolver stdout-purity tests (#440)
         run: bash tests/install/test-resolve-version.sh
+
+      - name: Run model-download staleness tests (#456)
+        run: bash tests/install/test-download-models.sh
 
   install-script-guards:
     name: install/uninstall script guard tests (#242)

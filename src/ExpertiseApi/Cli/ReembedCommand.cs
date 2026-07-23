@@ -52,10 +52,15 @@ internal static class ReembedCommand
         var metadata = await db.EmbeddingMetadata.FirstOrDefaultAsync()
             ?? db.EmbeddingMetadata.Add(new EmbeddingMetadata
             {
-                ModelName = "bge-micro-v2",
-                Dimensions = 384
+                ModelName = EmbeddingModelInfo.Name,
+                Dimensions = EmbeddingModelInfo.Dimensions
             }).Entity;
 
+        // Always overwrite — a pre-existing row may describe a previous model
+        // (#455); after a full reembed the stored vectors are, by construction,
+        // the current model's.
+        metadata.ModelName = EmbeddingModelInfo.Name;
+        metadata.Dimensions = EmbeddingModelInfo.Dimensions;
         metadata.LastReembedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
