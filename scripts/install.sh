@@ -7,7 +7,8 @@
 # deploy/local/docker-compose.yml; for k8s see helm/expertise-api/.
 #
 # Usage:
-#   scripts/install.sh [--prefix DIR] [--bind ADDR:PORT] [--system]
+#   scripts/install.sh [--prefix DIR] [--bind ADDR:PORT] [--allow-plaintext-bind]
+#                      [--system]
 #                      [--publish-mode fdd|scd] [--skip-preflight]
 #                      [--rid RID] [--fix-line-endings]
 #                      [--allow-system-prefix]
@@ -107,6 +108,7 @@ SECRETS_SCHEMA_VERSION=2
 INSTALL_SCOPE="user"          # user | system
 PUBLISH_MODE="fdd"            # fdd | scd
 BIND_ADDR="127.0.0.1:8080"
+ALLOW_PLAINTEXT_BIND=0
 SKIP_PREFLIGHT=0
 EXPLICIT_RID=""
 PREFIX_OVERRIDE=""
@@ -131,6 +133,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix)            PREFIX_OVERRIDE="${2:?--prefix needs a path}"; shift 2 ;;
     --bind)              BIND_ADDR="${2:?--bind needs ADDR:PORT}"; shift 2 ;;
+    --allow-plaintext-bind) ALLOW_PLAINTEXT_BIND=1; shift ;;
     --system)            INSTALL_SCOPE="system"; shift ;;
     --publish-mode)      PUBLISH_MODE="${2:?--publish-mode needs fdd|scd}"; shift 2 ;;
     --skip-preflight)    SKIP_PREFLIGHT=1; shift ;;
@@ -448,6 +451,28 @@ release_lock() {
 # ---------------------------------------------------------------------------
 # Pre-flight
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Non-loopback bind guard (#332). ASPNETCORE_URLS is hardcoded http:// on this
+# path — no TLS is configured — so a non-loopback bind serves Bearer/API-key
+# credentials in cleartext. AllowedHosts is NOT a mitigation (HostFiltering
+# only checks the Host header, which a direct client sets freely). The
+# sanctioned LAN topology keeps the API on loopback behind a co-located TLS
+# edge (deploy/lan-static-oidc/RUNBOOK.md); --allow-plaintext-bind exists for
+# a remote TLS edge, where the operator accepts cleartext on that segment.
+# ---------------------------------------------------------------------------
+check_bind_plaintext() {
+  local host="${BIND_ADDR%:*}"
+  case "${host}" in
+    127.*|localhost|::1|\[::1\]) return 0 ;;
+  esac
+  if (( ALLOW_PLAINTEXT_BIND == 1 )); then
+    warn "non-loopback bind ${BIND_ADDR} serves credentials over PLAINTEXT http (--allow-plaintext-bind accepted)"
+    warn "ensure a TLS edge terminates in front of every client segment — see deploy/lan-static-oidc/RUNBOOK.md"
+  else
+    err "refusing non-loopback --bind ${BIND_ADDR}: this path serves http:// only, so bearer credentials would cross the network in cleartext. Keep the default loopback bind behind a co-located TLS edge (deploy/lan-static-oidc/RUNBOOK.md), or pass --allow-plaintext-bind if a remote TLS edge terminates for clients and you accept plaintext on that segment."
+  fi
+}
+
 preflight() {
   STAGE="preflight"
   log "pre-flight: OS=${OS} RID=${RID} scope=${INSTALL_SCOPE} mode=${PUBLISH_MODE}"
@@ -515,6 +540,7 @@ preflight() {
   fi
   log "disk space: ${avail_mib} MiB"
 
+  check_bind_plaintext
   check_secrets_line_endings
 }
 
@@ -750,7 +776,9 @@ ensure_config_stubs() {
 #   Auth__Oidc__Issuers__2__JwksPath="${CONFIG_DIR}/jwks.json"   # local public JWKS; no HTTPS fetch
 #   AllowedHosts="your-lan-hostname"                             # else HostFiltering 400s the LAN Host
 #   ForwardedHeaders__KnownNetworks__0="10.0.0.0/24"             # proxy CIDR; else audit IP = the proxy
-# and a non-loopback bind (default is 127.0.0.1:8080): scripts/install.sh --bind 0.0.0.0:8080
+# and — ONLY if the TLS edge runs on a DIFFERENT host — a non-loopback bind
+# (requires --allow-plaintext-bind; credentials cross that segment in cleartext).
+# With the edge co-located (the runbook topology), keep the default 127.0.0.1:8080.
 # Full runbook: deploy/lan-static-oidc/RUNBOOK.md
 #
 # Aggregator up-sync (ADR-013, spoke role only — leave unset for a standalone

@@ -79,7 +79,11 @@ Copy `oidc/jwks.json` to the API host, e.g. `~/.config/expertise-api/jwks.json`.
 Install (or re-run) with a LAN bind, and add the issuer to `secrets.env`:
 
 ```bash
-scripts/install.sh --bind 0.0.0.0:8080
+# Edge co-located (this runbook's topology — Caddy proxies to loopback):
+scripts/install.sh                       # default bind 127.0.0.1:8080 is correct
+# Edge on a DIFFERENT host only: bind the LAN address and accept plaintext
+# between edge and API (requires the explicit override):
+# scripts/install.sh --bind 0.0.0.0:8080 --allow-plaintext-bind
 ```
 ```sh
 # ~/.config/expertise-api/secrets.env
