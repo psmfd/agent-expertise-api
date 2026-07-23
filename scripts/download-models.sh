@@ -75,10 +75,20 @@ download_file() {
     existing_size=$(wc -c < "${dest}")
     if (( existing_size >= min_bytes )); then
       log "${filename} already present — verifying checksum"
-      verify_checksum "${dest}" "${expected_sha256}"
-      return 0
+      local existing_sha
+      existing_sha=$(sha256_of "${dest}")
+      if [[ "${existing_sha}" == "${expected_sha256}" ]]; then
+        log "  ${filename}: checksum OK"
+        return 0
+      fi
+      # A mismatching existing file is stale (model version bump) or corrupt —
+      # re-download instead of aborting, so upgrade installs pick up new model
+      # files automatically (#456). verify_checksum after the download is still
+      # the hard gate: a bad upstream file aborts as before.
+      log "  ${filename} checksum mismatch (expected ${expected_sha256}, got ${existing_sha}) — stale or corrupt; re-downloading"
+    else
+      log "  ${filename} exists but is suspiciously small (${existing_size} bytes) — re-downloading"
     fi
-    log "  ${filename} exists but is suspiciously small (${existing_size} bytes) — re-downloading"
   fi
 
   log "Downloading ${display_name}..."

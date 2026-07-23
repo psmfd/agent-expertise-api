@@ -97,10 +97,14 @@ internal class ExpertiseDbContext(
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.ModelName).IsRequired();
+            // Singleton-row invariant is enforced by a raw-SQL unique index over a
+            // constant expression (UX_EmbeddingMetadata_Singleton, #455) — EF's
+            // fluent API cannot express it, so it lives only in the migration.
         });
 
         // Spoke-side up-sync cursor (ADR-013). Singleton-row semantics are enforced at
-        // the call site (get-or-create), matching EmbeddingMetadata — no unique guard.
+        // the call site (get-or-create) — sole writer is the sync worker, so the
+        // EmbeddingMetadata-style DB guard (#455) is not replicated here.
         modelBuilder.Entity<SyncState>(entity =>
         {
             entity.HasKey(e => e.Id);

@@ -78,6 +78,53 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Reembed_OverwritesStaleEmbeddingMetadata()
+    {
+        // #455: a pre-existing metadata row describing a PREVIOUS model must be
+        // corrected by reembed — after a full reembed the stored vectors are, by
+        // construction, the current model's. The pre-fix get-or-create only
+        // stamped LastReembedAt and left the stale identity in place.
+        await using (var db = NewContext())
+        {
+            db.EmbeddingMetadata.Add(new EmbeddingMetadata
+            {
+                ModelName = "previous-model",
+                Dimensions = 999,
+                LastReembedAt = DateTime.UtcNow.AddDays(-30)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var app = BuildApp())
+            await ReembedCommand.RunAsync(app, ["reembed"]);
+
+        await using var verify = NewContext();
+        var metadata = await verify.EmbeddingMetadata.SingleAsync();
+        metadata.ModelName.Should().Be("bge-micro-v2");
+        metadata.Dimensions.Should().Be(384);
+        metadata.LastReembedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
+    }
+
+    [Fact]
+    public async Task EmbeddingMetadata_SecondRow_IsRejectedByDbSingletonGuard()
+    {
+        // #455: the singleton invariant is enforced at the DB level
+        // (UX_EmbeddingMetadata_Singleton) so a get-or-create race duplicates
+        // loudly instead of silently.
+        await using (var db = NewContext())
+        {
+            db.EmbeddingMetadata.Add(new EmbeddingMetadata { ModelName = "m1", Dimensions = 1 });
+            await db.SaveChangesAsync();
+        }
+
+        await using var second = NewContext();
+        second.EmbeddingMetadata.Add(new EmbeddingMetadata { ModelName = "m2", Dimensions = 2 });
+        var act = () => second.SaveChangesAsync();
+        await act.Should().ThrowAsync<DbUpdateException>(
+            "the unique constant-expression index must reject a second metadata row");
+    }
+
+    [Fact]
     public async Task Rehash_BackfillsNullHashes_AndIsIdempotent()
     {
         var ids = new List<Guid>();
