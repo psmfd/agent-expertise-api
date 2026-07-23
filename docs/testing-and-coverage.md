@@ -139,6 +139,14 @@ paraphrases return empty — `websearch_to_tsquery` ANDs all terms), semantic 1.
 recall@10 / 0.894 MRR. Grow `golden-set.json` whenever a real agent query misses:
 add the query with its expected entry titles.
 
+A sibling suite, `NeedleEvalTests` (#437), gates long-context retrieval: eight
+deterministic ~8-10k-char documents with a distinctive fact planted at controlled
+depths, ranked through the same repository search paths. Its floors are
+**window-aware** — only needles whose worst-case token position fits inside
+`EmbeddingModelInfo.MaximumTokens` are asserted — so the suite passes at any
+ceiling and automatically activates deeper needles when the ceiling is raised
+(the #437 model swap). Same `EXPERTISE_EVAL=1` gating, filter `~NeedleEval`.
+
 ## Verifying a guard actually guards
 
 When adding or changing a guard, prove it catches the failure it targets: reintroduce the
