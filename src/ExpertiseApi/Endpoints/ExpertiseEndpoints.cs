@@ -213,6 +213,21 @@ internal static class ExpertiseEndpoints
               "Content past the embedding window is invisible to semantic search; shorten the body or split the entry."
             : null;
 
+    // MaxTitleLength (#436): Title shares the 512-token embedding budget with Body
+    // (BuildInputText embeds "{title} {body}"); the MaxBodyLength derivation reserves
+    // ~40 tokens for Title, which 200 chars comfortably respects (observed corpus max
+    // is 142). Same guard shape as MaxBodyLength/MaxRejectionReasonLength.
+    private const int MaxTitleLength = 200;
+
+    private static string? TitleLengthError(string? title) =>
+        title is { Length: > MaxTitleLength }
+            ? $"Title exceeds maximum length of {MaxTitleLength} characters (got {title.Length}). " +
+              "Title shares the embedding window with Body; keep titles concise and put detail in the body."
+            : null;
+
+    private static string? LengthError(CreateExpertiseRequest request) =>
+        TitleLengthError(request.Title) ?? BodyLengthError(request.Body);
+
     private static async Task<IResult> CreateEntry(
         CreateExpertiseRequest request,
         HttpContext httpContext,
@@ -226,8 +241,8 @@ internal static class ExpertiseEndpoints
         if (!IsRequestValid(request))
             return Results.Problem("Domain, Title, Body, and Source are required.", statusCode: 400);
 
-        if (BodyLengthError(request.Body) is { } bodyError)
-            return Results.Problem(bodyError, statusCode: 400);
+        if (LengthError(request) is { } lengthError)
+            return Results.Problem(lengthError, statusCode: 400);
 
         var tenantContext = httpContext.RequireTenantContext();
 
@@ -268,8 +283,8 @@ internal static class ExpertiseEndpoints
     {
         var tenantContext = httpContext.RequireTenantContext();
 
-        if (BodyLengthError(request.Body) is { } bodyError)
-            return Results.Problem(bodyError, statusCode: 400);
+        if ((TitleLengthError(request.Title) ?? BodyLengthError(request.Body)) is { } lengthError)
+            return Results.Problem(lengthError, statusCode: 400);
 
         var needsReembed = request.Title is not null || request.Body is not null;
 
@@ -347,9 +362,9 @@ internal static class ExpertiseEndpoints
                 continue;
             }
 
-            if (BodyLengthError(requests[i].Body) is { } bodyError)
+            if (LengthError(requests[i]) is { } lengthError)
             {
-                results[i] = new BatchEntryResult(i, BatchEntryStatus.Rejected, null, bodyError);
+                results[i] = new BatchEntryResult(i, BatchEntryStatus.Rejected, null, lengthError);
                 continue;
             }
 

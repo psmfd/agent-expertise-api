@@ -83,9 +83,10 @@ cat > /tmp/entry.json <<'EOF'
 }
 EOF
 ./scripts/create.sh --file /tmp/entry.json
-# NOTE: body is capped at 1500 characters (HTTP 400 beyond that). The embedding
-# model sees at most ~510 tokens of "title + body"; longer text would be silently
-# invisible to semantic search, so keep bodies focused or split into entries.
+# NOTE: title is capped at 200 characters and body at 1500 (HTTP 400 beyond).
+# The embedding model sees at most ~510 tokens of "title + body"; longer text
+# would be silently invisible to semantic search, so keep titles concise and
+# bodies focused — split large topics into multiple entries.
 
 # Approve / reject (requires expertise.write.approve)
 ./scripts/approve.sh 0193b8c4-...
