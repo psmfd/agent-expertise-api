@@ -143,5 +143,5 @@ For the underlying schema, scope hierarchy, approval state machine, audit log sh
 
 ## Related
 
-- pi extension `expertise-api` (typed tools, same operations): see repo `.pi/extensions/expertise-api/` once shipped (tracked in [#148](https://github.com/TheSemicolon/agent-expertise-api/issues/148)).
-- pi prompt templates `/expertise-search`, `/expertise-create`, `/expertise-approve`: tracked in [#149](https://github.com/TheSemicolon/agent-expertise-api/issues/149).
+- pi extension `expertise-api` (typed tools, same operations): shipped in-tree at `.pi/extensions/expertise-api/` (#148).
+- pi prompt templates `/expertise-search`, `/expertise-create`, `/expertise-approve`: shipped at `.pi/prompts/` (#149).

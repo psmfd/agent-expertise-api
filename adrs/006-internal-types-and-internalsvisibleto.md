@@ -47,6 +47,6 @@ The API project already grants `InternalsVisibleTo("ExpertiseApi.Tests")`. This 
 
 ## References
 
-- Issue: [#101](https://github.com/TheSemicolon/agent-expertise-api/issues/101)
+- Issue: [#101](https://github.com/psmfd/agent-expertise-api/issues/101)
 - PR: this ADR's PR (the CA1515 sweep)
 - Related: [ADR-004](004-security-scanning-stack.md) records the original 201-warning baseline; this ADR moves CA1515 (the largest contributor) toward closure.

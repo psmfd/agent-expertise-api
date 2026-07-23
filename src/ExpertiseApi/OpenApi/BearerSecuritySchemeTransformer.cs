@@ -61,10 +61,11 @@ internal sealed class BearerSecuritySchemeTransformer : IOpenApiDocumentTransfor
             Description = "JWT bearer token obtained from the configured OIDC issuer. " +
                           "In production (Auth:Mode=Oidc, enforced by EnforceModeGuard) this is the only " +
                           "accepted credential. In Development Auth:Mode=Hybrid additionally accepts a " +
-                          "static API key via the `X-Api-Key` header or `Authorization: Bearer <api-key>` " +
-                          "and a `dev:{tenant}:{scope}` LocalDev token \u2014 those modes are not advertised " +
-                          "in this document. Required scopes per operation are not yet in the spec; see " +
-                          "the README \"Auth scopes\" section for the read/write/admin matrix.",
+                          "static API key or a `dev:{tenant}:{scope}` LocalDev token, both supplied via " +
+                          "`Authorization: Bearer <value>` \u2014 every credential type uses the Authorization " +
+                          "header; there is no `X-Api-Key` header (#331). Required scopes per operation are " +
+                          "not yet in the spec; see the README \"Auth scopes\" section for the " +
+                          "read/write/admin matrix.",
         };
 
         document.Components ??= new OpenApiComponents();

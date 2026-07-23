@@ -183,7 +183,7 @@ jobs:
       # ---- Helm chart OCI publish + signing ---------------------------------
       # Publish the chart as an OCI artifact alongside the image, then sign
       # it with the same keyless OIDC identity. Consumers can install via
-      # `helm install foo oci://ghcr.io/thesemicolon/charts/expertise-api`.
+      # `helm install foo oci://ghcr.io/psmfd/charts/expertise-api`.
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
