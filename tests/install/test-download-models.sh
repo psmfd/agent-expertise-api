@@ -9,8 +9,9 @@
 #
 # Covers:
 #   1. stale oversized file → "re-downloading" path taken (not the old
-#      "Delete the file and re-run" abort), and a bad downloaded payload still
-#      aborts via the post-download checksum gate
+#      "Delete the file and re-run" abort); a bad downloaded payload aborts via
+#      the TEMP-FILE checksum gate, the previous file is left untouched
+#      (verify-before-move — review finding 2026-07-23), and no temp files leak
 #   2. missing file + failing network → clean download-failure abort
 #   3. undersized file → existing "suspiciously small" re-download path intact
 #
@@ -82,18 +83,26 @@ else
   fail "stale file: expected 're-downloading' in output, got: $out1"
 fi
 
-if printf '%s' "$out1" | grep -q "checksum mismatch" && [ "$rc1" -ne 0 ]; then
-  ok "bad downloaded payload still aborts via post-download checksum gate (rc=$rc1)"
+if printf '%s' "$out1" | grep -q "failed checksum" && [ "$rc1" -ne 0 ]; then
+  ok "bad downloaded payload aborts via the temp-file checksum gate (rc=$rc1)"
 else
-  fail "post-download gate: expected checksum-mismatch abort, rc=$rc1, output: $out1"
+  fail "download gate: expected temp-file checksum abort, rc=$rc1, output: $out1"
 fi
 
-# The stale file must have been REPLACED by the downloaded payload (all-x),
-# proving the download actually ran rather than the old abort-in-place.
+# Verify-before-move: the failed download must NOT have replaced the existing
+# file (its zero-byte content must survive; the stub payload is all 'x').
 if grep -q 'xxxx' "${DEST1}/model.onnx" 2>/dev/null; then
-  ok "stale file was replaced by the re-downloaded payload"
+  fail "destination was overwritten by an unverified payload (mv-before-verify regression)"
 else
-  fail "stale file content unchanged — re-download never wrote the destination"
+  ok "previous file left untouched after failed re-download"
+fi
+
+# And the rejected temp file must have been cleaned up.
+leftover=$(find "${DEST1}" -name 'model.onnx.*' | wc -l | tr -d ' ')
+if [ "$leftover" = "0" ]; then
+  ok "no temp files leaked after checksum rejection"
+else
+  fail "found $leftover leftover temp file(s) in ${DEST1}"
 fi
 
 # --- 2. missing file + network failure --------------------------------------

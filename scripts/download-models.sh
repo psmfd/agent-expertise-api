@@ -53,19 +53,6 @@ sha256_of() {
   fi
 }
 
-# Verify SHA-256 checksum of a file.
-# Args: <file> <expected_sha256>
-verify_checksum() {
-  local file="$1" expected="$2"
-  local filename="${file##*/}"
-  local actual
-  actual=$(sha256_of "${file}")
-  if [[ "${actual}" != "${expected}" ]]; then
-    err "${filename} checksum mismatch (expected ${expected}, got ${actual}). Delete the file and re-run, or check if the upstream model changed."
-  fi
-  log "  ${filename}: checksum OK"
-}
-
 # Download a single file if missing or suspiciously small.
 # Args: <dest_file> <url> <min_bytes> <display_name> <expected_sha256>
 download_file() {
@@ -85,8 +72,8 @@ download_file() {
       fi
       # A mismatching existing file is stale (model version bump) or corrupt —
       # re-download instead of aborting, so upgrade installs pick up new model
-      # files automatically (#456). verify_checksum after the download is still
-      # the hard gate: a bad upstream file aborts as before.
+      # files automatically (#456). The temp-file checksum below is still the
+      # hard gate: a bad upstream file aborts as before.
       log "  ${filename} checksum mismatch (expected ${expected_sha256}, got ${existing_sha}) — stale or corrupt; re-downloading"
     else
       log "  ${filename} exists but is suspiciously small (${existing_size} bytes) — re-downloading"
@@ -104,14 +91,24 @@ download_file() {
   # hard outage cannot stall the install indefinitely.
   curl -fsSL --retry 8 --retry-max-time 300 --retry-all-errors "${url}" -o "${tmpfile}" \
     || { rm -f "${tmpfile}"; err "Failed to download ${filename} from ${url}"; }
-  mv "${tmpfile}" "${dest}"
 
+  # Size + checksum are verified on the TEMP file, and the destination is only
+  # replaced after both pass (atomic-on-success). Moving before verifying let a
+  # failed re-download overwrite the existing file with unverified bytes
+  # (review finding, 2026-07-23).
   local size
-  size=$(wc -c < "${dest}")
-  (( size < min_bytes )) && err "${filename} is suspiciously small (${size} bytes). Check the URL."
-  log "  ${filename}: ${size} bytes"
+  size=$(wc -c < "${tmpfile}")
+  (( size < min_bytes )) && { rm -f "${tmpfile}"; err "${filename} is suspiciously small (${size} bytes). Check the URL."; }
 
-  verify_checksum "${dest}" "${expected_sha256}"
+  local actual
+  actual=$(sha256_of "${tmpfile}")
+  if [[ "${actual}" != "${expected_sha256}" ]]; then
+    rm -f "${tmpfile}"
+    err "${filename} downloaded file failed checksum (expected ${expected_sha256}, got ${actual}). Upstream may have changed — verify HF_BASE and the pinned SHA-256; any pre-existing ${filename} was left untouched."
+  fi
+
+  mv "${tmpfile}" "${dest}"
+  log "  ${filename}: ${size} bytes, checksum OK"
 }
 
 mkdir -p "${DEST_DIR}"

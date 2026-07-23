@@ -112,7 +112,7 @@ Single-row `EmbeddingMetadata` table tracks model name, dimensions, and `LastRee
 | GET | `/expertise/{id}` | `expertise.read` | Single entry | |
 | POST | `/expertise` | `expertise.write.draft` | Create entry (generates embedding) | |
 | POST | `/expertise/batch` | `expertise.write.draft` | Create up to 100 entries (generates embeddings, deduplicates) | Max 100 entries per batch |
-| PATCH | `/expertise/{id}` | `expertise.write.draft` | Update entry (regenerates embedding if title/body changed). Changing `visibility` — or PATCHing a `shared` entry at all (#330) — requires `expertise.write.approve`. | Title ≤ 200 / Body ≤ 1500 chars |
+| PATCH | `/expertise/{id}` | `expertise.write.draft` | Update entry (regenerates embedding if title/body changed). Changing `visibility` — or PATCHing a `shared` entry at all (#330) — requires `expertise.write.approve`. | Title ≤ 200 / Body ≤ 16000 chars |
 | DELETE | `/expertise/{id}` | `expertise.write.draft` | Soft delete (sets DeprecatedAt). Shared entries require `expertise.write.approve`. | |
 | GET | `/expertise/drafts` | `expertise.write.approve` | List Draft + Rejected entries in caller's tenant | |
 | POST | `/expertise/{id}/approve` | `expertise.write.approve` | Transition Draft → Approved | |

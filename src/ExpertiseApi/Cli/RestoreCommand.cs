@@ -25,8 +25,9 @@ namespace ExpertiseApi.Cli;
 ///   * v1 is <c>--mode replace</c> only: target tables must be empty.
 ///   * Pending EF migrations → abort (MigrateCommand idiom).
 ///   * Manifest embedding model vs live EmbeddingMetadata mismatch → abort loudly,
-///     directing to <c>reembed</c>. Embeddings whose dimensions don't fit the
-///     vector(384) column are skipped (regenerable), never a reason to abort.
+///     directing to <c>reembed</c>. Embeddings whose dimensions don't fit the live
+///     vector(N) column (N = <see cref="EmbeddingModelInfo.Dimensions"/>) are
+///     skipped (regenerable), never a reason to abort.
 /// </summary>
 internal static class RestoreCommand
 {

@@ -43,6 +43,52 @@ public class EmbeddingServiceTests
     }
 
     [Fact]
+    public async Task GenerateEmbeddingAsync_BoundsInferenceConcurrency_ToOne()
+    {
+        // Review finding 2026-07-23: a ceiling-filling embed transiently peaks
+        // ~12 GB RSS (ADR-017), so overlapping inference is the memory-exhaustion
+        // vector on the A2 single host. This pins the InferenceGate: N parallel
+        // callers must never observe more than one in-flight generator call.
+        var inFlight = 0;
+        var maxObserved = 0;
+        var generator = Substitute.For<IEmbeddingGenerator<string, Embedding<float>>>();
+        generator.GenerateAsync(
+                Arg.Any<IEnumerable<string>>(),
+                Arg.Any<EmbeddingGenerationOptions?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(async ci =>
+            {
+                var now = Interlocked.Increment(ref inFlight);
+                InterlockedExtensionsMax(ref maxObserved, now);
+                await Task.Delay(30);
+                Interlocked.Decrement(ref inFlight);
+                var res = new GeneratedEmbeddings<Embedding<float>>();
+                foreach (var input in ci.ArgAt<IEnumerable<string>>(0))
+                    res.Add(new Embedding<float>(TestHelpers.CreateContentEmbedding(input)));
+                return res;
+            });
+
+        var service = new EmbeddingService(generator);
+        await Task.WhenAll(Enumerable.Range(0, 6).Select(i =>
+            i % 2 == 0
+                ? service.GenerateEmbeddingAsync($"text {i}")
+                : (Task)service.GenerateBatchAsync([$"batch {i}"])));
+
+        maxObserved.Should().Be(1,
+            "the static inference gate must serialize ONNX calls across single and batch paths");
+    }
+
+    private static void InterlockedExtensionsMax(ref int target, int candidate)
+    {
+        int snapshot;
+        while (candidate > (snapshot = Volatile.Read(ref target)))
+        {
+            if (Interlocked.CompareExchange(ref target, candidate, snapshot) == snapshot)
+                break;
+        }
+    }
+
+    [Fact]
     public void BuildInputText_RemainsUnprefixed()
     {
         // jina-v2-small embeds queries and documents symmetrically with NO

@@ -725,6 +725,11 @@ publish_app_staged() {
 # ---------------------------------------------------------------------------
 ensure_models() {
   STAGE="models"
+  # Same symlink-TOCTOU refusal as every other mutated path in this script
+  # (STAGE_DIR/OLD_DIR/VERSION_MARKER/install.env) — a pre-planted symlink
+  # here would redirect the model download outside the prefix (review
+  # finding, 2026-07-23).
+  if [[ -L "${MODEL_DIR}" ]]; then err "${MODEL_DIR} exists as a symlink — refusing to overwrite (potential TOCTOU)"; fi
   # Always delegate to download-models.sh — it skips files whose checksum
   # matches the pinned SHA-256 and re-downloads stale ones, so upgrade
   # installs pick up a model version bump. Gating on file existence here

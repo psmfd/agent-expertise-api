@@ -419,10 +419,7 @@ var vocabPath = builder.Configuration["Onnx:VocabPath"] ?? Path.Combine(baseDir,
 if (File.Exists(modelPath) && File.Exists(vocabPath))
 {
     builder.Services.AddBertOnnxEmbeddingGenerator(modelPath, vocabPath,
-        new Microsoft.SemanticKernel.Connectors.Onnx.BertOnnxOptions
-        {
-            MaximumTokens = EmbeddingModelInfo.MaximumTokens
-        });
+        EmbeddingModelInfo.CreateOnnxOptions());
 }
 builder.Services.AddScoped<EmbeddingService>();
 
