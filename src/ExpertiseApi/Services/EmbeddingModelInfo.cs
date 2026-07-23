@@ -25,4 +25,13 @@ internal static class EmbeddingModelInfo
     /// derived from this value.
     /// </summary>
     public const int MaximumTokens = 6144;
+
+    /// <summary>
+    /// The one way to build the connector options — Program.cs and both eval
+    /// suites use this instead of hand-rolling an options object per call site
+    /// (review finding, 2026-07-23), so a future knob (pooling, casing) is a
+    /// one-place change.
+    /// </summary>
+    public static Microsoft.SemanticKernel.Connectors.Onnx.BertOnnxOptions CreateOnnxOptions() =>
+        new() { MaximumTokens = MaximumTokens };
 }

@@ -62,7 +62,7 @@ public sealed class RetrievalEvalTests(PostgresFixture postgres, ITestOutputHelp
 
         var services = new ServiceCollection();
         services.AddBertOnnxEmbeddingGenerator(ModelFiles.ModelPath!, ModelFiles.VocabPath!,
-            new BertOnnxOptions { MaximumTokens = EmbeddingModelInfo.MaximumTokens });
+            EmbeddingModelInfo.CreateOnnxOptions());
         _onnxProvider = services.BuildServiceProvider();
         _embedding = new EmbeddingService(
             _onnxProvider.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>());

@@ -1,6 +1,10 @@
 # Retrieval Improvements Assessment — 2026-07-22
 
-**Status:** Assessment only — no decisions made, nothing implemented. Each adopted
+**Status (updated 2026-07-23):** Recommendations 1–5 shipped as PRs #431–#435 (ADR-016
+records the hybrid-RRF decision). Recommendation 1's bge-specific query-instruction prefix
+was subsequently REMOVED by ADR-017 — the jina-embeddings-v2-small-en swap embeds queries
+and documents symmetrically with no prefix, so do not re-apply it. The analysis below is
+retained as written (2026-07); the bge-specific reasoning is historical context. Each adopted
 recommendation requires its own plan and (where it changes retrieval architecture)
 an ADR before implementation.
 

@@ -44,6 +44,8 @@ internal static class RehashCommand
             }
 
             await db.SaveChangesAsync();
+            // Same tracker-bounding as ReembedCommand (review finding, 2026-07-23).
+            db.ChangeTracker.Clear();
             lastId = entries[^1].Id;
             processed += entries.Count;
             logger.LogInformation("Rehashed {Processed} entries", processed);

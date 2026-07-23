@@ -44,6 +44,11 @@ internal static class ReembedCommand
             }
 
             await db.SaveChangesAsync();
+            // Bound the tracker to one batch — without this the context tracks
+            // every processed entity for the whole run, and DetectChanges cost
+            // grows with corpus size while the host is also absorbing the
+            // model's inference transients (review finding, 2026-07-23).
+            db.ChangeTracker.Clear();
             lastId = entries[^1].Id;
             processed += entries.Count;
             logger.LogInformation("Reembedded {Processed} entries", processed);
