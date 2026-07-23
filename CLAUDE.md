@@ -12,7 +12,7 @@ Self-hosted .NET 10 REST API for storing and serving expertise entries consumed 
 - **PostgreSQL 17** with **pgvector** extension for semantic search
 - **EF Core** for data access (repository pattern via `IExpertiseRepository`)
 - **PgBouncer 1.21+** sidecar for connection pooling (transaction mode)
-- **In-process ONNX** embeddings via `Microsoft.SemanticKernel.Connectors.Onnx` (bge-micro-v2, 384-dim)
+- **In-process ONNX** embeddings via `Microsoft.SemanticKernel.Connectors.Onnx` (jina-embeddings-v2-small-en, 512-dim, 6144-token ceiling — ADR-017)
 - **Serilog** for structured logging (`Serilog.AspNetCore`)
 - **prometheus-net** for Prometheus metrics endpoint (`/metrics`)
 - **OpenAPI** docs via Scalar (`Scalar.AspNetCore`)
@@ -83,7 +83,7 @@ see [`docs/operations/backup-restore-runbook.md`](docs/operations/backup-restore
 The ONNX model files are not tracked in git. Download them before running locally or building Docker images:
 
 ```bash
-# Download bge-micro-v2 quantized model (~17.4 MB) and vocab.txt
+# Download jina-embeddings-v2-small-en model (~130 MB) and vocab.txt
 ./scripts/download-models.sh
 
 # Force re-download (e.g., after model version bump)
@@ -114,7 +114,7 @@ curl http://localhost:5000/health
 
 # 5. Create an entry (under Hybrid mode in Development — accepts the API key from .env)
 # POSTs require an Idempotency-Key header per ADR-010 (hard-required since 2026-05-19).
-# Write guards: title max 200 chars, body max 1500 (400 beyond — embedding-window caps, #429/#436).
+# Write guards: title max 200 chars, body max 16000 (400 beyond — embedding-window caps, #429/#436/ADR-017).
 curl -X POST http://localhost:5000/expertise \
   -H "Authorization: Bearer dev-api-key-change-me" \
   -H "Idempotency-Key: $(uuidgen)" \
@@ -147,7 +147,7 @@ curl "http://localhost:5000/expertise/search/semantic?q=test&limit=5" \
 # Browse to http://localhost:5000/query
 ```
 
-**Note:** Semantic search and embedding generation require the bge-micro-v2 ONNX model files (`model.onnx` and `vocab.txt`) in `src/ExpertiseApi/models/`. Without them, the API will start but POST/PATCH and semantic search will fail. CRUD and keyword search work without the model.
+**Note:** Semantic search and embedding generation require the jina-embeddings-v2-small-en ONNX model files (`model.onnx` and `vocab.txt`) in `src/ExpertiseApi/models/`. Without them, the API will start but POST/PATCH and semantic search will fail. CRUD and keyword search work without the model.
 
 ## Agent Integration
 

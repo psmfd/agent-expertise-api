@@ -121,7 +121,7 @@ public class RepositoryQueryTranslationTests
     public void SemanticSearch_CosineDistanceOrdering_Translates()
     {
         using var db = NewContext();
-        var vector = new Vector(new float[384]);
+        var vector = new Vector(new float[512]);
         var query = ExpertiseRepository.ApplyApprovedReviewFilter(
                 ExpertiseRepository.ApplyTenantFilter(db.ExpertiseEntries, Ctx()))
             .Where(e => e.Embedding != null)
@@ -136,7 +136,7 @@ public class RepositoryQueryTranslationTests
     public void FindNearestInDomain_CosineDistanceOrdering_Translates()
     {
         using var db = NewContext();
-        var vector = new Vector(new float[384]);
+        var vector = new Vector(new float[512]);
         var query = ExpertiseRepository.ApplyTenantFilter(db.ExpertiseEntries, Ctx())
             .Where(e => e.DeprecatedAt == null)
             .Where(e => e.ReviewState != ReviewState.Rejected)
@@ -253,7 +253,7 @@ public class RepositoryQueryTranslationTests
     {
         using var db = NewContext();
         var tags = new List<string> { "postgres", "ef-core" };
-        var queryVector = new Vector(new float[384]);
+        var queryVector = new Vector(new float[512]);
 
         // Mirrors the production SemanticSearchAsync composition: shared tenant+approved
         // seam -> ApplyMetadataFilters (shared with BuildListQuery, #426) -> pgvector

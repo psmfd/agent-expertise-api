@@ -1,7 +1,7 @@
 namespace ExpertiseApi.Tests.Evaluation;
 
 /// <summary>
-/// Marks a retrieval-evaluation test that runs the REAL bge-micro-v2 ONNX model
+/// Marks a retrieval-evaluation test that runs the REAL pinned ONNX model (ADR-017)
 /// against a real PostgreSQL container — deliberately excluded from normal
 /// <c>dotnet test</c> runs (and CI) because it measures retrieval quality, not
 /// correctness, and its metrics are for human comparison across revisions (#425).

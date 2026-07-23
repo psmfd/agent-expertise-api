@@ -7,10 +7,10 @@ Design document: GitHub issue #1. For architecture and implementation guidance, 
 ## Tech Stack
 
 - .NET 10 (LTS) with ASP.NET Core Minimal APIs
-- PostgreSQL 17 with pgvector extension (vector(384)) and tsvector full-text search
+- PostgreSQL 17 with pgvector extension (vector(512)) and tsvector full-text search
 - EF Core with repository pattern (`IExpertiseRepository`)
 - PgBouncer 1.21+ sidecar (transaction mode)
-- In-process ONNX embeddings: bge-micro-v2, 384-dim, via `Microsoft.SemanticKernel.Connectors.Onnx`
+- In-process ONNX embeddings: jina-embeddings-v2-small-en, 512-dim, 6144-token ceiling (ADR-017), via `Microsoft.SemanticKernel.Connectors.Onnx`
 - OpenAPI via Scalar (`Scalar.AspNetCore`)
 - Docker Compose for local dev; Helm chart for k3s deployment
 
@@ -64,7 +64,7 @@ All endpoints require a Bearer token in the Authorization header except the anon
 
 ## Model Files
 
-The bge-micro-v2 ONNX model files (`model.onnx`, `vocab.txt`) are not tracked in git. Download them with:
+The jina-embeddings-v2-small-en ONNX model files (`model.onnx`, `vocab.txt`) are not tracked in git. Download them with:
 
 ```bash
 ./scripts/download-models.sh

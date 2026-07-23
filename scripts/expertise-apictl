@@ -10,6 +10,7 @@
 #   expertise-apictl start|stop|restart|status
 #   expertise-apictl logs [-f] [-n LINES]
 #   expertise-apictl health
+#   expertise-apictl reembed [--batch-size N]
 #   expertise-apictl backup-init [--install-deps]
 #   expertise-apictl backup [--output DIR] [--instance-id ID]
 #   expertise-apictl restore ARTIFACT [--force-draft] [--i-accept-unsigned-backup]
@@ -34,7 +35,7 @@ READY_TIMEOUT="${EXPERTISE_API_READY_TIMEOUT:-30}"
 log() { printf '[expertise-apictl] %s\n' "$1"; }
 err() { printf '[expertise-apictl] ERROR: %s\n' "$1" >&2; exit 1; }
 
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
 
 detect_os() {
   case "$(uname -s)" in
@@ -72,10 +73,10 @@ _detect_install_scope() {
 }
 
 # The system-scope guard applies to service-LIFECYCLE subcommands only —
-# backup-init/backup/restore talk to the database and filesystem, never to
-# launchd, so they work fine against a --system install.
+# backup-init/backup/restore/reembed talk to the database and filesystem,
+# never to launchd, so they work fine against a --system install.
 case "${1:-}" in
-  backup-init|backup|restore) _lifecycle_cmd=0 ;;
+  backup-init|backup|restore|reembed) _lifecycle_cmd=0 ;;
   *)                          _lifecycle_cmd=1 ;;
 esac
 
@@ -574,6 +575,16 @@ cmd_backup() {
   log "backup: OK — ${artifact}"
 }
 
+cmd_reembed() {
+  # Pass-through to the ExpertiseApi reembed verb: regenerate every stored
+  # embedding with the currently installed model. Idempotent and safe while
+  # the service is running (per-batch row saves; reads tolerate NULL/stale
+  # embeddings). REQUIRED once after a model-swap release (ADR-017) — until it
+  # completes, pre-existing entries are invisible to semantic/hybrid search.
+  _run_api_verb reembed "$@" || err "reembed verb failed — see log output above"
+  log "reembed: OK"
+}
+
 cmd_restore() {
   local artifact="" force_draft=0 accept_unsigned=0
   while [[ $# -gt 0 ]]; do
@@ -644,6 +655,7 @@ case "${1:-}" in
   backup-init) shift; cmd_backup_init "$@" ;;
   backup)     shift; cmd_backup "$@" ;;
   restore)    shift; cmd_restore "$@" ;;
+  reembed)    shift; cmd_reembed "$@" ;;
   ''|-h|--help) usage ;;
   *) err "unknown subcommand: $1 (try --help)" ;;
 esac

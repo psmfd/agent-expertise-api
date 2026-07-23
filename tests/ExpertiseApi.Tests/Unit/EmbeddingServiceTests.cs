@@ -43,21 +43,18 @@ public class EmbeddingServiceTests
     }
 
     [Fact]
-    public void BuildQueryInputText_PrefixesBgeQueryInstruction()
+    public void BuildInputText_RemainsUnprefixed()
     {
-        // bge-family asymmetric retrieval: the query side carries the instruction, the
-        // document side (BuildInputText) never does (#424). If the instruction wording
-        // ever changes (model swap), stored document embeddings stay valid — only
-        // query-side embedding changes — but this pin forces the change to be deliberate.
-        EmbeddingService.BuildQueryInputText("pgvector index tuning")
-            .Should().Be("Represent this sentence for searching relevant passages: pgvector index tuning");
-
+        // jina-v2-small embeds queries and documents symmetrically with NO
+        // instruction prefix (ADR-017). This pin forces any future prefix
+        // reintroduction (another model swap) to be deliberate — bge needed
+        // one (PR #431), jina must not have one.
         EmbeddingService.BuildInputText("title", "body")
             .Should().Be("title body", "document-side input must remain unprefixed");
     }
 
     [Fact]
-    public async Task GenerateQueryEmbeddingAsync_EmbedsPrefixedQuery_NotRawQuery()
+    public async Task GenerateQueryEmbeddingAsync_EmbedsRawQuery_NoInstructionPrefix()
     {
         var generator = Substitute.For<IEmbeddingGenerator<string, Embedding<float>>>();
         generator.GenerateAsync(
@@ -78,10 +75,8 @@ public class EmbeddingServiceTests
         var queryVector = await service.GenerateQueryEmbeddingAsync("kafka rebalance");
 
         queryVector.ToArray().Should().Equal(
-            TestHelpers.CreateContentEmbedding(EmbeddingService.BuildQueryInputText("kafka rebalance")),
-            "the query embedding must be generated from the instruction-prefixed text");
-        queryVector.ToArray().Should().NotEqual(
             TestHelpers.CreateContentEmbedding("kafka rebalance"),
-            "embedding the raw query would silently drop the bge query instruction");
+            "ADR-017: jina embeds the raw query — a leftover bge-style instruction prefix " +
+            "would silently degrade every semantic search against the new model");
     }
 }

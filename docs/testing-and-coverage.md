@@ -120,8 +120,8 @@ the csproj makes them reachable. Prefer this over re-deriving the logic in the t
 
 Correctness tests use the content-derived mock embeddings above; retrieval *quality*
 cannot be measured that way. `tests/ExpertiseApi.Tests/Evaluation/` holds an opt-in
-harness (#425) that seeds the corpus in `golden-set.json` with **real** bge-micro-v2
-embeddings (via `AddBertOnnxEmbeddingGenerator`), runs every golden query through
+harness (#425) that seeds the corpus in `golden-set.json` with **real** embeddings
+from the pinned ONNX model (jina-embeddings-v2-small-en, ADR-017) (via `AddBertOnnxEmbeddingGenerator`), runs every golden query through
 keyword and semantic search, and reports recall@5 / recall@10 / MRR@10 per mode plus
 every miss:
 

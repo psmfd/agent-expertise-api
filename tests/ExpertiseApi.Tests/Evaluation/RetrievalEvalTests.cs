@@ -18,7 +18,7 @@ namespace ExpertiseApi.Tests.Evaluation;
 /// Golden-query retrieval evaluation harness (#425, recommendation 5 of
 /// docs/research/2026-07-retrieval-assessment.md).
 ///
-/// Seeds the corpus from <c>golden-set.json</c> with REAL bge-micro-v2 embeddings
+/// Seeds the corpus from <c>golden-set.json</c> with REAL embeddings from the pinned ONNX model (ADR-017: jina-embeddings-v2-small-en)
 /// (the normal test suite's content-derived mock cannot measure retrieval quality),
 /// runs every golden query through keyword and semantic search, and reports
 /// recall@5 / recall@10 / MRR@10 per mode plus every miss. Run with:

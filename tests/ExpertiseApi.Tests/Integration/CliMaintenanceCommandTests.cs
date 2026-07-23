@@ -52,7 +52,7 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
             var entry = TestHelpers.SeedEntry(
                 domain: "reembed", title: $"entry {i}", body: $"body {i}",
                 tenant: i % 2 == 0 ? "team-a" : "team-b");
-            entry.Embedding = new Vector(new float[384]);
+            entry.Embedding = new Vector(new float[512]);
             db.ExpertiseEntries.Add(entry);
             await db.SaveChangesAsync();
             seeded.Add(entry);
@@ -72,8 +72,8 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
         }
 
         var metadata = await verify.EmbeddingMetadata.SingleAsync();
-        metadata.ModelName.Should().Be("bge-micro-v2");
-        metadata.Dimensions.Should().Be(384);
+        metadata.ModelName.Should().Be("jina-embeddings-v2-small-en");
+        metadata.Dimensions.Should().Be(512);
         metadata.LastReembedAt.Should().NotBe(default);
     }
 
@@ -100,8 +100,8 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
 
         await using var verify = NewContext();
         var metadata = await verify.EmbeddingMetadata.SingleAsync();
-        metadata.ModelName.Should().Be("bge-micro-v2");
-        metadata.Dimensions.Should().Be(384);
+        metadata.ModelName.Should().Be("jina-embeddings-v2-small-en");
+        metadata.Dimensions.Should().Be(512);
         metadata.LastReembedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
     }
 

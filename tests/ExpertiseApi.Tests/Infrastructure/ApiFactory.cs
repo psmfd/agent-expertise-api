@@ -53,7 +53,7 @@ public class ApiFactory : WebApplicationFactory<Program>
             services.AddDbContext<ExpertiseDbContext>(options =>
                 options.UseNpgsql(_connectionString, o => o.UseVector()));
 
-            // Replace ONNX embedding generator with a mock that returns 384-dim vectors.
+            // Replace ONNX embedding generator with a mock that returns 512-dim vectors.
             // AddBertOnnxEmbeddingGenerator opens the model file at registration time,
             // so we must remove the existing registration and substitute it.
             var embeddingDescriptor = services.SingleOrDefault(

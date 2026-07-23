@@ -198,14 +198,16 @@ internal static class ExpertiseEndpoints
         !string.IsNullOrWhiteSpace(request.Body) &&
         !string.IsNullOrWhiteSpace(request.Source);
 
-    // MaxBodyLength derivation (#429): bge-micro-v2 embeds at most 512 wordpiece tokens
-    // (510 content + [CLS]/[SEP]) and the ONNX connector silently truncates beyond that
-    // with no signal. BuildInputText embeds "{title} {body}" in one pass; reserving
-    // ~40 tokens for Title leaves ~470 for Body. Measured density across the 60 longest
-    // real entries is 2.97–4.24 chars/token (median 3.46), so 1500 chars keeps a
-    // median-density Body fully embedded (~476/512 tokens); only the densest tail loses
-    // a few trailing tokens. Re-derive this constant if the embedding model changes (#437).
-    private const int MaxBodyLength = 1500;
+    // MaxBodyLength derivation (#429 method, re-based by ADR-017): the embedding
+    // window is EmbeddingModelInfo.MaximumTokens (6144) and the ONNX connector
+    // silently truncates beyond it with no signal. BuildInputText embeds
+    // "{title} {body}" in one pass; reserving ~70 worst-case tokens for a
+    // 200-char Title plus specials leaves ~6,000 for Body. Measured density
+    // across the 60 longest real entries is 2.97–4.24 chars/token, so 16,000
+    // chars lands at ≈5,390 worst-case Body tokens — fully embedded with
+    // headroom even at maximum density. Re-derive if the model or ceiling
+    // changes (ADR-017 ground-truth tables are on issue #437).
+    private const int MaxBodyLength = 16_000;
 
     private static string? BodyLengthError(string? body) =>
         body is { Length: > MaxBodyLength }
@@ -213,10 +215,11 @@ internal static class ExpertiseEndpoints
               "Content past the embedding window is invisible to semantic search; shorten the body or split the entry."
             : null;
 
-    // MaxTitleLength (#436): Title shares the 512-token embedding budget with Body
-    // (BuildInputText embeds "{title} {body}"); the MaxBodyLength derivation reserves
-    // ~40 tokens for Title, which 200 chars comfortably respects (observed corpus max
-    // is 142). Same guard shape as MaxBodyLength/MaxRejectionReasonLength.
+    // MaxTitleLength (#436): Title shares the embedding window with Body
+    // (BuildInputText embeds "{title} {body}"); the MaxBodyLength derivation
+    // reserves ~70 worst-case tokens for Title, which 200 chars comfortably
+    // respects (observed corpus max is 142). Unchanged by the ADR-017 ceiling
+    // raise — titles are a display/scan surface, not a content dump.
     private const int MaxTitleLength = 200;
 
     private static string? TitleLengthError(string? title) =>
