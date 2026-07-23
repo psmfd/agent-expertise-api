@@ -116,7 +116,11 @@ download_file() {
 
 mkdir -p "${DEST_DIR}"
 
-download_file "${DEST_DIR}/model.onnx" "${HF_BASE}/model.onnx" 104857600 \
+# min_bytes is a coarse error-page detector only (an HTML 404/consent page is
+# far under 1 MiB) — the SHA-256 pin below is the actual integrity gate, so the
+# floor deliberately does NOT track the model size (tests/install/ fixtures
+# depend on it staying small).
+download_file "${DEST_DIR}/model.onnx" "${HF_BASE}/model.onnx" 1048576 \
   "model.onnx (jina-embeddings-v2-small-en FP32, ~130 MB)" "${SHA256_MODEL_ONNX}"
 
 download_file "${DEST_DIR}/vocab.txt" "${HF_BASE}/vocab.txt" 1024 \
