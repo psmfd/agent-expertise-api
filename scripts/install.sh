@@ -521,7 +521,8 @@ preflight() {
 # ---------------------------------------------------------------------------
 # CRLF detector — fail fast before any publish work. Only filename and
 # line number are echoed; never the matched content (which may contain
-# secret values).
+# secret values). Kept in lockstep with the standalone copy in
+# scripts/migrate.sh (#332) — update both together.
 # ---------------------------------------------------------------------------
 check_secrets_line_endings() {
   [[ -f "${SECRETS_FILE}" ]] || return 0
@@ -921,7 +922,7 @@ run_migrate_staged() {
   fi
 
   log "running migrate against staged binaries (${STAGE_DIR})"
-  if ! "${SCRIPT_DIR}/migrate.sh" --bin-dir "${STAGE_DIR}" --secrets-file "${SECRETS_FILE}" --migrate-timeout "${MIGRATE_TIMEOUT}"; then
+  if ! "${SCRIPT_DIR}/migrate.sh" --prefix "${PREFIX}" --bin-dir "${STAGE_DIR}" --secrets-file "${SECRETS_FILE}" --migrate-timeout "${MIGRATE_TIMEOUT}"; then
     err "migrate failed — live binaries NOT swapped; service NOT restarted; prior state intact. EF migrations are transactional per-migration; retry by fixing the schema/DB issue and re-running scripts/install.sh."
   fi
 }
