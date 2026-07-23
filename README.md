@@ -45,7 +45,7 @@ The three POST writes (`/expertise`, `/expertise/{id}/approve`, `/expertise/{id}
 | GET | `/expertise/drafts` | — | List Draft + Rejected entries in caller's tenant (requires `expertise.write.approve`) |
 | POST | `/expertise` | **required** | Create entry (generates embedding, writes audit row) |
 | POST | `/expertise/batch` | — | Create up to 100 entries (generates embeddings, deduplicates) |
-| PATCH | `/expertise/{id}` | — | Update entry. Approved entries regress to Draft if caller lacks `write.approve`. Changing `visibility` requires `write.approve`. |
+| PATCH | `/expertise/{id}` | — | Update entry. Approved entries regress to Draft if caller lacks `write.approve`. Changing `visibility` — or PATCHing a `shared` entry at all (#330) — requires `write.approve`. Title ≤ 200 chars, body ≤ 1500 (embedding-window guards). |
 | DELETE | `/expertise/{id}` | — | Soft delete (sets DeprecatedAt). Shared entries require `expertise.write.approve` |
 | POST | `/expertise/{id}/approve` | **required** | Transition Draft → Approved (requires `expertise.write.approve`) |
 | POST | `/expertise/{id}/reject` | **required** | Transition Draft → Rejected with required reason (requires `expertise.write.approve`) |
@@ -450,9 +450,12 @@ OIDC issuer. You do **not** need a full identity provider. See
 [`deploy/lan-static-oidc/`](deploy/lan-static-oidc/RUNBOOK.md) for the turnkey
 runbook. The short version:
 
-1. **Bind off loopback.** `scripts/install.sh --bind 0.0.0.0:8080` (or a specific
-   LAN interface IP). Remote clients target the host's **LAN IP**, not
-   `host.docker.internal`.
+1. **Bind off loopback.** `scripts/install.sh --bind 0.0.0.0:8080 --allow-plaintext-bind`
+   (or a specific LAN interface IP). The explicit flag is required (#332): this path
+   serves plaintext `http://`, so prefer keeping the default loopback bind behind a
+   co-located TLS edge (`deploy/lan-static-oidc/RUNBOOK.md`) and use a non-loopback
+   bind only when the TLS edge runs on a different host. Remote clients target the
+   host's **LAN IP**, not `host.docker.internal`.
 2. **Allow the LAN Host header.** The default `AllowedHosts`
    (`localhost;127.0.0.1;[::1]`) makes ASP.NET Core's host-filtering return **400**
    to a remote `Host:` — set `AllowedHosts=<your-lan-hostname>` in `secrets.env`,
@@ -533,8 +536,10 @@ pending EF Core migrations and is idempotent (no-op when up to date).
 
 - On a **fresh install** the secrets file has not yet been edited, so the
   install script detects the placeholder connection string and **skips**
-  migrate with a warning. After editing `~/.config/expertise-api/secrets.env`
-  (or `%ProgramData%\ExpertiseApi\config\secrets.env` on Windows), run
+  migrate with a warning. After editing the service secrets file —
+  `~/.config/expertise-api/secrets.env` on Linux/WSL,
+  `~/Library/Application Support/expertise-api/secrets.env` on macOS,
+  or `%ProgramData%\ExpertiseApi\config\secrets.env` on Windows — run
   `scripts/migrate.sh` (or `.\scripts\migrate.ps1`) manually, then start
   the service.
 - On an **upgrade** the secrets file is preserved and migrate runs
@@ -786,7 +791,9 @@ Quick start (macOS / Linux / WSL):
 ./scripts/install.sh --version vX.Y.Z             # DEFAULT (ADR-011): cosign-verify a published tarball, no SDK on host
 ./scripts/install.sh                              # DEFAULT on upgrades: fetches the latest signed release
 ./scripts/install.sh --from-source --i-accept-unverified-source  # opt-in: build from local tree (no cosign chain)
-edit ~/.config/expertise-api/secrets.env          # set ConnectionStrings__DefaultConnection
+edit the service secrets.env                      # set ConnectionStrings__DefaultConnection
+#   Linux/WSL: ~/.config/expertise-api/secrets.env
+#   macOS:     ~/Library/Application Support/expertise-api/secrets.env
 ./scripts/migrate.sh                              # apply EF Core migrations (idempotent)
 ./scripts/expertise-apictl status                 # daily-use service control
 ./scripts/expertise-apictl logs -f                # follow logs (journald / launchd)

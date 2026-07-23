@@ -18,7 +18,8 @@ Design document: GitHub issue #1. For architecture and implementation guidance, 
 
 ```bash
 # .NET 10 SDK, Docker + Docker Compose
-dotnet tool install --global dotnet-ef
+# dotnet-ef is version-pinned in .config/dotnet-tools.json — never install globally:
+dotnet tool restore
 ```
 
 ## Build & Run Commands
@@ -75,6 +76,7 @@ This is required before `docker build` and for local semantic search. The script
 
 - `ci.yml`: runs `dotnet build` + `dotnet test` on PRs to main and pushes to dev
 - `release.yml`: runs on merge to main — downloads models (cached), builds multi-arch Docker image (amd64 + arm64), pushes to `ghcr.io/psmfd/agent-expertise-api`
+- The full workflow roster (PR-title lint, install smokes, CodeQL/Trivy/Hadolint, Dependabot auto-merge, and more) is in CLAUDE.md's CI/CD table — treat that as the authoritative list.
 
 ## Architecture & Design
 
