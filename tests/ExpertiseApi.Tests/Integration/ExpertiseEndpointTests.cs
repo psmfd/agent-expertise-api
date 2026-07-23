@@ -205,6 +205,39 @@ public class ExpertiseEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateEntry_WithOverlongTitle_Returns400()
+    {
+        // 200 is the #436 title cap (MaxTitleLength in ExpertiseEndpoints).
+        var payload = new { domain = "shared", title = new string('t', 201), body = "Body ok", entryType = "Pattern", severity = "Info", source = "test" };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("maximum length of 200");
+    }
+
+    [Fact]
+    public async Task CreateEntry_WithTitleAtLimit_Returns201()
+    {
+        var payload = new { domain = "shared", title = new string('t', 200), body = "Body ok", entryType = "Pattern", severity = "Info", source = "test" };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task UpdateEntry_WithOverlongTitle_Returns400()
+    {
+        var entry = await SeedEntryViaRepo("shared", "Title patch target");
+
+        var response = await _client.PatchAsJsonAsync($"/expertise/{entry.Id}", new { title = new string('t', 201) });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("maximum length of 200");
+    }
+
+    [Fact]
     public async Task UpdateEntry_WithOverlongBody_Returns400()
     {
         var entry = await SeedEntryViaRepo("shared", "Patch target");
