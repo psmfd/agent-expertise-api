@@ -91,6 +91,25 @@ rc_curl_https() {
 # Echos the resolved tag (without leading 'v') on stdout.
 # Args: requested_version (literal or "latest")
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# rc_assert_semver — fail closed if a resolved version string is not plain
+# semver (X.Y.Z, optional prerelease/build suffix). Guards the command-
+# substitution seam between rc_resolve_version and its callers: any stray
+# stdout (a mis-redirected log line, curl noise) becomes a clear one-line
+# diagnosis instead of a corrupted release-tag URL downstream (#440).
+# Args: candidate version string (no leading v)
+# ---------------------------------------------------------------------------
+rc_assert_semver() {
+  # Reject embedded newlines first: grep matches per-line, so a log-polluted
+  # multi-line value with a valid semver on its last line would slip through.
+  local nl; nl=$(printf '\nx'); nl=${nl%x}
+  case "$1" in
+    *"$nl"*) err "resolved version contains a newline — resolver stdout is polluted (#440)" ;;
+  esac
+  printf '%s\n' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$' \
+    || err "resolved version '$1' is not a semver string — resolver stdout may be polluted (#440)"
+}
+
 rc_resolve_version() {
   local requested=$1
   if [ "$requested" != "latest" ]; then
@@ -100,7 +119,10 @@ rc_resolve_version() {
     return 0
   fi
   command -v jq >/dev/null 2>&1 || err "jq required to resolve --version latest"
-  log "resolving --version latest via GitHub Releases API"
+  # stdout of this function IS its return value (command substitution at the
+  # call site) — log lines must go to stderr or they corrupt the resolved
+  # version string (#440).
+  log "resolving --version latest via GitHub Releases API" >&2
   local api_url="https://api.github.com/repos/${RELEASE_REPO}/releases/latest"
   # D3 pre-PR (shell-expert LOW): use the unambiguous `mktemp TEMPLATE`
   # form instead of `mktemp -t prefix` (BSD treats -t as prefix-only,
@@ -120,7 +142,7 @@ rc_resolve_version() {
   if ! curl --proto '=https' --tlsv1.2 --fail --location --max-redirs 5 \
        --connect-timeout 10 --max-time 30 --silent --show-error \
        -H 'Accept: application/vnd.github+json' \
-       "${auth_header[@]}" \
+       ${auth_header[@]+"${auth_header[@]}"} \
        -o "$tmp" \
        "$api_url"; then
     rm -f -- "$tmp"
@@ -164,7 +186,7 @@ rc_crosscheck_release_api() {
   if ! curl --proto '=https' --tlsv1.2 --fail --location --max-redirs 5 \
        --connect-timeout 10 --max-time 30 --silent --show-error \
        -H 'Accept: application/vnd.github+json' \
-       "${auth_header[@]}" \
+       ${auth_header[@]+"${auth_header[@]}"} \
        -o "$tmp" \
        "$api_url"; then
     rm -f -- "$tmp"
@@ -692,6 +714,7 @@ rc_publish_from_release() {
 
   local version
   version=$(rc_resolve_version "$1")
+  rc_assert_semver "$version"
   log "release: requested version=${version}"
 
   # First-install policy: latest is only acceptable when a prior semver

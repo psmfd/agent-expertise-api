@@ -72,19 +72,25 @@ export OIDC_ISSUER="https://auth.lan.example/"   # any stable string; must byte-
 ./scripts/mint_token.py build-jwks --out oidc/jwks.json
 ```
 
-Copy `oidc/jwks.json` to the API host, e.g. `~/.config/expertise-api/jwks.json`.
+Copy `oidc/jwks.json` to the API host's config dir — `~/.config/expertise-api/jwks.json`
+on Linux, `~/Library/Application Support/expertise-api/jwks.json` on macOS.
 
 ### 6. Configure the API service
 
 Install (or re-run) with a LAN bind, and add the issuer to `secrets.env`:
 
 ```bash
-scripts/install.sh --bind 0.0.0.0:8080
+# Edge co-located (this runbook's topology — Caddy proxies to loopback):
+scripts/install.sh                       # default bind 127.0.0.1:8080 is correct
+# Edge on a DIFFERENT host only: bind the LAN address and accept plaintext
+# between edge and API (requires the explicit override):
+# scripts/install.sh --bind 0.0.0.0:8080 --allow-plaintext-bind
 ```
 ```sh
-# ~/.config/expertise-api/secrets.env
+# Service secrets.env — ~/.config/expertise-api/secrets.env on Linux,
+# ~/Library/Application Support/expertise-api/secrets.env on macOS:
 Auth__Oidc__Issuers__2__Issuer=https://auth.lan.example/
-Auth__Oidc__Issuers__2__JwksPath=/home/<user>/.config/expertise-api/jwks.json
+Auth__Oidc__Issuers__2__JwksPath=<config-dir-above>/jwks.json   # absolute path, no ~ expansion
 AllowedHosts=expertise.lan.example
 ForwardedHeaders__KnownNetworks__0=<proxy-subnet-cidr>
 ```

@@ -278,6 +278,61 @@ public class ApprovalWorkflowTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Patch_SharedEntryByWriteDraftCaller_Returns403_AndEntryNotStranded()
+    {
+        // #330: content-editing a shared entry requires write.approve, mirroring the
+        // soft-delete gate. Without it, the ADR-003 regression demotes the entry to
+        // Draft + Tenant="shared", which no tenant's draft queue can see — stranded.
+        ExpertiseEntry seeded;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+            seeded = TestHelpers.SeedEntry(
+                tenant: "shared", title: "shared-knowledge-patch-target", reviewState: ReviewState.Approved);
+            db.ExpertiseEntries.Add(seeded);
+            await db.SaveChangesAsync();
+        }
+
+        using var writer = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+        var response = await writer.PatchAsJsonAsync(
+            $"/expertise/{seeded.Id}",
+            new { title = "cross-tenant vandalism attempt" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        // The entry must be untouched: still Approved, still readable, original title.
+        using var verifyScope = _factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+        var after = await verifyDb.ExpertiseEntries.IgnoreQueryFilters().SingleAsync(e => e.Id == seeded.Id);
+        after.ReviewState.Should().Be(ReviewState.Approved);
+        after.Title.Should().Be("shared-knowledge-patch-target");
+    }
+
+    [Fact]
+    public async Task Patch_SharedEntryByApproveCaller_Succeeds()
+    {
+        ExpertiseEntry seeded;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
+            seeded = TestHelpers.SeedEntry(
+                tenant: "shared", title: "shared-approver-editable", reviewState: ReviewState.Approved);
+            db.ExpertiseEntries.Add(seeded);
+            await db.SaveChangesAsync();
+        }
+
+        using var approver = ClientWithScopes(
+            AuthConstants.ReadScope, AuthConstants.WriteDraftScope, AuthConstants.WriteApproveScope);
+        var response = await approver.PatchAsJsonAsync(
+            $"/expertise/{seeded.Id}",
+            new { body = "curator edit — permitted and stays Approved" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetProperty("reviewState").GetString().Should().Be("Approved");
+    }
+
+    [Fact]
     public async Task Delete_SharedEntryByWriteDraftCaller_Returns403()
     {
         // Soft-delete on shared entries requires write.approve per ADR-003.

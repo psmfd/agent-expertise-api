@@ -114,6 +114,7 @@ curl http://localhost:5000/health
 
 # 5. Create an entry (under Hybrid mode in Development — accepts the API key from .env)
 # POSTs require an Idempotency-Key header per ADR-010 (hard-required since 2026-05-19).
+# Write guards: title max 200 chars, body max 1500 (400 beyond — embedding-window caps, #429/#436).
 curl -X POST http://localhost:5000/expertise \
   -H "Authorization: Bearer dev-api-key-change-me" \
   -H "Idempotency-Key: $(uuidgen)" \
@@ -236,7 +237,7 @@ Four scopes drive the four authorization policies. The hierarchy is `admin ⊇ a
 | --- | --- | --- |
 | `expertise.read` | `ReadAccess` | All `GET` endpoints |
 | `expertise.write.draft` | `WriteAccess` | `POST`, `PATCH`, `DELETE` (drafts in caller's own tenant; **changing `Visibility` via PATCH escalates to `expertise.write.approve`** — see ADR-003) |
-| `expertise.write.approve` | `WriteApproveAccess` | `/approve`, `/reject`, `PATCH` when `Visibility` changes, soft-delete on `shared` |
+| `expertise.write.approve` | `WriteApproveAccess` | `/approve`, `/reject`, `PATCH` when `Visibility` changes, any PATCH or soft-delete on `shared` entries |
 | `expertise.admin` | `AdminAccess` | `/audit`, cross-tenant ops |
 
 The legacy `expertise.write` scope is normalized to `expertise.write.draft` during one transition cycle.
@@ -269,7 +270,7 @@ PATCH state regression (per ADR-003): when a `write.draft`-only caller PATCHes a
 
 Dedup queries (exact-match and semantic) exclude `Rejected` entries so a Rejected entry does not permanently block resubmission of identical content. Drafts and Approved entries still dedup as before.
 
-Soft-deleting a `Tenant = "shared"` entry requires `expertise.write.approve`. A `write.draft` caller attempting to delete a shared entry receives 403.
+Mutating a `Tenant = "shared"` entry — PATCH or soft-delete — requires `expertise.write.approve`; a `write.draft` caller receives 403 (#330). Without the PATCH gate, a draft-only caller in any tenant could edit a shared Approved entry and the ADR-003 regression would strand it as a `Draft` visible in no tenant's review queue.
 
 ### Audit log
 

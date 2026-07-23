@@ -83,9 +83,10 @@ cat > /tmp/entry.json <<'EOF'
 }
 EOF
 ./scripts/create.sh --file /tmp/entry.json
-# NOTE: body is capped at 1500 characters (HTTP 400 beyond that). The embedding
-# model sees at most ~510 tokens of "title + body"; longer text would be silently
-# invisible to semantic search, so keep bodies focused or split into entries.
+# NOTE: title is capped at 200 characters and body at 1500 (HTTP 400 beyond).
+# The embedding model sees at most ~510 tokens of "title + body"; longer text
+# would be silently invisible to semantic search, so keep titles concise and
+# bodies focused — split large topics into multiple entries.
 
 # Approve / reject (requires expertise.write.approve)
 ./scripts/approve.sh 0193b8c4-...
@@ -142,5 +143,5 @@ For the underlying schema, scope hierarchy, approval state machine, audit log sh
 
 ## Related
 
-- pi extension `expertise-api` (typed tools, same operations): see repo `.pi/extensions/expertise-api/` once shipped (tracked in [#148](https://github.com/TheSemicolon/agent-expertise-api/issues/148)).
-- pi prompt templates `/expertise-search`, `/expertise-create`, `/expertise-approve`: tracked in [#149](https://github.com/TheSemicolon/agent-expertise-api/issues/149).
+- pi extension `expertise-api` (typed tools, same operations): shipped in-tree at `.pi/extensions/expertise-api/` (#148).
+- pi prompt templates `/expertise-search`, `/expertise-create`, `/expertise-approve`: shipped at `.pi/prompts/` (#149).

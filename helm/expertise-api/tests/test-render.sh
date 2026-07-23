@@ -410,7 +410,7 @@ fi
 
 # 41. Image tag falls back to .Chart.AppVersion when image.tag is empty/unset (issue #214).
 appver=$(awk '/^appVersion:/ {gsub(/"/,"",$2); print $2}' "$CHART/Chart.yaml")
-if echo "$output" | grep -qE "image: \"ghcr.io/thesemicolon/agent-expertise-api:${appver}\""; then
+if echo "$output" | grep -qE "image: \"ghcr.io/psmfd/agent-expertise-api:${appver}\""; then
     ok "image-tag-default-fallback" "image.tag empty falls back to chart appVersion ${appver}"
 else
     err "image-tag-default-fallback" "default render did not produce :${appver} image tag"
@@ -444,7 +444,7 @@ fi
 #     as the API Deployment (issue #214 — prevents migration/runtime image skew).
 appver=$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2}' "$CHART/Chart.yaml")
 out_jobimg=$(helm template test-release "$CHART" 2>&1)
-if echo "$out_jobimg" | awk '/kind: Job/,/^---/' | grep -qF "image: \"ghcr.io/thesemicolon/agent-expertise-api:${appver}\""; then
+if echo "$out_jobimg" | awk '/kind: Job/,/^---/' | grep -qF "image: \"ghcr.io/psmfd/agent-expertise-api:${appver}\""; then
     ok "migrations-image-tag-default-fallback" "migrations Job image falls back to chart appVersion ${appver}"
 else
     err "migrations-image-tag-default-fallback" "migrations Job image did not fall back to chart appVersion ${appver}"
@@ -466,7 +466,7 @@ fi
 # 46. Schema accepts SemVer prerelease tags on image.tag (issue #214 — release
 #     workflow may pin rc/beta tags during release-candidate cycles).
 out_pretag=$(helm template test-release "$CHART" --set image.tag=0.1.4-rc.1 2>&1 || true)
-if echo "$out_pretag" | grep -qF "image: \"ghcr.io/thesemicolon/agent-expertise-api:0.1.4-rc.1\""; then
+if echo "$out_pretag" | grep -qF "image: \"ghcr.io/psmfd/agent-expertise-api:0.1.4-rc.1\""; then
     ok "schema-image-tag-prerelease" "schema accepts SemVer prerelease tag (0.1.4-rc.1)"
 else
     err "schema-image-tag-prerelease" "prerelease tag rejected or rendered wrong: $(echo "$out_pretag" | tail -2 | tr '\n' ' ')"

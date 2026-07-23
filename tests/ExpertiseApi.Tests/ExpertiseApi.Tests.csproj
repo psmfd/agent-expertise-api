@@ -14,7 +14,7 @@
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.Testing" Version="10.8.0" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.*" />
-    <PackageReference Include="NSubstitute" Version="5.*" />
+    <PackageReference Include="NSubstitute" Version="6.*" />
     <!--
       AwesomeAssertions is the community Apache 2.0 fork of FluentAssertions v7.
       Pinning at the 8.x line preserves the FluentAssertions namespace verbatim,
