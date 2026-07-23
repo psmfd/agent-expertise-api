@@ -17,10 +17,10 @@ curl toolkit and when to invoke it — lives in `SKILL.md`.
 | Database | PostgreSQL 17 (single backend, no MongoDB) |
 | PostgreSQL image | `pgvector/pgvector:pg17` |
 | Connection pooling | PgBouncer 1.21+ sidecar (`edoburu/pgbouncer`, transaction mode) |
-| Vector search | pgvector extension — `vector(384)` column with HNSW index (`vector_cosine_ops`) |
+| Vector search | pgvector extension — `vector(512)` column with HNSW index (`vector_cosine_ops`) |
 | Keyword search | PostgreSQL stored generated `tsvector` column with GIN index |
 | Embeddings | In-process ONNX via `Microsoft.SemanticKernel.Connectors.Onnx` |
-| Embedding model | `bge-micro-v2` (22.9MB, 384-dim, bundled in Docker image) |
+| Embedding model | `jina-embeddings-v2-small-en` (~130MB FP32, 512-dim, 6144-token ceiling, bundled in Docker image — ADR-017) |
 | Embedding abstraction | `IEmbeddingGenerator<string, Embedding<float>>` (Microsoft.Extensions.AI) |
 | Embedding input | `EmbeddingService.BuildInputText(title, body)` — single source of truth |
 | Auth | Multi-issuer OIDC (Entra + Authentik) via `JwtBearer` per issuer behind a `Bearer` policy scheme; `ApiKey`/`LocalDev`/`Hybrid` modes for Development only |
@@ -50,7 +50,7 @@ public class ExpertiseEntry
     public Severity Severity { get; set; }
     public required string Source { get; set; }      // self-reported — informational only post-rebuild
     public string? SourceVersion { get; set; }       // e.g. "EF Core 10.0.1" — staleness signal
-    public Vector? Embedding { get; set; }           // pgvector vector(384), nullable until embedded
+    public Vector? Embedding { get; set; }           // pgvector vector(512), nullable until embedded
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
     public DateTime? DeprecatedAt { get; set; }      // soft delete
@@ -242,7 +242,7 @@ src/ExpertiseApi/
   Services/                # EmbeddingService, DeduplicationService
   Auth/                    # ApiKeyAuthHandler, AuthExtensions, AuthConstants
   Cli/                     # ReembedCommand, RehashCommand, MigrateCommand, BackupCommand, RestoreCommand
-  models/                  # ONNX model files (bge-micro-v2) — not committed, needed at runtime
+  models/                  # ONNX model files (jina-v2-small) — not committed, needed at runtime
 helm/expertise-api/        # Helm chart (shared templates, generic values)
 deploy/local/              # Docker Compose, .env.example, pgvector init script
 scripts/                   # download-models.sh
@@ -265,8 +265,8 @@ scripts/                   # download-models.sh
 - **`reembed` CLI:** Run as a one-off k8s Job, not from a running API replica, to avoid concurrent row writes.
 - **Keyword search uses raw SQL:** The stored `SearchVector` column cannot be queried via LINQ — `KeywordSearchAsync` uses `FromSqlInterpolated` (`websearch_to_tsquery` + `ts_rank_cd` + `LIMIT`; all filtering and ordering must stay inside the SQL string — composing LINQ on top wraps it in a subquery and can drop the inner ORDER BY).
 - **Search `score` field semantics:** search responses carry a server-computed `score` per hit (#427) — keyword: raw `ts_rank_cd` (unbounded, comparable only within one response); semantic: cosine similarity (`1 - distance`, higher is closer); hybrid: the fused RRF sum (`Σ 1/(60+rank)` across arms, ADR-016). Never compare scores across modes; every score is comparable only within one response. Non-search reads emit no score.
-- **bge query-instruction prefix:** bge-family embedding models are trained asymmetrically — QUERY-side text must be prefixed with `Represent this sentence for searching relevant passages:` plus a trailing space (see `EmbeddingService.QueryInstruction`); document-side text is embedded unprefixed. Semantic search uses `GenerateQueryEmbeddingAsync`; create/reembed/dedup paths use the unprefixed document path. A model swap must re-verify the instruction wording against the new model's card.
-- **512-token embedding ceiling / `MaxBodyLength`:** bge-micro-v2 embeds at most 512 wordpiece tokens (510 content + `[CLS]`/`[SEP]`); the ONNX connector **silently truncates** anything longer — no exception, no log, confirmed empirically to the exact token (#429, 2026-07-22). `BuildInputText` embeds `"{title} {body}"` in one pass, so Title and Body share the budget. Writes enforce `MaxBodyLength = 1500` chars (hard 400; derivation: ~470 body tokens × ~3 chars/token measured on real entries). Entries created before the guard may exceed the cap: they are grandfathered (readable, non-Body PATCHes fine) but their embeddings only reflect the first ~510 tokens, and a Body PATCH must come in under the cap. `MaxTitleLength = 200` guards the Title share of the same budget (#436). Re-derive both constants on any model swap (#437).
+- **No query-instruction prefix (ADR-017):** jina-embeddings-v2-small-en embeds queries and documents symmetrically — NO instruction prefix on either side. The bge-era query prefix (PR #431) was model-specific and was removed with the swap; `EmbeddingServiceTests` pins the no-prefix contract. Any future model swap must re-verify prefix requirements against the new model’s card (bge-family needs one, jina forbids the asymmetry).
+- **6144-token embedding ceiling / `MaxBodyLength` (ADR-017):** the generator is wired with `MaximumTokens = 6144` (`EmbeddingModelInfo`) — the measured coverage plateau for this corpus (99.71%, identical to 8192, at 65% less peak RSS). The ONNX connector **silently truncates** beyond the ceiling — no exception, no log (#429). `BuildInputText` embeds `"{title} {body}"` in one pass, so Title and Body share the window. Writes enforce `MaxBodyLength = 16000` chars (hard 400; ≈5,390 worst-case body tokens at the measured 2.97 chars/token minimum density) and `MaxTitleLength = 200` (#436). Entries created before the model swap have NULL embeddings until `reembed` runs (invisible to semantic/hybrid search, still in keyword results). Ceiling-filling embeds transiently peak ~12 GB RSS — relevant to A2 host sizing, prohibitive for the current Helm limits (#458). Re-derive all constants on any model or ceiling change; ground-truth tables live on issue #437.
 - **A2 binds are plaintext http; non-loopback requires an explicit override:** `install.sh` hardcodes `ASPNETCORE_URLS=http://…` (no TLS on this path), so `preflight` refuses a non-loopback `--bind` unless `--allow-plaintext-bind` is passed (#332). Keep the API on loopback behind a co-located TLS edge (the LAN runbook topology); the override exists only for a remote TLS edge where cleartext on that segment is accepted. `AllowedHosts` is not a mitigation — HostFiltering checks only the client-controlled Host header.
 - **`secrets.env` is sourced, not parsed:** the wrapper, `migrate.sh`, and install flow all `set -a; . secrets.env` (deliberate — quoted `;`-bearing values survive). Consequence: write access to `secrets.env` is code-execution-equivalent in the service context at every start/restart/migrate, not merely config injection. It is the one 600-mode, owner-guarded object in the tree; treat it accordingly (#332, full deployment threat model tracked in #226).
 - **launchd services lack systemd-grade sandboxing:** the systemd unit ships `ProtectSystem`/`ProtectHome`/`RestrictAddressFamilies` etc.; the launchd plists have no first-class equivalent without code-signing/entitlements. Accepted platform-parity gap on macOS A2 installs (#332/#226).

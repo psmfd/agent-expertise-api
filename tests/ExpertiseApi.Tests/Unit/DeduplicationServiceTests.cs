@@ -206,7 +206,7 @@ public class DeduplicationServiceTests
         var requests = new List<CreateExpertiseRequest> { CreateRequest(title: "Unique Title") };
 
         // Build a vector that is orthogonal to _testVector (cosine distance == 1)
-        var orthogonalValues = new float[384];
+        var orthogonalValues = new float[512];
         orthogonalValues[0] = 1.0f; // all other dims zero — orthogonal to random _testVector
         var farVector = new Vector(orthogonalValues);
 

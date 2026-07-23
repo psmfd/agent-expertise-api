@@ -87,8 +87,8 @@ public class BackupRestoreCommandTests : IAsyncLifetime
         audit.Should().HaveCount(seeded.Count, "the audit log is restored verbatim, no new rows for a clean restore");
 
         var metadata = await db.EmbeddingMetadata.SingleAsync();
-        metadata.ModelName.Should().Be("bge-micro-v2");
-        metadata.Dimensions.Should().Be(384);
+        metadata.ModelName.Should().Be("jina-embeddings-v2-small-en");
+        metadata.Dimensions.Should().Be(512);
     }
 
     [Fact]
@@ -236,7 +236,7 @@ public class BackupRestoreCommandTests : IAsyncLifetime
             ReviewState = ReviewState.Approved,
             ReviewedBy = "reviewer@example.com",
             ReviewedAt = new DateTime(2026, 7, 1, 9, 0, 0, DateTimeKind.Utc),
-            Embedding = new Vector(Enumerable.Repeat(0.5f, 384).ToArray()),
+            Embedding = new Vector(Enumerable.Repeat(0.5f, 512).ToArray()),
         };
         var deprecated = new ExpertiseEntry
         {
@@ -262,8 +262,8 @@ public class BackupRestoreCommandTests : IAsyncLifetime
 
         db.EmbeddingMetadata.Add(new EmbeddingMetadata
         {
-            ModelName = "bge-micro-v2",
-            Dimensions = 384,
+            ModelName = "jina-embeddings-v2-small-en",
+            Dimensions = 512,
             LastReembedAt = DateTime.UtcNow,
         });
         await db.SaveChangesAsync();

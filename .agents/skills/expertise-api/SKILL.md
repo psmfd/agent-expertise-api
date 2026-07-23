@@ -83,7 +83,7 @@ cat > /tmp/entry.json <<'EOF'
 }
 EOF
 ./scripts/create.sh --file /tmp/entry.json
-# NOTE: title is capped at 200 characters and body at 1500 (HTTP 400 beyond).
+# NOTE: title is capped at 200 characters and body at 16000 (HTTP 400 beyond).
 # The embedding model sees at most ~510 tokens of "title + body"; longer text
 # would be silently invisible to semantic search, so keep titles concise and
 # bodies focused — split large topics into multiple entries.

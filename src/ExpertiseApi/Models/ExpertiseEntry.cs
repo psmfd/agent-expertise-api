@@ -25,7 +25,7 @@ internal class ExpertiseEntry
 
     public string? SourceVersion { get; set; }
 
-    [Column(TypeName = "vector(384)")]
+    [Column(TypeName = "vector(512)")]
     public Vector? Embedding { get; set; }
 
     public DateTime CreatedAt { get; set; }

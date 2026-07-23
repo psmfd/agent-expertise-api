@@ -1,5 +1,5 @@
 {
-  "$comment": "Golden retrieval-evaluation set (#425). Corpus entries are seeded with REAL bge-micro-v2 embeddings; queries score keyword and semantic retrieval via recall@5/@10 and MRR. Expected titles must match corpus titles exactly. Grow this set when a real agent query misses — add the query with its expected entry.",
+  "$comment": "Golden retrieval-evaluation set (#425). Corpus entries are seeded with REAL embeddings from the pinned ONNX model (ADR-017); queries score keyword and semantic retrieval via recall@5/@10 and MRR. Expected titles must match corpus titles exactly. Grow this set when a real agent query misses — add the query with its expected entry.",
   "corpus": [
     { "domain": "dotnet", "title": "CS8618 non-nullable property warning on EF Core entities", "body": "EF Core entity classes with required string properties raise CS8618 nullable warnings. Use the required modifier or initialize with null! when the ORM guarantees materialization.", "entryType": "Caveat", "severity": "Info" },
     { "domain": "dotnet", "title": "EF Core migration conflict after parallel feature branches", "body": "Two branches each adding a migration produce a model snapshot conflict. Re-scaffold the later migration after rebase: remove it, then run dotnet ef migrations add again.", "entryType": "IssueFix", "severity": "Warning" },

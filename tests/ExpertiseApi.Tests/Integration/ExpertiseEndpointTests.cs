@@ -186,19 +186,19 @@ public class ExpertiseEndpointTests : IAsyncLifetime
     [Fact]
     public async Task CreateEntry_WithOverlongBody_Returns400()
     {
-        // 1500 is the #429 embedding-window cap (MaxBodyLength in ExpertiseEndpoints).
-        var payload = new { domain = "shared", title = "Overlong", body = new string('a', 1501), entryType = "Pattern", severity = "Info", source = "test" };
+        // 16000 is the embedding-window cap (#429 method, re-based by ADR-017).
+        var payload = new { domain = "shared", title = "Overlong", body = new string('a', 16001), entryType = "Pattern", severity = "Info", source = "test" };
         var response = await _client.PostAsJsonAsync("/expertise", payload);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var problem = await response.Content.ReadAsStringAsync();
-        problem.Should().Contain("maximum length of 1500");
+        problem.Should().Contain("maximum length of 16000");
     }
 
     [Fact]
     public async Task CreateEntry_WithBodyAtLimit_Returns201()
     {
-        var payload = new { domain = "shared", title = "At limit", body = new string('a', 1500), entryType = "Pattern", severity = "Info", source = "test" };
+        var payload = new { domain = "shared", title = "At limit", body = new string('a', 16000), entryType = "Pattern", severity = "Info", source = "test" };
         var response = await _client.PostAsJsonAsync("/expertise", payload);
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -242,11 +242,11 @@ public class ExpertiseEndpointTests : IAsyncLifetime
     {
         var entry = await SeedEntryViaRepo("shared", "Patch target");
 
-        var response = await _client.PatchAsJsonAsync($"/expertise/{entry.Id}", new { body = new string('b', 1501) });
+        var response = await _client.PatchAsJsonAsync($"/expertise/{entry.Id}", new { body = new string('b', 16001) });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var problem = await response.Content.ReadAsStringAsync();
-        problem.Should().Contain("maximum length of 1500");
+        problem.Should().Contain("maximum length of 16000");
     }
 
     private async Task<ExpertiseEntry> SeedEntryViaRepo(
