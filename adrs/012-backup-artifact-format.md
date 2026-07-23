@@ -67,7 +67,7 @@ Manifest schema (v1):
   "entriesMerkleRoot": "…",      // RFC 6962 over per-entry BackupRecordHash leaves
   "auditMerkleRoot": "…",        // RFC 6962 over per-audit-row leaves
   "dbSchemaVersion": "…",        // last applied EF migration id at export time
-  "embeddingModel": { "name": "bge-micro-v2", "dims": 384 },
+  "embeddingModel": { "name": "jina-embeddings-v2-small-en", "dims": 512 },
   "payloadSha256": "…"           // SHA-256 of payload.tar.gz.age as stored
 }
 ```

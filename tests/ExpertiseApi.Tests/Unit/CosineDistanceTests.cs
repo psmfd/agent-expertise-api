@@ -65,12 +65,12 @@ public class CosineDistanceTests
     }
 
     [Fact]
-    public void MatchingDimensions_384dim_ShouldReturnValidDistance()
+    public void MatchingDimensions_512dim_ShouldReturnValidDistance()
     {
-        var a = new float[384];
-        var b = new float[384];
+        var a = new float[512];
+        var b = new float[512];
         var rng = new Random(42);
-        for (var i = 0; i < 384; i++)
+        for (var i = 0; i < 512; i++)
         {
             a[i] = (float)(rng.NextDouble() * 2 - 1);
             b[i] = (float)(rng.NextDouble() * 2 - 1);

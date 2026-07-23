@@ -101,7 +101,7 @@ internal static class TestHelpers
     }
 
     /// <summary>Content-independent fixed vector (query vectors / unit-test stubs that don't care).</summary>
-    internal static Vector CreateTestVector(int dimensions = 384)
+    internal static Vector CreateTestVector(int dimensions = 512)
     {
         var values = new float[dimensions];
         var rng = new Random(42);
@@ -118,7 +118,7 @@ internal static class TestHelpers
     /// vector for every input — which made semantic-dedup behaviour structurally unobservable
     /// and forced two integration tests into per-test workarounds.
     /// </summary>
-    internal static float[] CreateContentEmbedding(string content, int dimensions = 384)
+    internal static float[] CreateContentEmbedding(string content, int dimensions = 512)
     {
         var rng = new Random(StableSeed(content));
         var values = new float[dimensions];
@@ -127,7 +127,7 @@ internal static class TestHelpers
         return values;
     }
 
-    internal static Vector CreateContentVector(string content, int dimensions = 384)
+    internal static Vector CreateContentVector(string content, int dimensions = 512)
         => new(CreateContentEmbedding(content, dimensions));
 
     // FNV-1a over UTF-16 code units. Stable across processes, unlike string.GetHashCode

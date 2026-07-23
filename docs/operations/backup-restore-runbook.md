@@ -111,7 +111,7 @@ Idempotent; only touches rows where `IntegrityHash IS NULL`. Costs nothing on a 
 SELECT "ModelName", "Dimensions", "LastReembedAt" FROM "EmbeddingMetadata";
 ```
 
-If that row is absent, or disagrees with the deployed model files (`./scripts/download-models.sh` fetches bge-micro-v2, 384-dim), regenerate:
+If that row is absent, or disagrees with the deployed model files (`./scripts/download-models.sh` fetches jina-embeddings-v2-small-en, 512-dim — ADR-017), regenerate:
 
 ```bash
 dotnet run --project src/ExpertiseApi -- reembed

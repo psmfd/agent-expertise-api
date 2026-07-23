@@ -13,7 +13,7 @@ flowchart LR
     api["expertise-api\n(ASP.NET Core)"]
     pgbouncer["PgBouncer\n(connection pooling)"]
     postgres["PostgreSQL 17\n(pgvector + tsvector)"]
-    onnx["ONNX Runtime\n(bge-micro-v2, 384-dim)"]
+    onnx["ONNX Runtime\n(jina-v2-small, 512-dim)"]
 
     agents -->|"HTTP + Bearer token"| api
     api --> pgbouncer --> postgres
@@ -28,7 +28,7 @@ flowchart LR
 | Framework | ASP.NET Core Minimal APIs |
 | Database | PostgreSQL 17 + pgvector + tsvector |
 | Connection pooling | PgBouncer 1.21+ (transaction mode) |
-| Embeddings | In-process ONNX (bge-micro-v2, 384-dim) |
+| Embeddings | In-process ONNX (jina-embeddings-v2-small-en, 512-dim, 6144-token ceiling — ADR-017) |
 | Data access | EF Core (repository pattern) |
 | API docs | Scalar (OpenAPI) |
 | Local dev | Docker Compose |
@@ -45,7 +45,7 @@ The three POST writes (`/expertise`, `/expertise/{id}/approve`, `/expertise/{id}
 | GET | `/expertise/drafts` | — | List Draft + Rejected entries in caller's tenant (requires `expertise.write.approve`) |
 | POST | `/expertise` | **required** | Create entry (generates embedding, writes audit row) |
 | POST | `/expertise/batch` | — | Create up to 100 entries (generates embeddings, deduplicates) |
-| PATCH | `/expertise/{id}` | — | Update entry. Approved entries regress to Draft if caller lacks `write.approve`. Changing `visibility` — or PATCHing a `shared` entry at all (#330) — requires `write.approve`. Title ≤ 200 chars, body ≤ 1500 (embedding-window guards). |
+| PATCH | `/expertise/{id}` | — | Update entry. Approved entries regress to Draft if caller lacks `write.approve`. Changing `visibility` — or PATCHing a `shared` entry at all (#330) — requires `write.approve`. Title ≤ 200 chars, body ≤ 16000 (embedding-window guards, ADR-017). |
 | DELETE | `/expertise/{id}` | — | Soft delete (sets DeprecatedAt). Shared entries require `expertise.write.approve` |
 | POST | `/expertise/{id}/approve` | **required** | Transition Draft → Approved (requires `expertise.write.approve`) |
 | POST | `/expertise/{id}/reject` | **required** | Transition Draft → Rejected with required reason (requires `expertise.write.approve`) |

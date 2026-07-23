@@ -84,6 +84,75 @@ public class MigrationReversibilityTests : IAsyncLifetime
         await AssertActorClassColumnsExist(db, expected: false);
     }
 
+    [Fact]
+    public async Task SwapEmbeddingModelTo512Dim_NullsPopulated384DimData_AndRetypes()
+    {
+        // ADR-017. The empty-DB apply path is exercised by every PostgresFixture
+        // test for free; THIS test covers the only path where the migration's
+        // internal ordering matters — an UPGRADE over populated 384-dim rows.
+        // pgvector's typmod cast rejects a naive ALTER COLUMN TYPE over live
+        // vectors, so a migration that "works" on fresh CI databases would break
+        // the first real production upgrade. Seeding uses raw SQL because the
+        // current EF model already reflects vector(512).
+        await using var db = NewContext();
+        var migrator = db.GetInfrastructure().GetRequiredService<IMigrator>();
+
+        await migrator.MigrateAsync(SwapBaselineMigration);
+
+        var conn = db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open)
+            await conn.OpenAsync();
+        await using (var insert = conn.CreateCommand())
+        {
+            insert.CommandText = """
+                INSERT INTO "ExpertiseEntries"
+                    ("Domain","Tags","Title","Body","EntryType","Severity","Source",
+                     "Tenant","Visibility","AuthorPrincipal","ReviewState","Embedding")
+                VALUES ('mig','{}','migration seed','populated 384-dim row','Pattern','Info','human',
+                        'legacy','Private','test','Approved',
+                        (SELECT array_agg(0.5)::vector(384) FROM generate_series(1,384)));
+                """;
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        await migrator.MigrateAsync(SwapMigration);
+
+        (await ScalarLong(db, """
+            SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_name = 'ExpertiseEntries' AND column_name = 'Embedding'
+              AND udt_name = 'vector';
+            """)).Should().Be(1);
+        (await ScalarLong(db, """SELECT atttypmod FROM pg_attribute WHERE attrelid = '"ExpertiseEntries"'::regclass AND attname = 'Embedding';"""))
+            .Should().Be(512, "the column typmod must carry the new dimension");
+        (await ScalarLong(db, """SELECT COUNT(*) FROM "ExpertiseEntries" WHERE "Embedding" IS NOT NULL;"""))
+            .Should().Be(0, "old-model vectors are garbage in the new space and must be nulled");
+        (await ScalarLong(db, """SELECT COUNT(*) FROM "ExpertiseEntries";"""))
+            .Should().Be(1, "the row itself must survive — only its embedding is invalidated");
+        (await ScalarLong(db, """SELECT COUNT(*) FROM pg_indexes WHERE tablename = 'ExpertiseEntries' AND indexname = 'IX_ExpertiseEntries_Embedding' AND indexdef LIKE '%hnsw%';"""))
+            .Should().Be(1, "the HNSW index must be recreated after the retype");
+
+        // Down(): the column type reverts; the destroyed vectors do NOT come
+        // back (forward-only in practice — ADR-017 rollback section).
+        await migrator.MigrateAsync(SwapBaselineMigration);
+        (await ScalarLong(db, """SELECT atttypmod FROM pg_attribute WHERE attrelid = '"ExpertiseEntries"'::regclass AND attname = 'Embedding';"""))
+            .Should().Be(384);
+        (await ScalarLong(db, """SELECT COUNT(*) FROM "ExpertiseEntries" WHERE "Embedding" IS NOT NULL;"""))
+            .Should().Be(0, "Down() cannot restore destroyed vectors — documented, deliberate");
+    }
+
+    private const string SwapBaselineMigration = "20260723135538_EmbeddingMetadataSingletonGuard";
+    private const string SwapMigration = "20260723141427_SwapEmbeddingModelTo512Dim";
+
+    private static async Task<long> ScalarLong(ExpertiseDbContext db, string sql)
+    {
+        var conn = db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open)
+            await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        return Convert.ToInt64(await cmd.ExecuteScalarAsync());
+    }
+
     private static async Task AssertActorClassColumnsExist(ExpertiseDbContext db, bool expected)
     {
         foreach (var column in new[] { "ActorClass", "AuthMethod", "ActorClassHeader" })

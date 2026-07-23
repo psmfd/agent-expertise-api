@@ -52,7 +52,7 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
             var entry = TestHelpers.SeedEntry(
                 domain: "reembed", title: $"entry {i}", body: $"body {i}",
                 tenant: i % 2 == 0 ? "team-a" : "team-b");
-            entry.Embedding = new Vector(new float[384]);
+            entry.Embedding = new Vector(new float[512]);
             db.ExpertiseEntries.Add(entry);
             await db.SaveChangesAsync();
             seeded.Add(entry);
@@ -72,9 +72,56 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
         }
 
         var metadata = await verify.EmbeddingMetadata.SingleAsync();
-        metadata.ModelName.Should().Be("bge-micro-v2");
-        metadata.Dimensions.Should().Be(384);
+        metadata.ModelName.Should().Be("jina-embeddings-v2-small-en");
+        metadata.Dimensions.Should().Be(512);
         metadata.LastReembedAt.Should().NotBe(default);
+    }
+
+    [Fact]
+    public async Task Reembed_OverwritesStaleEmbeddingMetadata()
+    {
+        // #455: a pre-existing metadata row describing a PREVIOUS model must be
+        // corrected by reembed — after a full reembed the stored vectors are, by
+        // construction, the current model's. The pre-fix get-or-create only
+        // stamped LastReembedAt and left the stale identity in place.
+        await using (var db = NewContext())
+        {
+            db.EmbeddingMetadata.Add(new EmbeddingMetadata
+            {
+                ModelName = "previous-model",
+                Dimensions = 999,
+                LastReembedAt = DateTime.UtcNow.AddDays(-30)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var app = BuildApp())
+            await ReembedCommand.RunAsync(app, ["reembed"]);
+
+        await using var verify = NewContext();
+        var metadata = await verify.EmbeddingMetadata.SingleAsync();
+        metadata.ModelName.Should().Be("jina-embeddings-v2-small-en");
+        metadata.Dimensions.Should().Be(512);
+        metadata.LastReembedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
+    }
+
+    [Fact]
+    public async Task EmbeddingMetadata_SecondRow_IsRejectedByDbSingletonGuard()
+    {
+        // #455: the singleton invariant is enforced at the DB level
+        // (UX_EmbeddingMetadata_Singleton) so a get-or-create race duplicates
+        // loudly instead of silently.
+        await using (var db = NewContext())
+        {
+            db.EmbeddingMetadata.Add(new EmbeddingMetadata { ModelName = "m1", Dimensions = 1 });
+            await db.SaveChangesAsync();
+        }
+
+        await using var second = NewContext();
+        second.EmbeddingMetadata.Add(new EmbeddingMetadata { ModelName = "m2", Dimensions = 2 });
+        var act = () => second.SaveChangesAsync();
+        await act.Should().ThrowAsync<DbUpdateException>(
+            "the unique constant-expression index must reject a second metadata row");
     }
 
     [Fact]

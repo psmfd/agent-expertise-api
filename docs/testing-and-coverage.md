@@ -120,8 +120,8 @@ the csproj makes them reachable. Prefer this over re-deriving the logic in the t
 
 Correctness tests use the content-derived mock embeddings above; retrieval *quality*
 cannot be measured that way. `tests/ExpertiseApi.Tests/Evaluation/` holds an opt-in
-harness (#425) that seeds the corpus in `golden-set.json` with **real** bge-micro-v2
-embeddings (via `AddBertOnnxEmbeddingGenerator`), runs every golden query through
+harness (#425) that seeds the corpus in `golden-set.json` with **real** embeddings
+from the pinned ONNX model (jina-embeddings-v2-small-en, ADR-017) (via `AddBertOnnxEmbeddingGenerator`), runs every golden query through
 keyword and semantic search, and reports recall@5 / recall@10 / MRR@10 per mode plus
 every miss:
 
@@ -138,6 +138,14 @@ Baseline 2026-07-22 (post PR #431): keyword 0.367 recall@10 (identifier queries 
 paraphrases return empty — `websearch_to_tsquery` ANDs all terms), semantic 1.000
 recall@10 / 0.894 MRR. Grow `golden-set.json` whenever a real agent query misses:
 add the query with its expected entry titles.
+
+A sibling suite, `NeedleEvalTests` (#437), gates long-context retrieval: eight
+deterministic ~8-10k-char documents with a distinctive fact planted at controlled
+depths, ranked through the same repository search paths. Its floors are
+**window-aware** — only needles whose worst-case token position fits inside
+`EmbeddingModelInfo.MaximumTokens` are asserted — so the suite passes at any
+ceiling and automatically activates deeper needles when the ceiling is raised
+(the #437 model swap). Same `EXPERTISE_EVAL=1` gating, filter `~NeedleEval`.
 
 ## Verifying a guard actually guards
 

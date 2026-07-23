@@ -725,11 +725,16 @@ publish_app_staged() {
 # ---------------------------------------------------------------------------
 ensure_models() {
   STAGE="models"
-  if [[ -f "${MODEL_DIR}/model.onnx" && -f "${MODEL_DIR}/vocab.txt" ]]; then
-    log "ONNX models present at ${MODEL_DIR}"
-    return
-  fi
-  log "downloading ONNX models to ${MODEL_DIR}"
+  # Same symlink-TOCTOU refusal as every other mutated path in this script
+  # (STAGE_DIR/OLD_DIR/VERSION_MARKER/install.env) — a pre-planted symlink
+  # here would redirect the model download outside the prefix (review
+  # finding, 2026-07-23).
+  if [[ -L "${MODEL_DIR}" ]]; then err "${MODEL_DIR} exists as a symlink — refusing to overwrite (potential TOCTOU)"; fi
+  # Always delegate to download-models.sh — it skips files whose checksum
+  # matches the pinned SHA-256 and re-downloads stale ones, so upgrade
+  # installs pick up a model version bump. Gating on file existence here
+  # (the pre-#456 behavior) silently kept an outdated model on upgrades.
+  log "ensuring ONNX models at ${MODEL_DIR}"
   mkdir -p "${MODEL_DIR}"
   DEST_DIR="${MODEL_DIR}" "${REPO_ROOT}/scripts/download-models.sh"
 }

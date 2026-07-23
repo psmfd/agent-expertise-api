@@ -200,7 +200,7 @@ public class SyncWorkerTests : IAsyncLifetime
             ReviewedBy = state == ReviewState.Approved ? "reviewer@spoke.local" : null,
             ReviewedAt = state == ReviewState.Approved ? DateTime.UtcNow : null,
             DeprecatedAt = deprecatedAt,
-            Embedding = new Vector(new float[384]),
+            Embedding = new Vector(new float[512]),
         };
 
         var hidden = new List<ExpertiseEntry>

@@ -44,6 +44,11 @@ internal static class ReembedCommand
             }
 
             await db.SaveChangesAsync();
+            // Bound the tracker to one batch — without this the context tracks
+            // every processed entity for the whole run, and DetectChanges cost
+            // grows with corpus size while the host is also absorbing the
+            // model's inference transients (review finding, 2026-07-23).
+            db.ChangeTracker.Clear();
             lastId = entries[^1].Id;
             processed += entries.Count;
             logger.LogInformation("Reembedded {Processed} entries", processed);
@@ -52,10 +57,15 @@ internal static class ReembedCommand
         var metadata = await db.EmbeddingMetadata.FirstOrDefaultAsync()
             ?? db.EmbeddingMetadata.Add(new EmbeddingMetadata
             {
-                ModelName = "bge-micro-v2",
-                Dimensions = 384
+                ModelName = EmbeddingModelInfo.Name,
+                Dimensions = EmbeddingModelInfo.Dimensions
             }).Entity;
 
+        // Always overwrite — a pre-existing row may describe a previous model
+        // (#455); after a full reembed the stored vectors are, by construction,
+        // the current model's.
+        metadata.ModelName = EmbeddingModelInfo.Name;
+        metadata.Dimensions = EmbeddingModelInfo.Dimensions;
         metadata.LastReembedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 

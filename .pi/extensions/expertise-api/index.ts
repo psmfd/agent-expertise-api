@@ -393,7 +393,7 @@ export default function (pi: ExtensionAPI): void {
 		name: "expertise_search_semantic",
 		label: "Expertise Search (Semantic)",
 		description:
-			"Semantic vector search via /expertise/search/semantic?q=. The server embeds the query in-process (bge-micro-v2, 384-dim) and ranks by cosine similarity. Use for conceptual or paraphrased queries.",
+			"Semantic vector search via /expertise/search/semantic?q=. The server embeds the query in-process with its configured embedding model and ranks by cosine similarity. Use for conceptual or paraphrased queries.",
 		promptSnippet:
 			"Semantic (vector) search over expertise — use for conceptual queries.",
 		promptGuidelines: [

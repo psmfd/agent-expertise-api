@@ -25,15 +25,15 @@ namespace ExpertiseApi.Cli;
 ///   * v1 is <c>--mode replace</c> only: target tables must be empty.
 ///   * Pending EF migrations → abort (MigrateCommand idiom).
 ///   * Manifest embedding model vs live EmbeddingMetadata mismatch → abort loudly,
-///     directing to <c>reembed</c>. Embeddings whose dimensions don't fit the
-///     vector(384) column are skipped (regenerable), never a reason to abort.
+///     directing to <c>reembed</c>. Embeddings whose dimensions don't fit the live
+///     vector(N) column (N = <see cref="EmbeddingModelInfo.Dimensions"/>) are
+///     skipped (regenerable), never a reason to abort.
 /// </summary>
 internal static class RestoreCommand
 {
     public static bool IsRestoreRequested(string[] args) =>
         args.Length > 0 && args[0].Equals("restore", StringComparison.OrdinalIgnoreCase);
 
-    private const int EmbeddingDimensions = 384;
     private const string QuarantinePrincipal = "restore-cli";
 
     /// <summary>Imports a decrypted backup payload written by <see cref="BackupCommand"/>, verifying per-record hashes and Merkle roots against the manifest.</summary>
@@ -118,12 +118,12 @@ internal static class RestoreCommand
                 return 1;
             }
 
-            var importEmbeddings = manifest.EmbeddingModel is { Dims: EmbeddingDimensions };
+            var importEmbeddings = manifest.EmbeddingModel is { Dims: EmbeddingModelInfo.Dimensions };
             if (!importEmbeddings && manifest.EmbeddingModel is not null)
             {
                 logger.LogWarning(
                     "Restore: manifest embedding model {Model}/{Dims} does not fit the vector({Expected}) column — embeddings will be skipped; run `reembed` after restore.",
-                    manifest.EmbeddingModel.Name, manifest.EmbeddingModel.Dims, EmbeddingDimensions);
+                    manifest.EmbeddingModel.Name, manifest.EmbeddingModel.Dims, EmbeddingModelInfo.Dimensions);
             }
 
             // ---- Phase 1: parse + verify everything BEFORE writing anything. ----
@@ -209,7 +209,7 @@ internal static class RestoreCommand
                         Severity = ParseEnum<Severity>(record.Severity, record.Id),
                         Source = record.Source,
                         SourceVersion = record.SourceVersion,
-                        Embedding = importEmbeddings && record.Embedding is { Count: EmbeddingDimensions }
+                        Embedding = importEmbeddings && record.Embedding is { Count: EmbeddingModelInfo.Dimensions }
                             ? new Vector(record.Embedding.ToArray())
                             : null,
                         CreatedAt = record.CreatedAt,
