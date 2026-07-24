@@ -10,7 +10,15 @@ namespace ExpertiseApi.Services;
 internal class DeduplicationOptions
 {
     public bool Enabled { get; set; } = true;
-    public double SemanticThreshold { get; set; } = 0.10;
+
+    // Cosine-DISTANCE ceiling for the semantic near-duplicate check, calibrated
+    // per embedding model (#457, ADR-017 Amendment 1): under jina-v2-small the
+    // live corpus's true near-dups sit at <= 0.048 and its closest genuinely
+    // distinct same-domain neighbors begin at ~0.051, so 0.05 splits the valley.
+    // Biased LOW by design — a false 409 rejects a legitimate write, a miss
+    // merely lands as a Draft for curator review. Gate any change with
+    // EXPERTISE_EVAL=1 DedupThresholdEvalTests.
+    public double SemanticThreshold { get; set; } = 0.05;
 }
 
 internal class DeduplicationService(IExpertiseRepository repo, IOptions<DeduplicationOptions> options)

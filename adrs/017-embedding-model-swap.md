@@ -127,7 +127,8 @@ reembed — embeddings are regenerable, content is the source of truth) or full
 
 - `Deduplication:SemanticThreshold = 0.10` was calibrated to bge's distance
   geometry; it is re-derived against the jina space after the production
-  reembed (#457). Until then dedup under-fires only.
+  reembed (#457). Until then dedup under-fires only. *(Resolved — see
+  Amendment 1 below: retuned to 0.05 on 2026-07-24.)*
 - The eval gates (`RetrievalEvalTests`, window-aware `NeedleEvalTests`, #437
   PR-B) are the merge gate for this and any future retrieval change; they are
   `EXPERTISE_EVAL=1` opt-in, so running them is a release-checklist step, not
@@ -136,6 +137,37 @@ reembed — embeddings are regenerable, content is the source of truth) or full
   keyed on `download-models.sh` (added with #456's fix).
 - Helm/k8s resource sizing is NOT covered — tracked in #458; A2 native service
   remains the hosting model of record.
+
+## Amendment 1 (2026-07-24): `Deduplication:SemanticThreshold` retuned 0.10 → 0.05 (#457)
+
+The Consequences section deferred the dedup-threshold retune to #457, gated on
+the production reembed. Measured on the live corpus (604 approved embedded
+entries, within-domain nearest-neighbor cosine distances over the stored
+jina-v2-small vectors, pgvector `<=>`):
+
+- **True duplicates cluster at ≈ 0** — 131 entries with NN distance < 0.01,
+  130/131 with byte-identical bodies (accumulated while dedup under-fired,
+  e.g. during the swap's NULL-embedding window).
+- **Hand-labeled near-dups (retitles/light rewordings of the same fact)
+  extend to ≤ 0.048**; the valley 0.01–0.05 holds only 6 entries, all labeled
+  near-dup.
+- **The closest genuinely distinct same-domain neighbors begin at ≈ 0.051**,
+  with the distinct mass at 0.06–0.13 peaking around 0.10–0.13. The bge-era
+  0.10 default sits INSIDE that mass: 272/604 entries (45%) have a legitimate
+  distinct neighbor within 0.10, i.e. under jina geometry 0.10 would false-409
+  roughly half of comparable future submissions.
+- Synthetic pair measurement with the real model (`DedupThresholdEvalTests`)
+  agrees: light rewordings 0.016–0.048, moderate rewordings 0.052–0.065, full
+  paraphrases 0.13–0.16, distinct same-topic pairs ≥ 0.12.
+
+**Decision: 0.05** — the valley midpoint. Biased low deliberately: a false 409
+rejects a legitimate write (the costly, user-visible failure); a missed
+near-dup lands as a Draft in the curator review queue (noise). Moderate and
+full rewordings of the same fact are accepted under-fire — they are
+geometrically inseparable from distinct entries under this model. Changes to
+the threshold or model must re-run `EXPERTISE_EVAL=1
+dotnet test --filter DedupThresholdEval` and re-derive against the live corpus
+per the method above (recorded in #457).
 
 ## Related
 
