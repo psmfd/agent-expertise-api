@@ -229,8 +229,54 @@ internal static class ExpertiseEndpoints
               "Title shares the embedding window with Body; keep titles concise and put detail in the body."
             : null;
 
+    // Short-field caps (#470, #333 Finding 1 adjacent). Title/Body are bounded by the
+    // embedding-window derivations above; Domain/Source/SourceVersion/Tags previously had
+    // only a non-empty check, leaving an unbounded write surface that inflates the
+    // ResponseHygiene slow path (LargeBodyThreshold) and is a minor write-side DoS vector
+    // independent of the delimiter-injection concern Finding 1 closes. Caps sit far above
+    // any legitimate value (observed corpus: domains/sources are short slugs), so no real
+    // caller is affected — this ships as a non-breaking fix, not a MAJOR contract change.
+    private const int MaxDomainLength = 128;
+    private const int MaxSourceLength = 128;
+    private const int MaxSourceVersionLength = 64;
+    private const int MaxTagLength = 64;
+    private const int MaxTagCount = 32;
+
+    private static string? ShortFieldLengthError(string? value, string fieldName, int max) =>
+        value is { } v && v.Length > max
+            ? $"{fieldName} exceeds maximum length of {max} characters (got {v.Length})."
+            : null;
+
+    private static string? TagsLengthError(IReadOnlyList<string>? tags)
+    {
+        if (tags is null)
+            return null;
+        if (tags.Count > MaxTagCount)
+            return $"Tags exceed maximum count of {MaxTagCount} (got {tags.Count}).";
+        for (var i = 0; i < tags.Count; i++)
+        {
+            if (tags[i] is { Length: > MaxTagLength } tag)
+                return $"Tag at index {i} exceeds maximum length of {MaxTagLength} characters (got {tag.Length}).";
+        }
+        return null;
+    }
+
+    // Unified field-length gate shared by create, update, and batch so all three paths
+    // enforce the same caps. Each per-field helper no-ops on null, so it is safe for the
+    // all-optional UpdateExpertiseRequest shape.
+    private static string? FieldLengthError(
+        string? domain, string? title, string? body,
+        string? source, string? sourceVersion, IReadOnlyList<string>? tags) =>
+        TitleLengthError(title)
+            ?? BodyLengthError(body)
+            ?? ShortFieldLengthError(domain, "Domain", MaxDomainLength)
+            ?? ShortFieldLengthError(source, "Source", MaxSourceLength)
+            ?? ShortFieldLengthError(sourceVersion, "SourceVersion", MaxSourceVersionLength)
+            ?? TagsLengthError(tags);
+
     private static string? LengthError(CreateExpertiseRequest request) =>
-        TitleLengthError(request.Title) ?? BodyLengthError(request.Body);
+        FieldLengthError(request.Domain, request.Title, request.Body,
+            request.Source, request.SourceVersion, request.Tags);
 
     private static async Task<IResult> CreateEntry(
         CreateExpertiseRequest request,
@@ -287,7 +333,8 @@ internal static class ExpertiseEndpoints
     {
         var tenantContext = httpContext.RequireTenantContext();
 
-        if ((TitleLengthError(request.Title) ?? BodyLengthError(request.Body)) is { } lengthError)
+        if (FieldLengthError(request.Domain, request.Title, request.Body,
+                request.Source, request.SourceVersion, request.Tags) is { } lengthError)
             return Results.Problem(lengthError, statusCode: 400);
 
         var needsReembed = request.Title is not null || request.Body is not null;
