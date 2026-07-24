@@ -352,6 +352,8 @@ Scope shorthand (`read`, `draft`, `approve`, `admin`) expands to full scope stri
 
 CodeQL, Trivy, and Hadolint run in separate workflows — see [Security Scanning](#security-scanning).
 
+> **Breaking releases need a `BREAKING CHANGE:` footer, not just `!`.** `.releaserc` uses the default semantic-release **angular** preset, whose commit parser does **not** honor the `type(scope)!:` shorthand — a `fix!`/`feat!` header alone is silently ignored and produces *no release* (observed on the v2.0.0 promotion #476). A MAJOR bump requires an explicit `BREAKING CHANGE:` footer in the commit body. Tracked in #477 (switch to the `conventionalcommits` preset so `!` works as `rules/semver-tagging.md` documents).
+
 GHCR image: `ghcr.io/psmfd/agent-expertise-api` (multi-arch: amd64 + arm64).
 
 ### OpenAPI breaking-change gate
