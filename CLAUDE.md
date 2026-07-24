@@ -193,12 +193,12 @@ Env contract used by every script in the skill:
 mkdir -p ~/.config/expertise-api
 cat > ~/.config/expertise-api/secrets.env <<'EOF'
 EXPERTISE_API_BASE_URL=https://expertise.example.com
-EXPERTISE_API_TOKEN=...
+EXPERTISE_API_TOKEN_FILE=/path/to/token.jwt
 EOF
 chmod 600 ~/.config/expertise-api/secrets.env
 ```
 
-The scripts source that file automatically when present — no per-shell exports needed.
+The scripts source that file automatically when present — no per-shell exports needed. `EXPERTISE_API_TOKEN_FILE` (recommended, #464) points at a file holding the token so no bearer literal sits in the env file; `EXPERTISE_API_TOKEN=...` inline also works and wins when both are set. Both the skill scripts and the pi extension honor the indirection.
 
 ## Native OS service install (Archetype A2)
 

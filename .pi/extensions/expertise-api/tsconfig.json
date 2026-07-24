@@ -15,5 +15,5 @@
     "allowImportingTsExtensions": false,
     "noEmit": true
   },
-  "include": ["index.ts", "apiCall.test.ts"]
+  "include": ["index.ts", "apiCall.test.ts", "resolveToken.test.ts"]
 }
