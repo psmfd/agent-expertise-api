@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -169,6 +170,44 @@ public class ApprovalWorkflowTests : IAsyncLifetime
         var response = await approver.PostAsJsonAsync($"/expertise/{draft.Id}/approve", new { });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Approve_ByNonHumanActor_IsAllowedButEmitsAnomalyMetric()
+    {
+        // #484: a Service-classified reviewer (sub == azp) with write.approve is NOT blocked —
+        // the attribution collapse is made observable, not enforced. The counter must tick.
+        var draft = await SeedDraft(authorPrincipal: "draft-author");
+        var token = JwtTokenMinter.Mint(
+            tenant: "test",
+            scopes: [AuthConstants.ReadScope, AuthConstants.WriteApproveScope],
+            sub: "svc-reviewer", azp: "svc-reviewer", groups: ["group-test"]);
+        using var svc = _factory.CreateClient();
+        svc.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var before = await ReadNonHumanReviewCounter("Approved", "Service");
+        var response = await svc.PostAsJsonAsync($"/expertise/{draft.Id}/approve", new { });
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var after = await ReadNonHumanReviewCounter("Approved", "Service");
+        after.Should().Be(before + 1, "a non-Human approve must increment the attribution anomaly counter");
+    }
+
+    // Parse the /metrics text exposition for the labeled anomaly counter; 0 when the series
+    // does not exist yet. Delta assertions tolerate the process-global counter accumulating
+    // across tests.
+    private async Task<double> ReadNonHumanReviewCounter(string action, string actorClass)
+    {
+        using var client = _factory.CreateClient(); // /metrics is auth-free
+        var text = await (await client.GetAsync("/metrics")).Content.ReadAsStringAsync();
+        var needle = $"expertise_review_non_human_total{{action=\"{action}\",actor_class=\"{actorClass}\"}}";
+        foreach (var line in text.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith(needle, StringComparison.Ordinal))
+                return double.Parse(trimmed[needle.Length..].Trim(), CultureInfo.InvariantCulture);
+        }
+        return 0;
     }
 
     [Fact]
