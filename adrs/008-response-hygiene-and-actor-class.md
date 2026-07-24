@@ -69,9 +69,41 @@ Both controls define cross-cutting consumer contracts (request header shape for 
 - C7 hygiene is also applied to the ProblemDetails `errors` extension (validation-message dictionary) via the existing `CustomizeProblemDetails` callback. Closes the validation-echo exfil channel C4 alone doesn't cover. `Title` and `Detail` remain untouched — they are server-authored strings whose exact text is part of the API contract.
 - IPv4/IPv6 addresses are now a PII detector class (GDPR Art. 4(1), CJEU Breyer C-582/14). Admin sees raw addresses on `/audit` and `/audit/{id}/raw`; the future non-admin audit surface, when added, can re-use the same detector to mask.
 
+## Amendment 1 (2026-07-24, #333 Finding 1): C7 envelope extended to all caller-supplied free-text fields
+
+The original C7 scope (Decision Outcome above) wrapped only `Title`, `Body`, and
+`RejectionReason` (plus `OriginAuthorPrincipal`, added with ADR-013). An OWASP-AI
+review (#333) found that the sibling fields **`Domain`, `Source`, `SourceVersion`,
+and each `Tags` element** shipped **raw**: they are `required`/nullable strings with
+no server-side validation (no enum, no allow-list, no length cap), so a
+`write.draft` caller could place a forged closing delimiter plus an injected
+instruction in `Source` and it would reach a higher-trust curator agent via
+`GET /expertise/drafts` completely unneutralized — the exact stored-injection
+threat C7 exists to close.
+
+**Decision:** these four fields now route through the **`user-supplied-free-text`**
+pipeline (the same class as `Title`/`Body`), emitted as `HygienizedField`
+(`Domain`/`Source`/`SourceVersion`) or `List<HygienizedField>` (`Tags`, one element
+per tag) under the response's shared nonce. `AuthorAgent` was evaluated and left
+`trusted-structured` — it is server-set from the authenticated principal
+(`tenantContext.Agent`), not caller-supplied.
+
+**Breaking-change note:** unlike the original envelope adoption (Negative
+consequence above), this repo is now **released (v1.6.0+)** with published OpenAPI
+consumers, so the C7 scope extension is a genuine **MAJOR** version bump (v2.0.0),
+not a free pre-consumer change. It ships behind the `breaking-change-approved`
+label. A non-breaking wrapped-string-in-place alternative was considered and
+rejected: it would leave the response contract internally inconsistent (four
+`user-supplied-free-text` fields as objects, four as bare strings) for no security
+benefit.
+
+Length caps on these four fields (an independent write-side gap surfaced by the
+same review) are tracked separately in #470.
+
 ## Links
 
 - [Integration threat model](../docs/security/integration-threat-model.md) Part D C6 / C7 / D1 / D2
+- Issue #333 (Amendment 1 — sibling free-text field coverage)
 - [ADR-003 \u2014 Four-scope split](003-scope-split.md) (amended by addition of `expertise.agent`)
 - [ADR-007 \u2014 Avoid MCP as the LLM-integration channel](007-avoid-mcp-as-llm-integration-channel.md) (depends on Part D landing)
 - Issue #168 (this implementation)

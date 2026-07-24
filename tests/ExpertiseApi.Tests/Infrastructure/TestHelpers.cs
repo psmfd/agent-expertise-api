@@ -57,6 +57,16 @@ internal static class TestHelpers
         return doc.RootElement.Clone();
     }
 
+    /// <summary>
+    /// Read the <c>value</c> of a hygienized free-text field (#333 Finding 1 / ADR-008
+    /// Amendment 1). Fields like <c>domain</c>, <c>source</c>, <c>title</c>, and each
+    /// <c>tags</c> element are emitted as <c>{ contentClass, value, hygieneApplied }</c>
+    /// objects; the <c>value</c> is the delimiter-wrapped string, so assertions that
+    /// only care about the underlying content use <c>Contains</c> against this.
+    /// </summary>
+    internal static string HygienizedValue(this JsonElement entry, string field)
+        => entry.GetProperty(field).GetProperty("value").GetString()!;
+
     internal static HttpClient CreateAuthenticatedClient(ApiFactory factory)
     {
         var client = factory.CreateClient();
