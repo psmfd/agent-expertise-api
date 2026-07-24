@@ -16,6 +16,17 @@ public class DeduplicationServiceTests
     private readonly Vector _testVector = TestHelpers.CreateTestVector();
     private readonly TenantContext _ctx = TestHelpers.CreateTenantContext();
 
+    [Fact]
+    public void SemanticThreshold_DefaultIsTheAdr017Amendment1Value()
+    {
+        // Pins the shipped default (#457, ADR-017 Amendment 1: derived against
+        // the jina-v2-small corpus geometry). Runs in normal CI — unlike the
+        // EXPERTISE_EVAL-gated DedupThresholdEvalTests — so an accidental
+        // default drift is caught without the opt-in eval pass. Change both
+        // together, re-deriving per the amendment's method.
+        new DeduplicationOptions().SemanticThreshold.Should().Be(0.05);
+    }
+
     private DeduplicationService CreateService(bool enabled = true, double threshold = 0.10)
     {
         var options = Options.Create(new DeduplicationOptions
@@ -184,7 +195,7 @@ public class DeduplicationServiceTests
 
         // No exact title match — entry title differs
         var domainEntry = TestHelpers.SeedEntry(title: "Similar But Different Title");
-        // Use the same vector so cosine distance == 0, well below the 0.10 threshold
+        // Use the same vector so cosine distance == 0, well below any sane threshold
         domainEntry.Embedding = _testVector;
 
         _repo.FindExactMatchesAsync("shared", Arg.Any<IReadOnlyList<string>>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
