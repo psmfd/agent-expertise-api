@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -46,15 +47,21 @@ public class ApprovalWorkflowTests : IAsyncLifetime
         return client;
     }
 
+    // Drafts are authored by a DISTINCT principal from the reviewer by default, so the
+    // normal cross-review flow passes the ADR-018 separation-of-duties gate. Pass
+    // authorPrincipal: "test-principal" (the JwtTokenMinter default sub) to seed a
+    // self-authored draft that exercises the gate.
     private async Task<ExpertiseEntry> SeedDraft(
         string tenant = "test",
         string title = "needs review",
-        string body = "draft body content")
+        string body = "draft body content",
+        string authorPrincipal = "draft-author")
     {
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
         var entry = TestHelpers.SeedEntry(
-            tenant: tenant, title: title, body: body, reviewState: ReviewState.Draft);
+            tenant: tenant, title: title, body: body,
+            authorPrincipal: authorPrincipal, reviewState: ReviewState.Draft);
         db.ExpertiseEntries.Add(entry);
         await db.SaveChangesAsync();
         return entry;
@@ -106,6 +113,101 @@ public class ApprovalWorkflowTests : IAsyncLifetime
         var response = await writer.PostAsJsonAsync($"/expertise/{draft.Id}/approve", new { });
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    // ---- ADR-018 separation of duties: author != reviewer ----
+
+    [Fact]
+    public async Task Approve_OwnDraft_Returns403()
+    {
+        // Draft authored by the reviewer's own sub ("test-principal", the minter default).
+        var draft = await SeedDraft(authorPrincipal: "test-principal");
+        using var approver = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteApproveScope);
+
+        var response = await approver.PostAsJsonAsync($"/expertise/{draft.Id}/approve", new { });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        // The draft must remain in Draft — a blocked self-approval must not mutate state.
+        var reader = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteApproveScope);
+        var drafts = await (await reader.GetAsync("/expertise/drafts")).Content.ReadJsonElementAsync();
+        drafts.EnumerateArray().Should().Contain(e => e.GetProperty("id").GetGuid() == draft.Id);
+    }
+
+    [Fact]
+    public async Task Reject_OwnDraft_Returns403()
+    {
+        var draft = await SeedDraft(authorPrincipal: "test-principal");
+        using var approver = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteApproveScope);
+
+        var response = await approver.PostAsJsonAsync(
+            $"/expertise/{draft.Id}/reject", new { rejectionReason = "self-reject attempt" });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Approve_OwnDraft_WithAdmin_Succeeds()
+    {
+        // expertise.admin is the audited break-glass for the solo-operator case.
+        var draft = await SeedDraft(authorPrincipal: "test-principal");
+        using var admin = ClientWithScopes(AuthConstants.AdminScope);
+
+        var response = await admin.PostAsJsonAsync($"/expertise/{draft.Id}/approve", new { });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await response.Content.ReadJsonElementAsync();
+        json.GetProperty("reviewState").GetString().Should().Be("Approved");
+    }
+
+    [Fact]
+    public async Task Approve_OthersDraft_Succeeds()
+    {
+        // The normal service-mode flow: an agent (sub "draft-author") wrote the draft;
+        // a distinct reviewer (sub "test-principal") approves it.
+        var draft = await SeedDraft(authorPrincipal: "draft-author");
+        using var approver = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteApproveScope);
+
+        var response = await approver.PostAsJsonAsync($"/expertise/{draft.Id}/approve", new { });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Approve_ByNonHumanActor_IsAllowedButEmitsAnomalyMetric()
+    {
+        // #484: a Service-classified reviewer (sub == azp) with write.approve is NOT blocked —
+        // the attribution collapse is made observable, not enforced. The counter must tick.
+        var draft = await SeedDraft(authorPrincipal: "draft-author");
+        var token = JwtTokenMinter.Mint(
+            tenant: "test",
+            scopes: [AuthConstants.ReadScope, AuthConstants.WriteApproveScope],
+            sub: "svc-reviewer", azp: "svc-reviewer", groups: ["group-test"]);
+        using var svc = _factory.CreateClient();
+        svc.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var before = await ReadNonHumanReviewCounter("Approved", "Service");
+        var response = await svc.PostAsJsonAsync($"/expertise/{draft.Id}/approve", new { });
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var after = await ReadNonHumanReviewCounter("Approved", "Service");
+        after.Should().Be(before + 1, "a non-Human approve must increment the attribution anomaly counter");
+    }
+
+    // Parse the /metrics text exposition for the labeled anomaly counter; 0 when the series
+    // does not exist yet. Delta assertions tolerate the process-global counter accumulating
+    // across tests.
+    private async Task<double> ReadNonHumanReviewCounter(string action, string actorClass)
+    {
+        using var client = _factory.CreateClient(); // /metrics is auth-free
+        var text = await (await client.GetAsync("/metrics")).Content.ReadAsStringAsync();
+        var needle = $"expertise_review_non_human_total{{action=\"{action}\",actor_class=\"{actorClass}\"}}";
+        foreach (var line in text.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith(needle, StringComparison.Ordinal))
+                return double.Parse(trimmed[needle.Length..].Trim(), CultureInfo.InvariantCulture);
+        }
+        return 0;
     }
 
     [Fact]
