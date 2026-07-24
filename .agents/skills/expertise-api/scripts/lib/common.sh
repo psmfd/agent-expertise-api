@@ -9,6 +9,13 @@
 # Provides:
 #   - load_secrets       Source ~/.config/expertise-api/secrets.env if present.
 #   - require_env        Fail loudly if EXPERTISE_API_BASE_URL/_TOKEN unset.
+#                        Resolves EXPERTISE_API_TOKEN_FILE indirection first
+#                        (issue #464): when EXPERTISE_API_TOKEN is empty and
+#                        EXPERTISE_API_TOKEN_FILE names a readable non-empty
+#                        file, the token is read from that file. Token-by-path
+#                        is the recommended contract for agent hosts — no
+#                        bearer literal sits in an env file for scanners or
+#                        session hooks to trip on.
 #   - api_curl ARGS...   Wrap curl with -sS, Bearer auth, and HTTP-status check.
 #                        Writes response body to stdout. On non-2xx, writes the
 #                        body to stderr along with the status line and exits 1.
@@ -46,14 +53,49 @@ load_secrets() {
     fi
 }
 
+# _resolve_token
+# Resolution ladder (issue #464), mirrored by the pi extension's
+# resolveToken() in .pi/extensions/expertise-api/index.ts:
+#   1. EXPERTISE_API_TOKEN set and non-empty       -> wins (explicit beats
+#      indirection, the standard *_FILE convention).
+#   2. EXPERTISE_API_TOKEN_FILE set                -> read the file; trailing
+#      newline/whitespace stripped. A missing, unreadable, or empty file is a
+#      hard exit 2 naming the path — never a silent fall-through to "not set",
+#      which would misdiagnose a bad path as absent configuration.
+#   3. Neither                                     -> leave unset; require_env
+#      reports both variables.
+_resolve_token() {
+    if [ -n "${EXPERTISE_API_TOKEN:-}" ]; then
+        return 0
+    fi
+    if [ -z "${EXPERTISE_API_TOKEN_FILE:-}" ]; then
+        return 0
+    fi
+    if [ ! -f "$EXPERTISE_API_TOKEN_FILE" ] || [ ! -r "$EXPERTISE_API_TOKEN_FILE" ]; then
+        echo "error: EXPERTISE_API_TOKEN_FILE points to a missing or unreadable file: ${EXPERTISE_API_TOKEN_FILE}" >&2
+        exit 2
+    fi
+    # $(cat ...) strips trailing newlines; the extra trim handles a file whose
+    # last line carries trailing spaces/tabs (e.g. hand-edited token files).
+    EXPERTISE_API_TOKEN="$(cat "$EXPERTISE_API_TOKEN_FILE")"
+    while [ "${EXPERTISE_API_TOKEN%[[:space:]]}" != "$EXPERTISE_API_TOKEN" ]; do
+        EXPERTISE_API_TOKEN="${EXPERTISE_API_TOKEN%[[:space:]]}"
+    done
+    if [ -z "$EXPERTISE_API_TOKEN" ]; then
+        echo "error: EXPERTISE_API_TOKEN_FILE is empty: ${EXPERTISE_API_TOKEN_FILE}" >&2
+        exit 2
+    fi
+}
+
 require_env() {
+    _resolve_token
     local missing=0
     if [ -z "${EXPERTISE_API_BASE_URL:-}" ]; then
         echo "error: EXPERTISE_API_BASE_URL is not set" >&2
         missing=1
     fi
     if [ -z "${EXPERTISE_API_TOKEN:-}" ]; then
-        echo "error: EXPERTISE_API_TOKEN is not set" >&2
+        echo "error: EXPERTISE_API_TOKEN is not set (set it, or point EXPERTISE_API_TOKEN_FILE at a token file)" >&2
         missing=1
     fi
     if [ "$missing" -ne 0 ]; then

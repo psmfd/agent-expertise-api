@@ -4,9 +4,10 @@ namespace ExpertiseApi.Hygiene;
 
 /// <summary>
 /// Regex-based PII redaction for free-text response fields. Each detector class is
-/// compiled once at construction. Patterns use <see cref="RegexOptions.NonBacktracking"/>
-/// for linear-time guarantee against ReDoS (.NET 7+); each pattern carries a per-match
-/// timeout as belt-and-suspenders.
+/// compiled once at construction. <strong>Every</strong> pattern uses
+/// <see cref="RegexOptions.NonBacktracking"/> for a linear-time guarantee against ReDoS
+/// (.NET 7+); each also carries a per-match timeout as belt-and-suspenders, and the
+/// timeout path fails <strong>closed</strong> (see <see cref="ApplyOne"/>).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -42,14 +43,16 @@ internal static class PiiDetector
     ];
 
     // RegexOptions.NonBacktracking guarantees linear-time matching for the supported
-    // subset (no backreferences, no lookaround). Patterns that need lookaround are
-    // called out below and use a tight timeout as the fallback.
+    // subset (no backreferences, no lookaround). ALL detectors are NonBacktracking as
+    // of #333 Finding 2 — the AwsSecret lookbehind that previously forced a
+    // backtracking-capable option was rewritten to capture the secret in a group
+    // instead (see below), removing the only pattern that could ReDoS. There is no
+    // longer a lookaround/backtracking option constant: a future lookaround pattern
+    // must reintroduce one deliberately, and the fail-closed timeout path in ApplyOne
+    // remains the safety net for any pattern that ever times out.
     private const RegexOptions NbOpts = RegexOptions.Compiled | RegexOptions.NonBacktracking
                                        | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
-    private const RegexOptions LookaroundOpts = RegexOptions.Compiled | RegexOptions.IgnoreCase
-                                              | RegexOptions.CultureInvariant;
     private static readonly TimeSpan FastTimeout = TimeSpan.FromMilliseconds(50);
-    private static readonly TimeSpan SlowTimeout = TimeSpan.FromMilliseconds(100);
 
     // Email: RFC-loose, anchored to word boundaries. Linear under NonBacktracking.
     private static readonly Regex Email = new(
@@ -66,12 +69,19 @@ internal static class PiiDetector
         @"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", NbOpts, FastTimeout);
 
     // AWS secret: requires a context word within 32 chars before the candidate (40-char
-    // base64-ish run). The lookbehind allows any non-alphanumeric separator (e.g. '=',
-    // ':', ' ', newline) between the context word and the secret. Tight timeout because
-    // of the lookbehind quantifier.
+    // base64-ish run). Rewritten for #333 Finding 2 to be NonBacktracking-safe: the
+    // former lookbehind (context) + lookahead (trailing boundary) forced a
+    // backtracking-capable option and a ReDoS-vulnerable 100ms timeout. Now the context
+    // word and separator are matched inline (consumed, not looked-behind) and the secret
+    // is pulled into capture group 1; ApplyOne redacts ONLY group 1, so the emitted text
+    // is byte-identical to the old lookbehind form ("aws_secret_access_key=<40>" ->
+    // "aws_secret_access_key=[REDACTED:aws-secret]"). The trailing boundary is consumed
+    // via (?:[^...]|$) — a lookahead is not permitted under NonBacktracking — and, being
+    // outside group 1, is re-emitted verbatim. Bounded {0,32}/{40} quantifiers keep it
+    // linear; it can no longer time out on adversarial padding.
     private static readonly Regex AwsSecret = new(
-        @"(?<=(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret(?:[_-]?key)?)[^A-Za-z0-9/+]{0,32})[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])",
-        LookaroundOpts, SlowTimeout);
+        @"(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret(?:[_-]?key)?)[^A-Za-z0-9/+]{0,32}([A-Za-z0-9/+=]{40})(?:[^A-Za-z0-9/+=]|$)",
+        NbOpts, FastTimeout);
 
     private static readonly Regex GithubPat = new(
         @"\b(?:ghp|gho|ghs|ghr|ghu)_[A-Za-z0-9]{36}\b", NbOpts, FastTimeout);
@@ -81,7 +91,7 @@ internal static class PiiDetector
         NbOpts, FastTimeout);
 
     private static readonly Regex UrlCredentials = new(
-        @"\b(?:https?|ftp)://[^\s/:@]+:[^\s/@]+@\S+", NbOpts, SlowTimeout);
+        @"\b(?:https?|ftp)://[^\s/:@]+:[^\s/@]+@\S+", NbOpts, FastTimeout);
 
     private static readonly Regex PrivateKeyHeader = new(
         @"-----BEGIN (?:RSA |EC |OPENSSH |PGP |DSA )?PRIVATE KEY-----", NbOpts, FastTimeout);
@@ -93,9 +103,25 @@ internal static class PiiDetector
         @"|\b(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}\b",
         NbOpts, FastTimeout);
 
+    // Detector run order. URL credentials FIRST so the user:pass@host segment is
+    // replaced before the email pattern would otherwise consume the @host tail.
+    private static readonly (Regex Pattern, string Class)[] Detectors =
+    [
+        (UrlCredentials, "url-credentials"),
+        (Email, "email"),
+        (AwsAccessKey, "aws-access-key"),
+        (AwsSecret, "aws-secret"),
+        (GithubPat, "github-pat"),
+        (Jwt, "jwt"),
+        (PrivateKeyHeader, "private-key-header"),
+        (Phone, "phone"),
+        (IpAddress, "ip-address"),
+    ];
+
     /// <summary>
     /// Apply all detectors to <paramref name="input"/>. Returns the redacted text and
-    /// per-class match counts (zero-count classes omitted).
+    /// per-class match counts (zero-count classes omitted). On a regex timeout the field
+    /// is fully suppressed (fail-closed) and the remaining detectors are skipped.
     /// </summary>
     public static PiiResult Redact(string input)
     {
@@ -105,43 +131,63 @@ internal static class PiiDetector
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
         var current = input;
 
-        // Order matters: URL credentials FIRST so the user:pass@host segment is replaced
-        // before the email pattern would otherwise consume the @host tail.
-        current = ApplyOne(current, UrlCredentials, "url-credentials", counts);
-        current = ApplyOne(current, Email, "email", counts);
-        current = ApplyOne(current, AwsAccessKey, "aws-access-key", counts);
-        current = ApplyOne(current, AwsSecret, "aws-secret", counts);
-        current = ApplyOne(current, GithubPat, "github-pat", counts);
-        current = ApplyOne(current, Jwt, "jwt", counts);
-        current = ApplyOne(current, PrivateKeyHeader, "private-key-header", counts);
-        current = ApplyOne(current, Phone, "phone", counts);
-        current = ApplyOne(current, IpAddress, "ip-address", counts);
+        foreach (var (pattern, className) in Detectors)
+        {
+            current = ApplyOne(current, pattern, className, counts, out var timedOut);
+            if (timedOut)
+                // Fail-closed: the field is already replaced with a suppression
+                // sentinel. Running the remaining detectors against that sentinel is
+                // moot, so short-circuit \u2014 nothing sensitive can survive a fully
+                // suppressed field.
+                break;
+        }
 
         return new PiiResult(current, counts);
     }
 
-    private static string ApplyOne(string input, Regex pattern, string className, Dictionary<string, int> counts)
+    /// <summary>
+    /// Apply one detector. When the pattern defines capture group 1, only that span is
+    /// redacted and the surrounding match text is preserved verbatim (used by AwsSecret,
+    /// whose match includes a context word that must survive); otherwise the whole match
+    /// is replaced. On <see cref="RegexMatchTimeoutException"/> the method fails CLOSED
+    /// (#333 Finding 2): it returns a whole-field suppression sentinel and sets
+    /// <paramref name="timedOut"/>, because a timeout yields no match positions and
+    /// returning the original would ship an unredacted secret to an LLM consumer.
+    /// </summary>
+    internal static string ApplyOne(
+        string input, Regex pattern, string className, Dictionary<string, int> counts, out bool timedOut)
     {
         var matchCount = 0;
         try
         {
-            var replaced = pattern.Replace(input, _ =>
+            var replaced = pattern.Replace(input, m =>
             {
                 matchCount++;
+                if (m.Groups.Count > 1 && m.Groups[1].Success)
+                {
+                    var g = m.Groups[1];
+                    var rel = g.Index - m.Index;
+                    return $"{m.Value[..rel]}[REDACTED:{className}]{m.Value[(rel + g.Length)..]}";
+                }
                 return $"[REDACTED:{className}]";
             });
             if (matchCount > 0)
                 counts[className] = matchCount;
+            timedOut = false;
             return replaced;
         }
         catch (RegexMatchTimeoutException)
         {
-            // Pattern took too long on adversarial input \u2014 leave the field unredacted
-            // and record a sentinel so the orchestrator can flag the response with a
-            // "redaction-timeout" entry in hygieneApplied. Not raising: returning the
-            // original is safer than throwing 500 from a read endpoint.
+            // Fail CLOSED: a timeout carries no match boundaries, so selective redaction
+            // is impossible. Suppress the WHOLE field rather than return the original
+            // (the pre-#333 behaviour, which shipped the unredacted value). Consumers
+            // reading a "{class}-timeout" key in hygieneApplied MUST treat the field as
+            // fully suppressed, not partially redacted. The NonBacktracking rewrite of
+            // every detector makes this path unreachable on today's patterns; it remains
+            // the safety net for any future pattern or pathological input.
             counts[$"{className}-timeout"] = 1;
-            return input;
+            timedOut = true;
+            return $"[REDACTED:{className}-timeout]";
         }
     }
 

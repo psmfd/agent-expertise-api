@@ -117,6 +117,64 @@ public class BatchEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Batch_AgainstPopulatedDomainCorpus_DedupsPerItem_WithoutUnboundedScan()
+    {
+        // #333 Finding 4: the batch dedup path used to load EVERY embedding in the domain
+        // into memory and brute-force cosine distance in C# (O(batchSize x domainSize),
+        // unbounded as a domain grows). It now issues one HNSW-indexed
+        // FindNearestInDomainAsync per item — the same DB-side query the single-create
+        // path uses. This drives that path against a domain corpus larger than any prior
+        // batch fixture to prove it stays correct and bounded with a populated index.
+        //
+        // The content-derived mock embedding generator is all-or-nothing (identical vs
+        // orthogonal), so a GRADED near-dup cannot be produced here — the semantic
+        // threshold itself is validated by the EXPERTISE_EVAL DedupThresholdEvalTests
+        // against the real model. This test proves the exact-match verdict and the
+        // per-item semantic MISS (a distinct item is not a false duplicate) both hold
+        // when the domain is well populated.
+        const string domain = "populated-corpus-domain";
+        for (var i = 0; i < 30; i++)
+            await SeedApproved(domain, $"corpus title {i}", $"corpus body number {i}");
+        var dupTarget = await SeedApproved(domain, "corpus duplicate anchor", "anchor body");
+
+        var client = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+        var response = await client.PostAsJsonAsync("/expertise/batch", new[]
+        {
+            Item(domain, "corpus duplicate anchor", "anchor body"), // exact dup of dupTarget
+            Item(domain, "genuinely new in corpus", "unrelated new body"), // distinct -> Created
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.MultiStatus);
+        var results = (await response.Content.ReadFromJsonAsync<List<BatchResult>>())!;
+        results.Should().HaveCount(2);
+        results[0].Status.Should().Be("Duplicate");
+        results[0].Id.Should().Be(dupTarget.Id);
+        results[1].Status.Should().Be("Created", "a distinct item is not a false semantic duplicate even in a populated domain");
+        results[1].Id.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Batch_ExceedingBatchRatePolicy_Returns429_OnThirdRequest()
+    {
+        // #333 Finding 4: /expertise/batch has its own "expertise-batch" policy
+        // (fixed window, PermitLimit = 2/min) instead of sharing "expertise-write"
+        // (10/min), so a batch caller cannot push ~1,000 embed-units/min through the
+        // single ONNX lane. A fresh JwtApiFactory per test method gives a clean window,
+        // and one token = one partition (per-principal sub), so three sequential batch
+        // requests exhaust the 2-permit budget and the third is rejected.
+        var client = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+
+        var first = await client.PostAsJsonAsync("/expertise/batch", new[] { Item(UniqueDomain(), "b1", "body one") });
+        var second = await client.PostAsJsonAsync("/expertise/batch", new[] { Item(UniqueDomain(), "b2", "body two") });
+        var third = await client.PostAsJsonAsync("/expertise/batch", new[] { Item(UniqueDomain(), "b3", "body three") });
+
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        second.StatusCode.Should().Be(HttpStatusCode.OK);
+        third.StatusCode.Should().Be(HttpStatusCode.TooManyRequests,
+            "the dedicated batch policy caps a principal at 2 batch requests per window");
+    }
+
+    [Fact]
     public async Task Batch_AllValidDistinctItems_Returns200()
     {
         var client = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);

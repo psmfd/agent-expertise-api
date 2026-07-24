@@ -64,14 +64,15 @@ cannot drift from production.
 The test embedding generator seeds each vector from a **stable FNV hash of the input
 content** (not `string.GetHashCode`, which is randomized per process). Identical content
 yields the identical vector (cosine distance 0 → a real duplicate); distinct content yields
-a near-orthogonal vector (distance ≈ 1.0, far above the 0.10 dedup threshold → not a
+a near-orthogonal vector (distance ≈ 1.0, far above the 0.05 dedup threshold → not a
 duplicate). This replaced an earlier mock that returned the *same* vector for every input,
 which made semantic-dedup behaviour structurally unobservable and forced tests into
 per-test workarounds.
 
 **Limitation to remember:** hash-based vectors are all-or-nothing (identical vs orthogonal).
 They eliminate *false* collisions but do not model *graded* semantic similarity. Testing the
-0.10 threshold itself needs real embeddings and is out of scope for the mock.
+0.05 threshold itself needs real embeddings — that is `DedupThresholdEvalTests`
+(`EXPERTISE_EVAL=1` opt-in, #457), out of scope for the mock.
 
 ### 3. Frozen enum-name guard (`EnumContractTests`)
 

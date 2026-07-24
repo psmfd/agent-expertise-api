@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using ExpertiseApi.Hygiene;
 
 namespace ExpertiseApi.Tests.Unit.Hygiene;
@@ -158,5 +159,74 @@ public class PiiDetectorTests
         result.Counts["email"].Should().Be(1);
         result.Counts["github-pat"].Should().Be(1);
         result.Text.Should().Contain("[REDACTED:email]").And.Contain("[REDACTED:github-pat]");
+    }
+
+    // --- AWS secret: capture-group redaction preserves surrounding context (#333 Finding 2) ---
+
+    [Fact]
+    public void AwsSecret_RedactsOnlyTheSecret_PreservingTheContextWord()
+    {
+        // The NonBacktracking rewrite consumes the context word into the match but pulls
+        // the secret into capture group 1; ApplyOne must redact ONLY the group, leaving
+        // the context prefix byte-identical to the pre-rewrite lookbehind behaviour.
+        var input = "aws_secret_access_key=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01234567";
+        var result = PiiDetector.Redact(input);
+        result.Text.Should().Be("aws_secret_access_key=[REDACTED:aws-secret]");
+    }
+
+    [Fact]
+    public void AwsSecret_PreservesTrailingTextAfterTheSecret()
+    {
+        // The trailing boundary is consumed via (?:[^...]|$) (no lookahead under
+        // NonBacktracking) but sits outside group 1, so the separator and following
+        // text must be re-emitted verbatim.
+        var input = "secret ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01234567 and then more";
+        var result = PiiDetector.Redact(input);
+        result.Text.Should().Be("secret [REDACTED:aws-secret] and then more");
+        result.Counts["aws-secret"].Should().Be(1);
+    }
+
+    [Fact]
+    public void AwsSecret_AtEndOfString_IsRedacted()
+    {
+        // The '$' alternative of the trailing boundary handles a secret flush against EOL.
+        var input = "secret=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01234567";
+        var result = PiiDetector.Redact(input);
+        result.Text.Should().Be("secret=[REDACTED:aws-secret]");
+    }
+
+    // --- Fail-closed timeout handling (#333 Finding 2) ---
+
+    [Fact]
+    public void ApplyOne_OnRegexTimeout_SuppressesWholeField_AndSignalsTimeout()
+    {
+        // A catastrophic-backtracking pattern (NOT NonBacktracking) against non-matching
+        // input forces a RegexMatchTimeoutException deterministically at a 1ms budget.
+        // The production detectors can no longer reach this path (all NonBacktracking),
+        // so this exercises the fail-closed net directly through the internal seam.
+        var evil = new Regex("^(a+)+$", RegexOptions.None, TimeSpan.FromMilliseconds(1));
+        var adversarial = new string('a', 40) + "!";
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        var result = PiiDetector.ApplyOne(adversarial, evil, "aws-secret", counts, out var timedOut);
+
+        timedOut.Should().BeTrue();
+        result.Should().Be("[REDACTED:aws-secret-timeout]",
+            "fail-closed must replace the WHOLE field, never return the original unredacted value");
+        result.Should().NotContain(adversarial, "the original adversarial content must not survive");
+        counts.Should().ContainKey("aws-secret-timeout");
+    }
+
+    [Fact]
+    public void ApplyOne_NoTimeout_SignalsFalse()
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var ok = new Regex("nomatch", RegexOptions.NonBacktracking, TimeSpan.FromMilliseconds(50));
+
+        var result = PiiDetector.ApplyOne("harmless text", ok, "email", counts, out var timedOut);
+
+        timedOut.Should().BeFalse();
+        result.Should().Be("harmless text");
+        counts.Should().BeEmpty();
     }
 }

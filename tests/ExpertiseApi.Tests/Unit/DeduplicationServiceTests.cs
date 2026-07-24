@@ -16,6 +16,17 @@ public class DeduplicationServiceTests
     private readonly Vector _testVector = TestHelpers.CreateTestVector();
     private readonly TenantContext _ctx = TestHelpers.CreateTenantContext();
 
+    [Fact]
+    public void SemanticThreshold_DefaultIsTheAdr017Amendment1Value()
+    {
+        // Pins the shipped default (#457, ADR-017 Amendment 1: derived against
+        // the jina-v2-small corpus geometry). Runs in normal CI — unlike the
+        // EXPERTISE_EVAL-gated DedupThresholdEvalTests — so an accidental
+        // default drift is caught without the opt-in eval pass. Change both
+        // together, re-deriving per the amendment's method.
+        new DeduplicationOptions().SemanticThreshold.Should().Be(0.05);
+    }
+
     private DeduplicationService CreateService(bool enabled = true, double threshold = 0.10)
     {
         var options = Options.Create(new DeduplicationOptions
@@ -166,8 +177,8 @@ public class DeduplicationServiceTests
 
         _repo.FindExactMatchesAsync("shared", Arg.Any<IReadOnlyList<string>>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
             .Returns(new List<ExpertiseEntry>());
-        _repo.FindAllEmbeddingsInDomainAsync("shared", Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
-            .Returns(new List<ExpertiseEntry>());
+        _repo.FindNearestInDomainAsync("shared", Arg.Any<Vector>(), Arg.Any<double>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
+            .Returns((ExpertiseEntry?)null);
 
         var results = await service.CheckBatchAsync(requests, vectors, _ctx);
 
@@ -182,15 +193,17 @@ public class DeduplicationServiceTests
         var requests = new List<CreateExpertiseRequest> { CreateRequest(title: "Unique Title") };
         var vectors = new List<Vector> { _testVector };
 
-        // No exact title match — entry title differs
+        // No exact title match — entry title differs. The batch path now delegates the
+        // semantic match to the same FindNearestInDomainAsync the single-create path uses
+        // (#333 Finding 4), which applies the threshold in SQL/HNSW; the unit test stubs
+        // its result and the repo's own threshold behaviour is covered by integration tests.
         var domainEntry = TestHelpers.SeedEntry(title: "Similar But Different Title");
-        // Use the same vector so cosine distance == 0, well below the 0.10 threshold
         domainEntry.Embedding = _testVector;
 
         _repo.FindExactMatchesAsync("shared", Arg.Any<IReadOnlyList<string>>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
             .Returns(new List<ExpertiseEntry>());
-        _repo.FindAllEmbeddingsInDomainAsync("shared", Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
-            .Returns([domainEntry]);
+        _repo.FindNearestInDomainAsync("shared", Arg.Any<Vector>(), Arg.Any<double>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
+            .Returns(domainEntry);
 
         var results = await service.CheckBatchAsync(requests, vectors, _ctx);
 
@@ -200,25 +213,18 @@ public class DeduplicationServiceTests
     }
 
     [Fact]
-    public async Task CheckBatchAsync_WithSemanticMatchAboveThreshold_ReturnsNotDuplicate()
+    public async Task CheckBatchAsync_WhenNearestIsBeyondThreshold_ReturnsNotDuplicate()
     {
-        var service = CreateService(threshold: 0.01); // very tight threshold
+        // The repo's nearest-neighbour query returns null when nothing is within the
+        // threshold; the service must treat that item as not-a-duplicate.
+        var service = CreateService();
         var requests = new List<CreateExpertiseRequest> { CreateRequest(title: "Unique Title") };
-
-        // Build a vector that is orthogonal to _testVector (cosine distance == 1)
-        var orthogonalValues = new float[512];
-        orthogonalValues[0] = 1.0f; // all other dims zero — orthogonal to random _testVector
-        var farVector = new Vector(orthogonalValues);
-
-        var vectors = new List<Vector> { farVector };
-
-        var domainEntry = TestHelpers.SeedEntry(title: "Similar But Different Title");
-        domainEntry.Embedding = _testVector; // very different direction
+        var vectors = new List<Vector> { _testVector };
 
         _repo.FindExactMatchesAsync("shared", Arg.Any<IReadOnlyList<string>>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
             .Returns(new List<ExpertiseEntry>());
-        _repo.FindAllEmbeddingsInDomainAsync("shared", Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
-            .Returns([domainEntry]);
+        _repo.FindNearestInDomainAsync("shared", Arg.Any<Vector>(), Arg.Any<double>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
+            .Returns((ExpertiseEntry?)null);
 
         var results = await service.CheckBatchAsync(requests, vectors, _ctx);
 
@@ -240,8 +246,9 @@ public class DeduplicationServiceTests
         var existingEntry = TestHelpers.SeedEntry(title: "Duplicate", body: "Same body");
         _repo.FindExactMatchesAsync("shared", Arg.Any<IReadOnlyList<string>>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
             .Returns([existingEntry]);
-        _repo.FindAllEmbeddingsInDomainAsync("shared", Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
-            .Returns(new List<ExpertiseEntry>());
+        // Item 0 is caught by exact-match; item 1 has no near neighbour.
+        _repo.FindNearestInDomainAsync("shared", Arg.Any<Vector>(), Arg.Any<double>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
+            .Returns((ExpertiseEntry?)null);
 
         var results = await service.CheckBatchAsync(requests, vectors, _ctx);
 

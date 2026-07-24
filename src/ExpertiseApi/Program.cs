@@ -201,12 +201,13 @@ builder.Services.AddProblemDetails(options =>
 // produces the response body (and the customizer above fires).
 builder.Services.AddExceptionHandler<UnhandledExceptionLogger>();
 
-// Rate limiting (Part D C5). Three policies, per-principal partitioning with IP
+// Rate limiting (Part D C5). Four policies, per-principal partitioning with IP
 // fallback for unauthenticated paths. 429 responses route through the
 // IProblemDetailsService so the C4 customizer fires (correlation traceId, etc.)
 // and Retry-After is populated from the lease metadata.
 //   - expertise-read     fixed window 60/min  GET /expertise/* (non-semantic), GET /audit/*
-//   - expertise-write    fixed window 10/min  POST/PATCH/DELETE on writes
+//   - expertise-write    fixed window 10/min  POST/PATCH/DELETE on single writes
+//   - expertise-batch    fixed window  2/min  POST /expertise/batch (#333 Finding 4)
 //   - semantic-search    token bucket 10/min  /expertise/search/semantic (expensive: ONNX)
 // Health endpoints (/health/*) opt out via DisableRateLimiting in HealthEndpoints.
 builder.Services.AddRateLimiter(rateOptions =>
@@ -271,6 +272,25 @@ builder.Services.AddRateLimiter(rateOptions =>
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            }));
+
+    // #333 Finding 4: POST /expertise/batch previously shared "expertise-write"
+    // (10/min), so one principal could push up to 10 batches x 100 items = ~1,000
+    // embed-units/min through the single, process-wide ONNX inference lane
+    // (EmbeddingService.InferenceGate) — starving every other caller's single-item
+    // writes and semantic-search queries. The static InferenceGate bounds concurrent
+    // OVERLAP but not throughput fairness. A dedicated stricter window caps a batch
+    // caller at 2 x 100 = ~200 embed-units/min while still comfortably serving the
+    // aggregator up-sync worker (ADR-013), which pushes at most one batch per sync tick.
+    rateOptions.AddPolicy("expertise-batch", http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: PartitionKey(http),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 2,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,

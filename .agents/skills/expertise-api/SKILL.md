@@ -17,23 +17,26 @@ Do **not** invoke this skill for: API design questions, schema decisions, scope-
 
 ## Prerequisites
 
-The skill scripts require two environment variables. The skill will fail loudly if either is missing.
+The skill scripts require a base URL and a bearer token. The skill will fail loudly if either is missing.
 
 | Variable | Purpose | Example |
 | --- | --- | --- |
 | `EXPERTISE_API_BASE_URL` | Origin of the API. No trailing slash. | `https://expertise.example.com` |
-| `EXPERTISE_API_TOKEN` | Bearer token. JWT for OIDC mode, or `dev:{tenant}:{scopes}` for LocalDev. | `dev:teamA:expertise.read+expertise.write.draft` |
+| `EXPERTISE_API_TOKEN` | Bearer token. JWT for OIDC mode, or `dev:{tenant}:{scopes}` for LocalDev. Wins over `EXPERTISE_API_TOKEN_FILE` when both are set. | `dev:teamA:expertise.read+expertise.write.draft` |
+| `EXPERTISE_API_TOKEN_FILE` | Path to a file holding the token (trailing newline stripped). Used when `EXPERTISE_API_TOKEN` is unset. **Recommended** — keeps the bearer literal out of the env file. | `~/tokens/expertise.jwt` |
 
-If the user has not set them, prompt for the values once and offer to write them to `~/.config/expertise-api/secrets.env`:
+If the user has not set them, prompt for the values once and offer to write them to `~/.config/expertise-api/secrets.env`. Prefer the token-file form:
 
 ```sh
 mkdir -p ~/.config/expertise-api
 cat > ~/.config/expertise-api/secrets.env <<'EOF'
 EXPERTISE_API_BASE_URL=https://expertise.example.com
-EXPERTISE_API_TOKEN=...
+EXPERTISE_API_TOKEN_FILE=/path/to/token.jwt
 EOF
 chmod 600 ~/.config/expertise-api/secrets.env
 ```
+
+(Inlining `EXPERTISE_API_TOKEN=...` instead also works; the file indirection just avoids a secret literal that secret scanners and session guards would otherwise flag.)
 
 The scripts source this file automatically when present, so env vars do not need to be exported per-shell.
 

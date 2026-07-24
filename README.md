@@ -160,12 +160,12 @@ Env contract for all three harnesses:
 mkdir -p ~/.config/expertise-api
 cat > ~/.config/expertise-api/secrets.env <<'EOF'
 EXPERTISE_API_BASE_URL=https://expertise.example.com
-EXPERTISE_API_TOKEN=...
+EXPERTISE_API_TOKEN_FILE=/path/to/token.jwt
 EOF
 chmod 600 ~/.config/expertise-api/secrets.env
 ```
 
-The scripts source that file automatically, so env vars do not need to be exported per shell. See the skill's [`SKILL.md`](.agents/skills/expertise-api/SKILL.md) for the full toolkit (`search`, `search-semantic`, `get`, `create`, `approve`, `reject`) and `references/DESIGN.md` for the underlying scope hierarchy and approval state machine.
+The scripts source that file automatically, so env vars do not need to be exported per shell. `EXPERTISE_API_TOKEN_FILE` (recommended, #464) keeps the bearer literal out of the env file; setting `EXPERTISE_API_TOKEN=...` directly also works and wins when both are present. See the skill's [`SKILL.md`](.agents/skills/expertise-api/SKILL.md) for the full toolkit (`search`, `search-semantic`, `get`, `create`, `approve`, `reject`) and `references/DESIGN.md` for the underlying scope hierarchy and approval state machine.
 
 ### Response hygiene
 

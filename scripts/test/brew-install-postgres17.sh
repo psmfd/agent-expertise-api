@@ -3,14 +3,14 @@
 # brew-install-postgres17.sh — install PostgreSQL 17 + pgvector via Homebrew for the
 # macOS install-smoke CI jobs, self-healing a corrupt pre-cached bottle.
 #
-# BEST-EFFORT heal for the macOS install-smoke jobs. The `postgresql@17` bottle on
-# current macOS runner images fails at service start with:
+# BEST-EFFORT heal for the macOS install-smoke jobs, retained as defense-in-depth
+# after #366 closed. That upstream Homebrew bug (`postgresql@17` bottle share-dir
+# path mismatch on a keg-only formula — initdb failed with
 #     initdb: error: file "/opt/homebrew/share/postgresql@17/postgres.bki" does not exist
-# Diagnosed as an upstream Homebrew bug (share-dir path mismatch on a keg-only
-# formula; the file exists in the keg but initdb/server look in the unpopulated
-# top-level prefix). Tracked in #366 — the three macOS smoke jobs are
-# `continue-on-error: true` until it is fixed, so this heal not landing does not
-# block merges. Remove the continue-on-error (and revisit this heal) when #366 closes.
+# while the file existed inside the keg) recurred across runner-image updates
+# (arm64_sequoia, then arm64_tahoe) before Homebrew fixed the bottle, so the heal
+# stays in case a future image regresses. The three macOS smoke jobs are BLOCKING
+# again — a failure here fails the PR.
 #
 # The two heals below are retained because they DO fix adjacent variants and cost
 # nothing when they no-op:

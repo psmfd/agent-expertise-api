@@ -91,8 +91,6 @@ internal interface IExpertiseRepository
 
     Task<ExpertiseEntry?> FindNearestInDomainAsync(string domain, Vector queryVector, double maxDistance, TenantContext ctx, CancellationToken ct = default);
 
-    Task<List<ExpertiseEntry>> FindAllEmbeddingsInDomainAsync(string domain, TenantContext ctx, CancellationToken ct = default);
-
     /// <summary>
     /// Up-sync feed (ADR-013): Approved, non-deprecated entries in the cross-tenant
     /// <c>shared</c> namespace strictly after the keyset cursor

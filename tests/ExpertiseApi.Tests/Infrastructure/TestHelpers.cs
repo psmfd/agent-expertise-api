@@ -113,7 +113,7 @@ internal static class TestHelpers
     /// <summary>
     /// Deterministic, CONTENT-DERIVED embedding for tests (#353). Identical content yields
     /// the identical vector (cosine distance 0 → a real duplicate); different content yields
-    /// a near-orthogonal vector (cosine distance ≈ 1.0, far above the 0.10 dedup threshold →
+    /// a near-orthogonal vector (cosine distance ≈ 1.0, far above the dedup threshold →
     /// NOT a duplicate). Replaces the old content-independent mock that returned the same
     /// vector for every input — which made semantic-dedup behaviour structurally unobservable
     /// and forced two integration tests into per-test workarounds.
