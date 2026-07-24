@@ -154,6 +154,27 @@ public class BatchEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Batch_ExceedingBatchRatePolicy_Returns429_OnThirdRequest()
+    {
+        // #333 Finding 4: /expertise/batch has its own "expertise-batch" policy
+        // (fixed window, PermitLimit = 2/min) instead of sharing "expertise-write"
+        // (10/min), so a batch caller cannot push ~1,000 embed-units/min through the
+        // single ONNX lane. A fresh JwtApiFactory per test method gives a clean window,
+        // and one token = one partition (per-principal sub), so three sequential batch
+        // requests exhaust the 2-permit budget and the third is rejected.
+        var client = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
+
+        var first = await client.PostAsJsonAsync("/expertise/batch", new[] { Item(UniqueDomain(), "b1", "body one") });
+        var second = await client.PostAsJsonAsync("/expertise/batch", new[] { Item(UniqueDomain(), "b2", "body two") });
+        var third = await client.PostAsJsonAsync("/expertise/batch", new[] { Item(UniqueDomain(), "b3", "body three") });
+
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        second.StatusCode.Should().Be(HttpStatusCode.OK);
+        third.StatusCode.Should().Be(HttpStatusCode.TooManyRequests,
+            "the dedicated batch policy caps a principal at 2 batch requests per window");
+    }
+
+    [Fact]
     public async Task Batch_AllValidDistinctItems_Returns200()
     {
         var client = ClientWithScopes(AuthConstants.ReadScope, AuthConstants.WriteDraftScope);
