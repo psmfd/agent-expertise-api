@@ -610,16 +610,6 @@ internal class ExpertiseRepository(
         return distance.Value <= maxDistance ? candidate : null;
     }
 
-    public async Task<List<ExpertiseEntry>> FindAllEmbeddingsInDomainAsync(string domain, TenantContext ctx, CancellationToken ct)
-    {
-        return await ApplyTenantFilter(db.ExpertiseEntries.AsQueryable(), ctx)
-            .Where(e => e.DeprecatedAt == null)
-            .Where(e => e.ReviewState != ReviewState.Rejected)
-            .Where(e => e.Domain == domain)
-            .Where(e => e.Embedding != null)
-            .ToListAsync(ct);
-    }
-
     public async Task<List<ExpertiseEntry>> ListSharedApprovedUpdatedAfterAsync(
         DateTime afterUpdatedAt, Guid afterId, int limit, CancellationToken ct)
     {

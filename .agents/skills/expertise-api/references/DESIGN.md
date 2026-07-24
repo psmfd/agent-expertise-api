@@ -186,7 +186,7 @@ When the principal authenticates successfully but no tenant maps (e.g. group not
 2. **Repository** — primary safeguard. Each method applies an explicit `WHERE Tenant IN (ctx.Tenant, "shared")`; `GetByIdAsync`, `UpdateAsync`, and `SoftDeleteAsync` use `Where(id) + FirstOrDefaultAsync` rather than `FindAsync` so the filter cannot be bypassed via the EF identity map.
 3. **EF global query filter** — `HasQueryFilter` on `ExpertiseEntry` reads `ITenantContextAccessor.Tenant` (HTTP-backed). Defense-in-depth: when a future query forgets the explicit `WHERE`, this still applies. Short-circuits to no filter when the accessor returns null (CLI / design-time / direct test seeding) — those paths rely on the explicit repository `WHERE` for correctness.
 4. **CLI bypass** — `reembed` and `rehash` commands call `IgnoreQueryFilters()` explicitly so they process every tenant.
-5. **Dedup tenant scoping** — `FindExactMatchAsync`, `FindExactMatchesAsync`, `FindNearestInDomainAsync`, and `FindAllEmbeddingsInDomainAsync` are tenant-scoped so a `409 Conflict` on `POST /expertise` cannot leak another tenant's entry contents in the response body.
+5. **Dedup tenant scoping** — `FindExactMatchAsync`, `FindExactMatchesAsync`, and `FindNearestInDomainAsync` are tenant-scoped so a `409 Conflict` on `POST /expertise` cannot leak another tenant's entry contents in the response body. Both the single-create and batch dedup paths use the HNSW-indexed `FindNearestInDomainAsync` for the semantic phase (#333 Finding 4 unified them; the former unbounded in-memory batch scan was removed).
 
 Cross-tenant operations return **404, not 403**, on `GET`, `PATCH`, and `DELETE` so existence is not disclosed.
 
