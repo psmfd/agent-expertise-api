@@ -33,6 +33,16 @@ jobs:
       - name: Semantic Release
         id: semantic
         uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6.0.0
+        with:
+          # The conventionalcommits preset (configured in .releaserc) honors the
+          # `type(scope)!:` breaking shorthand; the default angular preset does NOT
+          # (it silently drops `!` and produced no release for v2.0.0 — #477). The
+          # preset lives in a separate package that @semantic-release/commit-analyzer@13
+          # does not bundle (it depends only on conventional-changelog-angular), so it
+          # MUST be pre-installed here or the release job fails to load the preset.
+          # Pinned to the major validated against commit-analyzer 13 (conventionalcommits 10).
+          extra_plugins: |
+            conventional-changelog-conventionalcommits@10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
