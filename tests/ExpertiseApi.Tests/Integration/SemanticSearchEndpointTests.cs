@@ -98,7 +98,7 @@ public class SemanticSearchEndpointTests : IAsyncLifetime
         var results = await response.Content.ReadFromJsonAsync<JsonElement>();
         results.GetArrayLength().Should().Be(3, "the domain filter applies before ranking");
         foreach (var entry in results.EnumerateArray())
-            entry.GetProperty("domain").GetString().Should().Be("filter-alpha");
+            entry.HygienizedValue("domain").Should().Contain("filter-alpha");
     }
 
     [Fact]

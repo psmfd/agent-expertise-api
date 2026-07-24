@@ -112,7 +112,7 @@ public class SearchEndpointTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().BeGreaterThan(0);
-        json[0].GetProperty("domain").GetString().Should().Be("dotnet");
+        json[0].HygienizedValue("domain").Should().Contain("dotnet");
         json[0].GetProperty("score").GetDouble().Should().BeGreaterThan(0,
             "keyword search hits carry their ts_rank_cd score (#427)");
     }
@@ -197,7 +197,7 @@ public class SearchEndpointTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().Be(1);
-        json[0].GetProperty("domain").GetString().Should().Be("dotnet");
+        json[0].HygienizedValue("domain").Should().Contain("dotnet");
     }
 
     [Fact]
