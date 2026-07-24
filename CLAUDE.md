@@ -352,7 +352,7 @@ Scope shorthand (`read`, `draft`, `approve`, `admin`) expands to full scope stri
 
 CodeQL, Trivy, and Hadolint run in separate workflows — see [Security Scanning](#security-scanning).
 
-> **Breaking releases need a `BREAKING CHANGE:` footer, not just `!`.** `.releaserc` uses the default semantic-release **angular** preset, whose commit parser does **not** honor the `type(scope)!:` shorthand — a `fix!`/`feat!` header alone is silently ignored and produces *no release* (observed on the v2.0.0 promotion #476). A MAJOR bump requires an explicit `BREAKING CHANGE:` footer in the commit body. Tracked in #477 (switch to the `conventionalcommits` preset so `!` works as `rules/semver-tagging.md` documents).
+> **Breaking releases: `!` shorthand works (via the conventionalcommits preset).** `.releaserc` configures `@semantic-release/commit-analyzer` + `@semantic-release/release-notes-generator` with the **conventionalcommits** preset, which honors the `type(scope)!:` breaking shorthand — a `feat!`/`fix!` header (or a `BREAKING CHANGE:` footer) triggers a MAJOR bump as `rules/semver-tagging.md` documents (#477). This preset ships in a separate package (`conventional-changelog-conventionalcommits`) that commit-analyzer does **not** bundle, so `release.yml` pre-installs it via the action's `extra_plugins` — do not remove that entry or the release job will fail to load the preset. **Historical note:** before #477 the default **angular** preset silently dropped `!` and produced *no release* on the v2.0.0 promotion (#476), forcing a re-cut with an explicit `BREAKING CHANGE:` footer. That workaround is no longer required.
 
 GHCR image: `ghcr.io/psmfd/agent-expertise-api` (multi-arch: amd64 + arm64).
 
