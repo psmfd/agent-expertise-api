@@ -603,6 +603,9 @@ internal static class ExpertiseEndpoints
         {
             WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(entry!, hygiene)),
             WriteOutcome.NotFound => Results.NotFound(),
+            WriteOutcome.SelfReviewForbidden => Results.Problem(
+                "You cannot approve your own draft; a different reviewer (or expertise.admin) is required.",
+                statusCode: 403),
             WriteOutcome.InvalidState => Results.Problem(
                 "Entry is not in Draft state and cannot be approved.",
                 statusCode: 409),
@@ -634,6 +637,9 @@ internal static class ExpertiseEndpoints
         {
             WriteOutcome.Success => Results.Ok(ExpertiseEntryResponse.From(entry!, hygiene)),
             WriteOutcome.NotFound => Results.NotFound(),
+            WriteOutcome.SelfReviewForbidden => Results.Problem(
+                "You cannot reject your own draft; a different reviewer (or expertise.admin) is required.",
+                statusCode: 403),
             WriteOutcome.InvalidState => Results.Problem(
                 "Entry is not in Draft state and cannot be rejected.",
                 statusCode: 409),

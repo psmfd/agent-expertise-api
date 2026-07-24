@@ -305,6 +305,22 @@ internal class ExpertiseRepository(
         return WriteOutcome.Success;
     }
 
+    // Reviewer identity = the caller's OIDC subject; falls back to the identity name or
+    // "system" only when no sub is present (CLI/design-time paths). Also the audit Principal.
+    private static string ResolveReviewer(TenantContext ctx) =>
+        ctx.Principal.FindFirst("sub")?.Value
+        ?? ctx.Principal.Identity?.Name
+        ?? "system";
+
+    // Separation of duties (ADR-018): a principal may not approve/reject its own draft —
+    // the human-review gate is meaningless if the author can self-approve machine-written
+    // content (OWASP ASI04/ASI06). expertise.admin is the audited break-glass for the
+    // solo-operator case (write a manual entry AND approve it). Ordinal comparison: sub is
+    // an opaque, case-sensitive identifier.
+    private static bool IsSelfReview(string reviewer, ExpertiseEntry entry, TenantContext ctx) =>
+        string.Equals(reviewer, entry.AuthorPrincipal, StringComparison.Ordinal)
+        && !ctx.Scopes.Contains(AuthConstants.AdminScope);
+
     public async Task<(WriteOutcome Outcome, ExpertiseEntry? Entry)> ApproveAsync(
         Guid id, TenantContext ctx, Visibility visibility, CancellationToken ct)
     {
@@ -315,12 +331,13 @@ internal class ExpertiseRepository(
         if (entry is null)
             return (WriteOutcome.NotFound, null);
 
+        var reviewer = ResolveReviewer(ctx);
+        // Authorization boundary evaluated before the state check.
+        if (IsSelfReview(reviewer, entry, ctx))
+            return (WriteOutcome.SelfReviewForbidden, null);
+
         if (entry.ReviewState != ReviewState.Draft)
             return (WriteOutcome.InvalidState, null);
-
-        var reviewer = ctx.Principal.FindFirst("sub")?.Value
-                    ?? ctx.Principal.Identity?.Name
-                    ?? "system";
 
         var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
         entry.ReviewState = ReviewState.Approved;
@@ -353,12 +370,13 @@ internal class ExpertiseRepository(
         if (entry is null)
             return (WriteOutcome.NotFound, null);
 
+        var reviewer = ResolveReviewer(ctx);
+        // Authorization boundary evaluated before the state check.
+        if (IsSelfReview(reviewer, entry, ctx))
+            return (WriteOutcome.SelfReviewForbidden, null);
+
         if (entry.ReviewState != ReviewState.Draft)
             return (WriteOutcome.InvalidState, null);
-
-        var reviewer = ctx.Principal.FindFirst("sub")?.Value
-                    ?? ctx.Principal.Identity?.Name
-                    ?? "system";
 
         var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
         entry.ReviewState = ReviewState.Rejected;
