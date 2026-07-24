@@ -114,7 +114,8 @@ curl http://localhost:5000/health
 
 # 5. Create an entry (under Hybrid mode in Development — accepts the API key from .env)
 # POSTs require an Idempotency-Key header per ADR-010 (hard-required since 2026-05-19).
-# Write guards: title max 200 chars, body max 16000 (400 beyond — embedding-window caps, #429/#436/ADR-017).
+# Write guards: title max 200 chars, body max 16000 (embedding-window caps, #429/#436/ADR-017);
+# domain/source max 128, sourceVersion max 64, per-tag max 64, tag count max 32 (#470). 400 beyond any cap.
 curl -X POST http://localhost:5000/expertise \
   -H "Authorization: Bearer dev-api-key-change-me" \
   -H "Idempotency-Key: $(uuidgen)" \
