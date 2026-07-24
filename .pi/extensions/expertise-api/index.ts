@@ -10,8 +10,12 @@
  * this extension is the native pi path.
  *
  * Env contract (same as the skill):
- *   EXPERTISE_API_BASE_URL  Origin of the API (no trailing slash).
- *   EXPERTISE_API_TOKEN     Bearer token: OIDC JWT or LocalDev "dev:t:s+s".
+ *   EXPERTISE_API_BASE_URL    Origin of the API (no trailing slash).
+ *   EXPERTISE_API_TOKEN       Bearer token: OIDC JWT or LocalDev "dev:t:s+s".
+ *   EXPERTISE_API_TOKEN_FILE  Path to a file holding the token (issue #464).
+ *                             Used when EXPERTISE_API_TOKEN is unset/empty;
+ *                             recommended on agent hosts so no bearer literal
+ *                             sits in an env file.
  *
  * Auto-sources ~/.config/expertise-api/secrets.env (or
  * $EXPERTISE_API_SECRETS_FILE) on extension load.
@@ -158,14 +162,56 @@ function getBaseUrl(): string {
 	return normalised;
 }
 
-function getToken(): string {
-	const tok = process.env.EXPERTISE_API_TOKEN;
-	if (!tok || tok.trim() === "") {
-		throw new Error(
-			"EXPERTISE_API_TOKEN is not set. Export it or write it to ~/.config/expertise-api/secrets.env.",
-		);
+/**
+ * Resolve the bearer token (issue #464). Mirrors the skill's
+ * _resolve_token in .agents/skills/expertise-api/scripts/lib/common.sh:
+ *
+ *   1. EXPERTISE_API_TOKEN set and non-empty -> wins (explicit beats
+ *      indirection, the standard *_FILE convention).
+ *   2. EXPERTISE_API_TOKEN_FILE set -> read the file, trim trailing
+ *      whitespace. A missing, unreadable, or empty file throws naming the
+ *      path — never a silent fall-through to "not set", which would
+ *      misdiagnose a bad path as absent configuration.
+ *   3. Neither -> throw naming both variables.
+ *
+ * Re-read on every call (one API call each) so a rotated token file is
+ * picked up without restarting the extension. Exported (vs inlined into
+ * apiCall) so unit tests can assert the ladder without mocking fetch;
+ * `env` is injectable for the same reason and defaults to process.env.
+ */
+export function resolveToken(
+	env: Record<string, string | undefined> = process.env,
+): string {
+	const tok = env.EXPERTISE_API_TOKEN;
+	if (tok && tok.trim() !== "") {
+		return tok;
 	}
-	return tok;
+	let tokenFile = env.EXPERTISE_API_TOKEN_FILE;
+	if (tokenFile && tokenFile.trim() !== "") {
+		// secrets.env is shared with the shell skill, where `VAR=~/path` is a
+		// shell assignment and the tilde expands. This loader parses the file
+		// as plain text, so expand a leading `~/` here for parity — otherwise
+		// the same secrets.env works under the skill and fails under pi.
+		if (tokenFile.startsWith("~/")) {
+			tokenFile = path.join(os.homedir(), tokenFile.slice(2));
+		}
+		let contents: string;
+		try {
+			contents = fs.readFileSync(tokenFile, "utf8");
+		} catch {
+			throw new Error(
+				`EXPERTISE_API_TOKEN_FILE points to a missing or unreadable file: ${tokenFile}`,
+			);
+		}
+		const fileToken = contents.trimEnd();
+		if (fileToken === "") {
+			throw new Error(`EXPERTISE_API_TOKEN_FILE is empty: ${tokenFile}`);
+		}
+		return fileToken;
+	}
+	throw new Error(
+		"EXPERTISE_API_TOKEN is not set (set it, or point EXPERTISE_API_TOKEN_FILE at a token file). Write either to ~/.config/expertise-api/secrets.env.",
+	);
 }
 
 async function apiCall(
@@ -174,7 +220,7 @@ async function apiCall(
 	signal?: AbortSignal,
 ): Promise<ApiCallResult> {
 	const base: string = getBaseUrl();
-	const token: string = getToken();
+	const token: string = resolveToken();
 	const url: string = `${base}${pathAndQuery}`;
 	const headers: Headers = new Headers(init.headers ?? {});
 	headers.set("Authorization", `Bearer ${token}`);

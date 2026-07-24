@@ -188,6 +188,9 @@ jobs:
       - name: Run model-download staleness tests (#456)
         run: bash tests/install/test-download-models.sh
 
+      - name: Run skill token-file resolution tests (#464)
+        run: bash tests/skill/test-common-token-file.sh
+
   install-script-guards:
     name: install/uninstall script guard tests (#242)
     runs-on: ubuntu-latest

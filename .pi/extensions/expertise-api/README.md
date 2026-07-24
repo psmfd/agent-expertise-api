@@ -46,10 +46,14 @@ Same as the action skill. Set either via shell environment or
 mkdir -p ~/.config/expertise-api
 cat > ~/.config/expertise-api/secrets.env <<'EOF'
 EXPERTISE_API_BASE_URL=https://expertise.example.com
-EXPERTISE_API_TOKEN=...
+EXPERTISE_API_TOKEN_FILE=/path/to/token.jwt
 EOF
 chmod 600 ~/.config/expertise-api/secrets.env
 ```
+
+`EXPERTISE_API_TOKEN_FILE` (recommended) points at a file holding the token —
+no bearer literal in the env file. Setting `EXPERTISE_API_TOKEN=...` directly
+also works and wins when both are present (#464).
 
 The token reaches `fetch()` via an HTTP header — it is **not** visible in `ps`/`/proc` like the skill's `curl`-based path.
 
