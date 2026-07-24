@@ -103,12 +103,13 @@ internal static class ExpertiseEndpoints
 
         group.MapPost("/batch", CreateBatch)
             .RequireAuthorization("WriteAccess")
-            .RequireRateLimiting("expertise-write")
+            .RequireRateLimiting("expertise-batch")
             .Accepts<List<CreateExpertiseRequest>>("application/json")
             .WithSummary("Batch ingest up to 100 entries with per-item failure isolation")
             .WithDescription("Returns 200 with `BatchEntryResult[]` when every item is Created, or 207 (Multi-Status) when any item is " +
-                             "Duplicate / Rejected / Failed. Embedding generation and deduplication are batched into a single ONNX call " +
-                             "and bulk DB query respectively, so partial failures in one phase do not roll back successful items.")
+                             "Duplicate / Rejected / Failed. Embedding generation is batched into a single ONNX call; deduplication " +
+                             "runs an HNSW-indexed nearest-neighbour query per item. Partial failures in one phase do not roll back " +
+                             "successful items. Rate-limited under a dedicated stricter policy than single writes (#333 Finding 4).")
             .Produces<List<BatchEntryResult>>(StatusCodes.Status200OK)
             .Produces<List<BatchEntryResult>>(StatusCodes.Status207MultiStatus)
             .ProducesProblem(StatusCodes.Status400BadRequest)
