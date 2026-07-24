@@ -51,6 +51,14 @@ internal interface IResponseHygiene
     HygienizedField Hygienize(string? input, ContentClass contentClass, string nonce);
 
     /// <summary>
+    /// Hygienize each element of a free-text array (e.g. <c>Tags</c>) independently under
+    /// the same shared <paramref name="nonce"/>. Returns one <see cref="HygienizedField"/>
+    /// per element, preserving order, so a consuming agent can reason about each element's
+    /// applied transforms rather than a single joined blob. A null input yields an empty list.
+    /// </summary>
+    IReadOnlyList<HygienizedField> HygienizeMany(IEnumerable<string>? inputs, ContentClass contentClass, string nonce);
+
+    /// <summary>
     /// Manifest fields for the response-level <c>_hygiene</c> envelope. Carries the
     /// detector version, the detector class list, and the disclaimer text so consumers
     /// can reason about coverage.

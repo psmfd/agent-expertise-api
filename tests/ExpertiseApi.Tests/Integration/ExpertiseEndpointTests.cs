@@ -77,7 +77,7 @@ public class ExpertiseEndpointTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await response.Content.ReadJsonElementAsync();
         json.GetArrayLength().Should().Be(1);
-        json[0].GetProperty("domain").GetString().Should().Be("dotnet");
+        json[0].HygienizedValue("domain").Should().Contain("dotnet");
     }
 
     [Fact]

@@ -117,6 +117,14 @@ internal sealed class ResponseHygiene : IResponseHygiene
         return new HygienizedField(classLabel, $"{open}{encoded}{close}", applied);
     }
 
+    public IReadOnlyList<HygienizedField> HygienizeMany(
+        IEnumerable<string>? inputs, ContentClass contentClass, string nonce)
+    {
+        if (inputs is null)
+            return [];
+        return inputs.Select(input => Hygienize(input, contentClass, nonce)).ToList();
+    }
+
     public HygieneManifest GetManifest(string nonce) => new(
         Version: Version,
         Nonce: nonce,
