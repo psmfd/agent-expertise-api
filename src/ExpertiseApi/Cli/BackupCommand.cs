@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using ExpertiseApi.Data;
+using ExpertiseApi.Models;
 using ExpertiseApi.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -48,13 +49,11 @@ internal static class BackupCommand
             var checkpointsPath = Path.Join(outputDir, "checkpoints.jsonl");
             var manifestPath = Path.Join(outputDir, "manifest.json");
 
-            foreach (var path in new[] { entriesPath, auditPath, checkpointsPath, manifestPath })
+            var existing = new[] { entriesPath, auditPath, checkpointsPath, manifestPath }.FirstOrDefault(File.Exists);
+            if (existing is not null)
             {
-                if (File.Exists(path))
-                {
-                    logger.LogCritical("Backup: refusing to overwrite existing file {Path}. Use an empty output directory.", path);
-                    return 1;
-                }
+                logger.LogCritical("Backup: refusing to overwrite existing file {Path}. Use an empty output directory.", existing);
+                return 1;
             }
 
             // One snapshot for the whole export: RepeatableRead on PostgreSQL gives
@@ -192,22 +191,8 @@ internal static class BackupCommand
                     if (checkpoints.Count == 0)
                         break;
 
-                    foreach (var checkpoint in checkpoints)
+                    foreach (var record in checkpoints.Select(ToCheckpointRecord))
                     {
-                        var record = new BackupCheckpointRecord
-                        {
-                            Id = checkpoint.Id,
-                            SeqFrom = checkpoint.SeqFrom,
-                            SeqTo = checkpoint.SeqTo,
-                            RowCount = checkpoint.RowCount,
-                            MerkleRoot = checkpoint.MerkleRoot,
-                            PrevCheckpointMac = checkpoint.PrevCheckpointMac,
-                            CheckpointMac = checkpoint.CheckpointMac,
-                            CreatedAt = checkpoint.CreatedAt,
-                            RecordHash = "",
-                        };
-                        record = record with { RecordHash = BackupRecordHash.ComputeCheckpoint(record) };
-
                         checkpointHashes.Add(record.RecordHash);
                         await writer.WriteLineAsync(
                             JsonSerializer.Serialize(record, BackupJsonContext.Default.BackupCheckpointRecord));
@@ -257,6 +242,23 @@ internal static class BackupCommand
             logger.LogCritical(ex, "Backup: failed (full exception detail follows).");
             return 1;
         }
+    }
+
+    private static BackupCheckpointRecord ToCheckpointRecord(AuditCheckpoint checkpoint)
+    {
+        var record = new BackupCheckpointRecord
+        {
+            Id = checkpoint.Id,
+            SeqFrom = checkpoint.SeqFrom,
+            SeqTo = checkpoint.SeqTo,
+            RowCount = checkpoint.RowCount,
+            MerkleRoot = checkpoint.MerkleRoot,
+            PrevCheckpointMac = checkpoint.PrevCheckpointMac,
+            CheckpointMac = checkpoint.CheckpointMac,
+            CreatedAt = checkpoint.CreatedAt,
+            RecordHash = "",
+        };
+        return record with { RecordHash = BackupRecordHash.ComputeCheckpoint(record) };
     }
 
     private static string? GetOption(string[] args, string name)
