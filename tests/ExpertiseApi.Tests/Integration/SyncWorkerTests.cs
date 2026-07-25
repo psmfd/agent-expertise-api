@@ -3,6 +3,7 @@ using System.Text.Json;
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
 using ExpertiseApi.Models;
+using ExpertiseApi.Services;
 using ExpertiseApi.Services.Sync;
 using ExpertiseApi.Tests.Infrastructure;
 using Microsoft.AspNetCore.Builder;
@@ -252,6 +253,7 @@ public class SyncWorkerTests : IAsyncLifetime
         services.AddLogging(l => l.ClearProviders());
         services.AddHttpContextAccessor();
         services.AddSingleton<ITenantContextAccessor, NoOpTenantContextAccessor>();
+        services.AddSingleton<IIntegrityKeyProvider>(IntegrityKeyProvider.Unkeyed);
         services.AddDbContext<ExpertiseDbContext>(o =>
             o.UseNpgsql(_container.GetConnectionString(), n => n.UseVector()));
         services.AddScoped<IExpertiseRepository, ExpertiseRepository>();

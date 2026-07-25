@@ -81,7 +81,7 @@ public sealed class NeedleEvalTests(PostgresFixture postgres, ITestOutputHelper 
             .UseNpgsql(postgres.ConnectionString, o => o.UseVector())
             .Options;
         _db = new ExpertiseDbContext(options, new NoOpTenantContextAccessor());
-        _repo = new ExpertiseRepository(_db, new HttpContextAccessor(), NullLogger<ExpertiseRepository>.Instance);
+        _repo = new ExpertiseRepository(_db, new HttpContextAccessor(), NullLogger<ExpertiseRepository>.Instance, IntegrityKeyProvider.Unkeyed);
 
         await _db.ExpertiseEntries.Where(e => e.Tenant == EvalTenant).ExecuteDeleteAsync();
     }

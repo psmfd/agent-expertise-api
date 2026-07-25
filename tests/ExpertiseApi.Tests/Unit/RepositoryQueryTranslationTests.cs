@@ -3,6 +3,7 @@ using System.Security.Claims;
 using ExpertiseApi.Auth;
 using ExpertiseApi.Data;
 using ExpertiseApi.Models;
+using ExpertiseApi.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -45,7 +46,7 @@ public class RepositoryQueryTranslationTests
     }
 
     private static ExpertiseRepository NewRepository(ExpertiseDbContext db) =>
-        new(db, new HttpContextAccessor(), NullLogger<ExpertiseRepository>.Instance);
+        new(db, new HttpContextAccessor(), NullLogger<ExpertiseRepository>.Instance, IntegrityKeyProvider.Unkeyed);
 
     private static TenantContext Ctx() =>
         new("team-alpha", new ClaimsPrincipal(), Agent: null, new HashSet<string>());
