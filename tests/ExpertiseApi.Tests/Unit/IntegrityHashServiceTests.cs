@@ -110,6 +110,82 @@ public class IntegrityHashServiceTests
         IntegrityHashService.Compute(entry1).Should().Be(IntegrityHashService.Compute(entry2));
     }
 
+    // --- ADR-020 keyed (HMAC) path ------------------------------------------------
+
+    private static IntegrityKey TestKey(string keyId = "k1", byte fill = 0x42)
+    {
+        var key = new byte[32];
+        Array.Fill(key, fill);
+        return new IntegrityKey(keyId, key);
+    }
+
+    [Fact]
+    public void Compute_Keyed_HasKeyIdPrefixAndHexMac()
+    {
+        var value = IntegrityHashService.Compute(
+            "team-alpha", "Title", "Body", EntryType.Pattern, Severity.Info, TestKey());
+
+        value.Should().MatchRegex("^k1:[0-9a-f]{64}$");
+    }
+
+    [Fact]
+    public void Compute_Keyed_IsDeterministic()
+    {
+        var a = IntegrityHashService.Compute("t", "title", "body", EntryType.Pattern, Severity.Info, TestKey());
+        var b = IntegrityHashService.Compute("t", "title", "body", EntryType.Pattern, Severity.Info, TestKey());
+
+        a.Should().Be(b);
+    }
+
+    [Fact]
+    public void Compute_Keyed_DiffersFromUnkeyed()
+    {
+        var keyed = IntegrityHashService.Compute("t", "title", "body", EntryType.Pattern, Severity.Info, TestKey());
+        var unkeyed = IntegrityHashService.Compute("t", "title", "body", EntryType.Pattern, Severity.Info);
+
+        keyed.Should().NotBe(unkeyed);
+        keyed.Should().NotEndWith(unkeyed, "the MAC must not equal the plain hash even ignoring the prefix");
+    }
+
+    [Fact]
+    public void Compute_Keyed_DiffersByKeyMaterial()
+    {
+        var a = IntegrityHashService.Compute("t", "title", "body", EntryType.Pattern, Severity.Info, TestKey(fill: 0x01));
+        var b = IntegrityHashService.Compute("t", "title", "body", EntryType.Pattern, Severity.Info, TestKey(fill: 0x02));
+
+        a.Should().NotBe(b);
+    }
+
+    [Fact]
+    public void Compute_NullKey_MatchesLegacyOverload()
+    {
+        var explicitNull = IntegrityHashService.Compute(
+            "t", "title", "body", EntryType.Pattern, Severity.Info, key: null);
+        var legacy = IntegrityHashService.Compute("t", "title", "body", EntryType.Pattern, Severity.Info);
+
+        explicitNull.Should().Be(legacy);
+        legacy.Should().MatchRegex("^[0-9a-f]{64}$", "the legacy format is bare hex — no key-id prefix");
+    }
+
+    [Fact]
+    public void Compute_Keyed_EntryOverload_MatchesScalarOverload()
+    {
+        var entry = new ExpertiseEntry
+        {
+            Domain = "shared",
+            Tenant = "team-alpha",
+            Title = "Title",
+            Body = "Body",
+            EntryType = EntryType.Caveat,
+            Severity = Severity.Warning,
+            Source = "human",
+            AuthorPrincipal = "test"
+        };
+
+        IntegrityHashService.Compute(entry, TestKey()).Should().Be(
+            IntegrityHashService.Compute("team-alpha", "Title", "Body", EntryType.Caveat, Severity.Warning, TestKey()));
+    }
+
     [Fact]
     public void Compute_OverloadFromEntry_MatchesScalarOverload()
     {

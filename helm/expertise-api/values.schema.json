@@ -362,6 +362,29 @@
         }
       }
     },
+    "integrity": {
+      "type": "object",
+      "description": "ADR-020 integrity verification. The HMAC key itself lives in the secret named by auth.secretName as Integrity__HmacKey — never in values.",
+      "properties": {
+        "verify": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "schedule": {
+              "type": "string",
+              "minLength": 9,
+              "description": "Cron expression (5 fields, standard Kubernetes CronJob syntax). Default is a daily sweep."
+            },
+            "resources": {
+              "$ref": "#/$defs/k8sResources"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
     "metrics": {
       "type": "object",
       "properties": {

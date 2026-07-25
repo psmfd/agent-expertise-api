@@ -7,6 +7,7 @@ using ExpertiseApi.Tests.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -162,6 +163,52 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
         after.Should().Equal(before, "rehash only touches IntegrityHash == null rows");
     }
 
+    [Fact]
+    public async Task Rehash_Force_RekeysEveryRow_IncludingPopulatedLegacyHashes()
+    {
+        // ADR-020: after configuring Integrity:HmacKey, `rehash --force` is the one-time
+        // rekey migration — it must rewrite rows whose IntegrityHash is already populated
+        // (legacy unkeyed), which the default null-only filter deliberately skips.
+        var ids = new List<Guid>();
+        for (var i = 0; i < 3; i++)
+        {
+            await using var db = NewContext();
+            var entry = TestHelpers.SeedEntry(domain: "rekey", title: $"f {i}", body: $"b {i}");
+            entry.IntegrityHash = IntegrityHashService.Compute(entry); // populated, legacy format
+            db.ExpertiseEntries.Add(entry);
+            await db.SaveChangesAsync();
+            ids.Add(entry.Id);
+        }
+
+        var keyed = IntegrityKeyProvider.Load(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Integrity:HmacKey"] = Convert.ToBase64String(Enumerable.Repeat((byte)0x42, 32).ToArray()),
+            })
+            .Build());
+
+        // Without --force, populated rows are untouched even when a key is configured.
+        await using (var app = BuildApp(keyed))
+            await RehashCommand.RunAsync(app, ["rehash"]);
+        (await SnapshotHashes(ids)).Should().OnlyContain(h => !h.Contains(':'),
+            "a non-forced run must never rewrite populated hashes");
+
+        // With --force, every row is rekeyed to the {keyId}:{hex} format.
+        await using (var app = BuildApp(keyed))
+            await RehashCommand.RunAsync(app, ["rehash", "--force", "--batch-size", "2"]);
+
+        await using var verify = NewContext();
+        foreach (var id in ids)
+        {
+            var entry = await verify.ExpertiseEntries.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(x => x.Id == id);
+            entry.IntegrityHash.Should().Be(
+                IntegrityHashService.Compute(entry, keyed.ActiveKey),
+                "--force must recompute with the active key");
+            entry.IntegrityHash.Should().StartWith("k1:");
+        }
+    }
+
     // ---- Helpers ----------------------------------------------------------
 
     private async Task<List<string>> SnapshotHashes(IEnumerable<Guid> ids)
@@ -183,10 +230,11 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
         return new ExpertiseDbContext(options, new NoOpTenantContextAccessor());
     }
 
-    private WebApplication BuildApp()
+    private WebApplication BuildApp(IIntegrityKeyProvider? integrityKeys = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
+        builder.Services.AddSingleton(integrityKeys ?? IntegrityKeyProvider.Unkeyed);
         builder.Services.AddSingleton<ITenantContextAccessor, NoOpTenantContextAccessor>();
         builder.Services.AddDbContext<ExpertiseDbContext>(o =>
             o.UseNpgsql(_container.GetConnectionString(), x => x.UseVector()));

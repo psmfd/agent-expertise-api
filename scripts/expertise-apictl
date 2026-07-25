@@ -11,9 +11,13 @@
 #   expertise-apictl logs [-f] [-n LINES]
 #   expertise-apictl health
 #   expertise-apictl reembed [--batch-size N]
+#   expertise-apictl rehash [--batch-size N] [--force]
+#   expertise-apictl verify [--batch-size N] [--grace-seconds N] [--no-seal]
 #   expertise-apictl backup-init [--install-deps]
 #   expertise-apictl backup [--output DIR] [--instance-id ID]
 #   expertise-apictl restore ARTIFACT [--force-draft] [--i-accept-unsigned-backup]
+#   expertise-apictl drafts [--json]
+#   expertise-apictl review
 #   expertise-apictl --help
 #
 # backup-init bootstraps the signed+encrypted backup surface (ADR-012):
@@ -22,6 +26,22 @@
 # backup/, and writes backup.env. backup/restore orchestrate the ExpertiseApi
 # backup/restore CLI verbs plus tar/gzip/age and ssh-keygen -Y signatures;
 # see docs/operations/backup-restore-runbook.md.
+#
+# drafts lists the pending review queue (GET /expertise/drafts); review is
+# the interactive approve/reject loop for a HUMAN reviewer (ADR-018/ADR-019).
+# Both need a reviewer token carrying expertise.write.approve — set
+# EXPERTISE_API_TOKEN or EXPERTISE_API_TOKEN_FILE (keep it distinct from any
+# agent write.draft token). Base URL comes from EXPERTISE_API_URL.
+#
+# verify runs the ADR-020 integrity sweep (entry MACs + audit checkpoint
+# chain) and seals a new checkpoint. Exit codes: 0 clean, 1 integrity
+# mismatch (ALERT), 2 precondition failure — schedule it from a systemd
+# timer / launchd / cron and alert on non-zero.
+#
+# rehash backfills IntegrityHash for null-hash entries; --force recomputes
+# EVERY row under the active key — the one-time rekey after configuring or
+# rotating Integrity__HmacKey(File) (ADR-020). Run it once before trusting
+# verify output; see docs/operations/integrity-verification-runbook.md.
 #
 
 set -euo pipefail
@@ -35,7 +55,7 @@ READY_TIMEOUT="${EXPERTISE_API_READY_TIMEOUT:-30}"
 log() { printf '[expertise-apictl] %s\n' "$1"; }
 err() { printf '[expertise-apictl] ERROR: %s\n' "$1" >&2; exit 1; }
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
 
 detect_os() {
   case "$(uname -s)" in
@@ -74,9 +94,10 @@ _detect_install_scope() {
 
 # The system-scope guard applies to service-LIFECYCLE subcommands only —
 # backup-init/backup/restore/reembed talk to the database and filesystem,
-# never to launchd, so they work fine against a --system install.
+# and drafts/review talk plain HTTP — never to launchd, so they work fine
+# against a --system install.
 case "${1:-}" in
-  backup-init|backup|restore|reembed) _lifecycle_cmd=0 ;;
+  backup-init|backup|restore|reembed|rehash|verify|drafts|review) _lifecycle_cmd=0 ;;
   *)                          _lifecycle_cmd=1 ;;
 esac
 
@@ -271,6 +292,371 @@ cmd_health() {
   else
     err "health check failed against ${HEALTH_URL}"
   fi
+}
+
+# ===========================================================================
+# Draft review (issue #485, ADR-019).
+#
+# `drafts` lists the pending review queue; `review` is the interactive
+# approve/reject loop — the human arm of the ADR-018 separation-of-duties
+# control. Draft content is agent-written and untrusted: the server
+# hygienizes it (ADR-008) but deliberately does NOT strip terminal control
+# bytes, so everything rendered here passes through _sanitize_tty first.
+#
+# Token/URL resolution is env-only (EXPERTISE_API_TOKEN / _TOKEN_FILE /
+# EXPERTISE_API_URL). Deliberately NOT read from
+# ~/.config/expertise-api/secrets.env: install.sh owns that path for SERVER
+# config (connection string), a different schema than the skill's client
+# contract — see ADR-019.
+# ===========================================================================
+
+API_BASE="${EXPERTISE_API_URL:-http://127.0.0.1:8080}"
+
+_resolve_api_token() {
+  local tok=""
+  if [[ -n "${EXPERTISE_API_TOKEN:-}" ]]; then
+    tok="${EXPERTISE_API_TOKEN}"
+  elif [[ -n "${EXPERTISE_API_TOKEN_FILE:-}" ]]; then
+    [[ -f "${EXPERTISE_API_TOKEN_FILE}" && -r "${EXPERTISE_API_TOKEN_FILE}" ]] \
+      || err "EXPERTISE_API_TOKEN_FILE points to a missing or unreadable file: ${EXPERTISE_API_TOKEN_FILE}"
+    tok="$(tr -d '\r\n' < "${EXPERTISE_API_TOKEN_FILE}")"
+  fi
+  [[ -n "${tok}" ]] || err "no reviewer token — set EXPERTISE_API_TOKEN or EXPERTISE_API_TOKEN_FILE (an expertise.write.approve token, distinct from any agent write.draft token)"
+  # Charset guard before splicing into the curl config file: inside curl's
+  # double-quoted config values only \\ \" \t \n \r \v are escapes, '#'
+  # starts a comment, and control bytes/whitespace would truncate the header.
+  # Legitimate bearer tokens (JWT base64url, dev:{tenant}:{scopes}) contain
+  # none of these — fail loudly instead of sending a corrupted header.
+  # shellcheck disable=SC1003  # '\' below is a one-character backslash pattern, not a quote escape
+  case "${tok}" in
+    *[![:graph:]]*|*'"'*|*'\'*|*'#'*)
+      err "token contains characters never valid in a bearer token (whitespace, control byte, quote, backslash, or '#') — check your token source" ;;
+  esac
+  printf '%s' "${tok}"
+}
+
+# _api_http_init — dependency checks + one 700-perm workdir for the curl
+# config (bearer) and response-body files. The EXIT trap is registered ONCE
+# here: bash replaces (not stacks) EXIT traps, and cmd_review calls _api_http
+# many times per session — per-call traps would leave every earlier call's
+# bearer-bearing config file behind. Like _apictl_workdir above, the dir
+# variable is deliberately not local so the trap can expand it.
+_api_http_init() {
+  command -v curl    >/dev/null 2>&1 || err "curl not found"
+  command -v jq      >/dev/null 2>&1 || err "jq not found (required for drafts/review)"
+  command -v uuidgen >/dev/null 2>&1 || err "uuidgen not found (required for Idempotency-Key)"
+  [[ -n "${_apictl_httpdir:-}" ]] && return 0
+  # Explicit template: bare `mktemp -t prefix` differs between BSD and GNU
+  # (same rationale as scripts/lib/release-consumer.sh).
+  _apictl_httpdir="$(mktemp -d "${TMPDIR:-/tmp}/expertise-apictl-http.XXXXXX")"
+  chmod 700 "${_apictl_httpdir}"
+  _apictl_resp="${_apictl_httpdir}/resp.body"
+  trap 'rm -rf "${_apictl_httpdir:-}"' EXIT
+}
+
+# _api_http METHOD PATH [JSON_BODY]
+# Response body lands in ${_apictl_resp}; HTTP status in ${API_HTTP_STATUS}.
+# Called as a plain command (never via $(...)) so both globals survive.
+# The bearer travels via `curl --config` (a 600-perm file under the 700-perm
+# workdir), NEVER argv — `ps` on a shared host must not see it (the skill's
+# api_curl uses the same pattern since #486). The config file is removed
+# immediately after each call; the EXIT trap is only the abnormal-exit
+# backstop. NEVER add -v/--trace* to this curl invocation: curl verbose modes
+# print the Authorization header in cleartext (standing ADR-019 constraint).
+_api_http() {
+  local method="$1" path="$2" body_json="${3:-}"
+  _api_http_init
+  local tok cfg status
+  tok="$(_resolve_api_token)"
+  cfg="${_apictl_httpdir}/curl.cfg"
+  ( umask 077
+    {
+      printf 'header = "Authorization: Bearer %s"\n' "${tok}"
+      printf 'header = "Accept: application/json"\n'
+      if [[ "${method}" == "POST" ]]; then
+        printf 'header = "Idempotency-Key: %s"\n' "$(uuidgen)"
+        printf 'header = "Content-Type: application/json"\n'
+      fi
+    } > "${cfg}"
+  )
+  local curl_extra=()
+  if [[ "${method}" == "POST" ]]; then
+    curl_extra=(-X POST --data "${body_json}")
+  fi
+  if ! status="$(curl -sS --max-time 30 -o "${_apictl_resp}" -w '%{http_code}' \
+                   --config "${cfg}" \
+                   ${curl_extra[@]+"${curl_extra[@]}"} \
+                   "${API_BASE}${path}")"; then
+    rm -f "${cfg}"
+    err "could not reach ${API_BASE}${path} — is the service running? (expertise-apictl status)"
+  fi
+  rm -f "${cfg}"
+  API_HTTP_STATUS="${status}"
+}
+
+# _sanitize_tty — codepoint-aware terminal sanitizer (CWE-150 anti-spoofing).
+# jq, not tr: byte-level `tr -d '\200-\237'` corrupts UTF-8 (0x80-0x9F are
+# legitimate continuation bytes in ordinary punctuation). Drops, per line:
+#   - C0 controls except tab (ESC breaks all 7-bit CSI/OSC/DCS sequences)
+#   - DEL (0x7F, destructive backspace on some terminals)
+#   - C1 (U+0080-U+009F: 8-bit CSI/OSC alternates)
+#   - bidi/format overrides (U+200E/F, U+202A-202E, U+2066-2069) that can
+#     visually reorder or mask reviewed text
+# Residual gap (accepted, ADR-019): homoglyph/confusable spoofing.
+_sanitize_tty() {
+  jq -Rr 'explode
+          | map(select(
+              (. == 9)
+              or ((. >= 32) and (. != 127)
+                  and ((. < 128) or (. > 159))
+                  and (. != 8206) and (. != 8207)
+                  and ((. < 8234) or (. > 8238))
+                  and ((. < 8294) or (. > 8297)))))
+          | implode'
+}
+
+_check_base_url_scheme() {
+  # A write.approve bearer is the most privileged token this script handles;
+  # warn (non-fatal) when it would traverse a network in cleartext.
+  case "${API_BASE}" in
+    https://*) : ;;
+    http://127.0.0.1*|http://localhost*|'http://[::1]'*) : ;;
+    *) log "WARNING: non-loopback plain-http base URL (${API_BASE}) — the reviewer bearer token will traverse the network in cleartext" ;;
+  esac
+}
+
+# _jwt_preflight TOKEN — advisory only (the server enforces real authz).
+# Warns when the token looks service-shaped (sub == azp/client_id): ADR-018
+# review expects a HUMAN credential; a service-shaped approve is not blocked
+# server-side but is tagged non-human and audited (#484). Fails soft on
+# anything that is not a decodable JWT (LocalDev dev:{tenant}:{scopes}
+# tokens, opaque tokens) — never aborts the session.
+_jwt_preflight() {
+  local tok="$1" payload b64 rem claims sub azp
+  case "${tok}" in *.*.*) : ;; *) return 0 ;; esac
+  payload="$(printf '%s' "${tok}" | cut -d. -f2)"
+  b64="$(printf '%s' "${payload}" | tr '_-' '/+')"
+  rem=$(( ${#b64} % 4 ))
+  case "${rem}" in 2) b64="${b64}==" ;; 3) b64="${b64}=" ;; esac
+  # jq @base64d instead of the base64 CLI: macOS/BSD (-D) and GNU (-d)
+  # disagree on flags; jq is already a hard dependency here.
+  claims="$(printf '"%s"' "${b64}" | jq -r '@base64d' 2>/dev/null)" || claims=""
+  [[ -n "${claims}" ]] || return 0
+  sub="$(printf '%s' "${claims}" | jq -r '.sub // empty' 2>/dev/null)" || sub=""
+  azp="$(printf '%s' "${claims}" | jq -r '.azp // .client_id // empty' 2>/dev/null)" || azp=""
+  if [[ -n "${sub}" && -n "${azp}" && "${sub}" == "${azp}" ]]; then
+    log "WARNING: reviewer token looks service-shaped (sub == azp/client_id) — ADR-018 expects a human reviewer; this approval will be tagged non-human and audited"
+  fi
+  return 0
+}
+
+# _fetch_drafts — GET /expertise/drafts into ${_apictl_resp} with friendly
+# status handling shared by cmd_drafts and cmd_review.
+_fetch_drafts() {
+  _api_http GET "/expertise/drafts"
+  case "${API_HTTP_STATUS}" in
+    200) : ;;
+    401|403) err "HTTP ${API_HTTP_STATUS} from GET /expertise/drafts — the token must carry expertise.write.approve" ;;
+    *) err "HTTP ${API_HTTP_STATUS} from GET /expertise/drafts: $(_sanitize_tty < "${_apictl_resp}")" ;;
+  esac
+}
+
+cmd_drafts() {
+  local json_out=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json_out=1; shift ;;
+      *) err "unknown drafts flag: $1 (usage: expertise-apictl drafts [--json])" ;;
+    esac
+  done
+  _check_base_url_scheme
+  _fetch_drafts
+  if (( json_out == 1 )); then
+    cat "${_apictl_resp}"
+    return 0
+  fi
+  local count
+  count="$(jq 'length' "${_apictl_resp}")"
+  if [[ "${count}" == "0" ]]; then
+    log "review queue is empty"
+    return 0
+  fi
+  # Hygienized fields are {contentClass,value,hygieneApplied} envelopes; the
+  # delimiter wrapper is stripped for the table via each item's own _hygiene
+  # delimiters. @tsv escapes embedded tabs/newlines inside field values.
+  {
+    printf 'ID\tSTATE\tTYPE\tSEV\tAUTHOR\tTITLE\n'
+    jq -r '.[]
+           | (._hygiene.delimiterOpen) as $o | (._hygiene.delimiterClose) as $c
+           | [ .id, .reviewState, .entryType, .severity,
+               (.authorPrincipal + (if .authorAgent then " (" + .authorAgent + ")" else "" end)),
+               (.title.value | ltrimstr($o) | rtrimstr($c)) ]
+           | @tsv' "${_apictl_resp}"
+  } | _sanitize_tty | awk -F'\t' '{ printf "%-36s  %-8s  %-10s  %-8s  %-30s  %s\n", $1, $2, $3, $4, $5, $6 }'
+  log "${count} entr$( [[ "${count}" == "1" ]] && printf 'y' || printf 'ies' ) in the queue (Draft + Rejected; 'review' iterates Draft only)"
+}
+
+# _render_draft ENTRY_JSON MODE — MODE is 'brief' (body truncated) or 'full'.
+# Everything printed here is untrusted agent-authored content → _sanitize_tty.
+_render_draft() {
+  local entry="$1" mode="$2"
+  jq -r --arg mode "${mode}" '
+    (._hygiene.delimiterOpen) as $o | (._hygiene.delimiterClose) as $c
+    | def uv: if . == null then "—" else (.value | ltrimstr($o) | rtrimstr($c)) end;
+    (.body | uv) as $body
+    | [
+        "────────────────────────────────────────────────────────────",
+        "Id:        \(.id)",
+        "State:     \(.reviewState)    Type: \(.entryType)    Severity: \(.severity)",
+        "Tenant:    \(.tenant)    Visibility: \(.visibility)",
+        ("Author:    \(.authorPrincipal)" + (if .authorAgent then "    Agent: \(.authorAgent)" else "" end)),
+        (if .originInstanceId then "Origin:    \(.originInstanceId)    OriginAuthor: " + (.originAuthorPrincipal | uv) else empty end),
+        "Created:   \(.createdAt)    Updated: \(.updatedAt)",
+        "Hygiene:   detectors=[\(._hygiene.detectors | join(","))]  applied(body)=[\(.body.hygieneApplied | join(","))]",
+        "Domain:    \(.domain | uv)",
+        ("Tags:      " + ((.tags // []) | map(uv) | join(", "))),
+        ("Source:    \(.source | uv)" + (if .sourceVersion then " @ " + (.sourceVersion | uv) else "" end)),
+        (if .rejectionReason then "PriorReject: " + (.rejectionReason | uv) else empty end),
+        "Title:     \(.title | uv)",
+        "",
+        (if $mode == "full" or ($body | length) <= 500
+         then $body
+         else (($body | .[:500]) + "\n… [truncated — press v for the full body]") end)
+      ]
+    | .[]' <<< "${entry}" | _sanitize_tty
+}
+
+# _verify_unchanged ID EXPECTED_HASH — TOCTOU guard: a draft can be PATCHed
+# between render and approve (it stays Draft, so xmin concurrency alone will
+# not catch it — the reviewer would approve content they never saw).
+# GET /expertise/{id} deliberately never surfaces Drafts, so the re-check
+# re-fetches the drafts queue and compares the server-computed IntegrityHash.
+_verify_unchanged() {
+  local id="$1" expected="$2" current
+  _fetch_drafts
+  current="$(jq -r --arg id "${id}" '.[] | select(.id == $id) | .integrityHash // empty' "${_apictl_resp}")"
+  if [[ -z "${current}" ]]; then
+    log "entry ${id} is no longer in the review queue (reviewed elsewhere?) — action cancelled"
+    return 1
+  fi
+  if [[ "${current}" != "${expected}" ]]; then
+    log "WARNING: content of ${id} changed since it was displayed (integrity hash mismatch) — action cancelled; re-run review to see the current content"
+    return 1
+  fi
+  return 0
+}
+
+_review_post() {
+  # _review_post ID VERB JSON_BODY — shared approve/reject POST + outcome map.
+  local id="$1" verb="$2" body="$3"
+  _api_http POST "/expertise/${id}/${verb}" "${body}"
+  case "${API_HTTP_STATUS}" in
+    200) log "${verb}: OK (${id})"; return 0 ;;
+    403) log "HTTP 403 — a principal may not ${verb} its own draft (ADR-018 separation of duties; expertise.admin is the audited break-glass)"; return 1 ;;
+    409) log "HTTP 409 — entry is not in Draft state or a concurrent review won the race"; return 1 ;;
+    *)   log "HTTP ${API_HTTP_STATUS} from ${verb}: $(_sanitize_tty < "${_apictl_resp}")"; return 1 ;;
+  esac
+}
+
+_do_approve() {
+  local id="$1" expected_hash="$2" vis confirm body
+  printf 'visibility [P]rivate (default) / [S]hared: ' > /dev/tty
+  read -r vis < /dev/tty || return 1
+  case "${vis}" in
+    s|S|shared|Shared)
+      # Shared broadens blast radius from one tenant to every tenant —
+      # explicit consequence-naming confirmation, distinct from the approve.
+      printf 'Shared publishes this entry to EVERY tenant. Type "shared" to confirm: ' > /dev/tty
+      read -r confirm < /dev/tty || return 1
+      [[ "${confirm}" == "shared" ]] || { log "not confirmed — approve cancelled"; return 1; }
+      body='{"visibility":"Shared"}' ;;
+    ''|p|P|private|Private)
+      body='{"visibility":"Private"}' ;;
+    *) log "unrecognized visibility '${vis}' — approve cancelled"; return 1 ;;
+  esac
+  _verify_unchanged "${id}" "${expected_hash}" || return 1
+  _review_post "${id}" "approve" "${body}"
+}
+
+_do_reject() {
+  local id="$1" expected_hash="$2" reason body
+  printf 'rejection reason (required, max 2000 chars): ' > /dev/tty
+  read -r reason < /dev/tty || return 1
+  [[ -n "${reason}" ]] || { log "a rejection reason is required — reject cancelled"; return 1; }
+  if (( ${#reason} > 2000 )); then
+    log "reason is ${#reason} chars (server cap is 2000) — reject cancelled"
+    return 1
+  fi
+  body="$(jq -cn --arg r "${reason}" '{rejectionReason: $r}')"
+  _verify_unchanged "${id}" "${expected_hash}" || return 1
+  _review_post "${id}" "reject" "${body}"
+}
+
+cmd_review() {
+  [[ $# -eq 0 ]] || err "review takes no arguments (usage: expertise-apictl review)"
+  # Interactive-only: prompts read from /dev/tty (stdin stays free), so a
+  # controlling terminal is required. [ -t 0 ] tests the wrong thing —
+  # stdin may be redirected while /dev/tty is still available, and vice
+  # versa. Exit 2 = precondition failure (script-output-conventions).
+  if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+    printf '[expertise-apictl] ERROR: review is interactive and needs a controlling terminal — use "expertise-apictl drafts --json" for scripting\n' >&2
+    exit 2
+  fi
+  exec 3>&-
+
+  _check_base_url_scheme
+  _api_http_init
+  # Plain assignment (not inline substitution in an argument) so a token
+  # failure aborts once, cleanly, under set -e.
+  local tok
+  tok="$(_resolve_api_token)"
+  _jwt_preflight "${tok}"
+  _fetch_drafts
+
+  # Buffer once; ${_apictl_resp} is reused by every subsequent _api_http call.
+  # Only Draft entries are actionable (approve/reject 409 on anything else);
+  # Rejected entries in the queue are informational — see 'drafts'.
+  local drafts_json count i entry id hash action
+  drafts_json="$(jq -c '[ .[] | select(.reviewState == "Draft") ]' "${_apictl_resp}")"
+  count="$(jq 'length' <<< "${drafts_json}")"
+  if [[ "${count}" == "0" ]]; then
+    log "no Draft entries to review"
+    return 0
+  fi
+  log "${count} Draft entr$( [[ "${count}" == "1" ]] && printf 'y' || printf 'ies' ) to review"
+
+  i=0
+  while (( i < count )); do
+    entry="$(jq -c ".[$i]" <<< "${drafts_json}")"
+    id="$(jq -r '.id' <<< "${entry}")"
+    hash="$(jq -r '.integrityHash // empty' <<< "${entry}")"
+    printf '\n[%d/%d]\n' "$(( i + 1 ))" "${count}" > /dev/tty
+    _render_draft "${entry}" brief > /dev/tty
+
+    while :; do
+      printf '[a]pprove  [r]eject  [s]kip  [v]iew full  [q]uit > ' > /dev/tty
+      # read fails on EOF (ctrl-d); under set -e a bare read in a loop body
+      # would abort the whole script — always guard it.
+      if ! read -r action < /dev/tty; then
+        printf '\n' > /dev/tty
+        log "EOF on /dev/tty — exiting review"
+        return 0
+      fi
+      case "${action}" in
+        a|A) if _do_approve "${id}" "${hash}"; then break; fi ;;
+        r|R) if _do_reject  "${id}" "${hash}"; then break; fi ;;
+        s|S) break ;;
+        v|V) _render_draft "${entry}" full > /dev/tty ;;
+        q|Q) log "review ended (${i} of ${count} reached)"; return 0 ;;
+        *)   printf 'unrecognized action: %s\n' "${action}" > /dev/tty ;;
+      esac
+    done
+    # NEVER a bare ((i++)) here: as a standalone command it returns the
+    # truthiness of the OLD value, so incrementing from 0 aborts under
+    # set -e on bash 4/5 (while passing on macOS bash 3.2).
+    i=$(( i + 1 ))
+  done
+  log "review queue done (${count} entr$( [[ "${count}" == "1" ]] && printf 'y' || printf 'ies' ) presented)"
 }
 
 # ===========================================================================
@@ -555,9 +941,10 @@ cmd_backup() {
     || err "export verb failed — nothing was signed or written to ${out_dir}"
 
   log "compressing + encrypting payload"
-  tar -czf "${workdir}/payload.tar.gz" -C "${workdir}/payload" entries.jsonl audit.jsonl
+  tar -czf "${workdir}/payload.tar.gz" -C "${workdir}/payload" entries.jsonl audit.jsonl checkpoints.jsonl
   age -e -R "${AGE_RECIPIENTS_FILE}" -o "${workdir}/payload.tar.gz.age" "${workdir}/payload.tar.gz"
-  rm -f "${workdir}/payload.tar.gz" "${workdir}/payload/entries.jsonl" "${workdir}/payload/audit.jsonl"
+  rm -f "${workdir}/payload.tar.gz" "${workdir}/payload/entries.jsonl" "${workdir}/payload/audit.jsonl" \
+        "${workdir}/payload/checkpoints.jsonl"
 
   # Bind the encrypted payload to the manifest BEFORE signing, so the
   # signature covers the payload hash (ADR-012 manifest schema).
@@ -583,6 +970,30 @@ cmd_reembed() {
   # completes, pre-existing entries are invisible to semantic/hybrid search.
   _run_api_verb reembed "$@" || err "reembed verb failed — see log output above"
   log "reembed: OK"
+}
+
+cmd_rehash() {
+  # Pass-through to the ExpertiseApi rehash verb: backfill IntegrityHash for
+  # null-hash entries; --force recomputes EVERY row under the active key —
+  # the one-time rekey migration after configuring or rotating
+  # Integrity__HmacKey(File) (ADR-020). Idempotent without --force.
+  _run_api_verb rehash "$@" || err "rehash verb failed — see log output above"
+  log "rehash: OK"
+}
+
+cmd_verify() {
+  # Pass-through to the ExpertiseApi verify verb (ADR-020): recompute every
+  # entry MAC, re-verify the audit checkpoint chain, seal a new checkpoint.
+  # Exit codes are preserved (not collapsed to err's exit 1) so a scheduled
+  # runner can distinguish 1=integrity mismatch (ALERT) from 2=precondition.
+  local rc=0
+  _run_api_verb verify "$@" || rc=$?
+  case "${rc}" in
+    0) log "verify: OK (clean)" ;;
+    1) printf '[expertise-apictl] ERROR: verify: INTEGRITY MISMATCH detected — see log output above\n' >&2 ;;
+    *) printf '[expertise-apictl] ERROR: verify: precondition failure (rc=%s) — see log output above\n' "${rc}" >&2 ;;
+  esac
+  return "${rc}"
 }
 
 cmd_restore() {
@@ -656,6 +1067,10 @@ case "${1:-}" in
   backup)     shift; cmd_backup "$@" ;;
   restore)    shift; cmd_restore "$@" ;;
   reembed)    shift; cmd_reembed "$@" ;;
+  rehash)     shift; cmd_rehash "$@" ;;
+  verify)     shift; cmd_verify "$@" ;;
+  drafts)     shift; cmd_drafts "$@" ;;
+  review)     shift; cmd_review "$@" ;;
   ''|-h|--help) usage ;;
   *) err "unknown subcommand: $1 (try --help)" ;;
 esac

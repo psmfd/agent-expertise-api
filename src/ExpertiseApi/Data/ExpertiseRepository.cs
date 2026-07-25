@@ -5,6 +5,7 @@ using ExpertiseApi.Models;
 using ExpertiseApi.Services;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Prometheus;
 using Pgvector;
 using Pgvector.EntityFrameworkCore;
 
@@ -13,7 +14,8 @@ namespace ExpertiseApi.Data;
 internal class ExpertiseRepository(
     ExpertiseDbContext db,
     IHttpContextAccessor httpContextAccessor,
-    ILogger<ExpertiseRepository> logger) : IExpertiseRepository
+    ILogger<ExpertiseRepository> logger,
+    IIntegrityKeyProvider integrityKeys) : IExpertiseRepository
 {
     /// <summary>
     /// Builds the tenant predicate per ADR-001: a row is visible if its <c>Tenant</c>
@@ -198,7 +200,7 @@ internal class ExpertiseRepository(
 
         entry.CreatedAt = DateTime.UtcNow;
         entry.UpdatedAt = DateTime.UtcNow;
-        entry.IntegrityHash = IntegrityHashService.Compute(entry);
+        entry.IntegrityHash = IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
 
         db.ExpertiseEntries.Add(entry);
         db.ExpertiseAuditLogs.Add(BuildAuditRow(AuditAction.Created, entry, ctx, beforeHash: null, afterHash: entry.IntegrityHash));
@@ -227,7 +229,7 @@ internal class ExpertiseRepository(
         if (entry.Tenant == "shared" && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
             return (WriteOutcome.InsufficientScope, null);
 
-        var beforeHash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var beforeHash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
         var beforeVisibility = entry.Visibility;
 
         await applyUpdates(entry);
@@ -252,7 +254,7 @@ internal class ExpertiseRepository(
         }
 
         entry.UpdatedAt = DateTime.UtcNow;
-        entry.IntegrityHash = IntegrityHashService.Compute(entry);
+        entry.IntegrityHash = IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
 
         // ADR-003 state-regression rule: a write.draft-only caller editing an Approved
         // or Rejected entry resets it to Draft (forces re-review); write.approve callers
@@ -296,7 +298,7 @@ internal class ExpertiseRepository(
         if (entry.Tenant == "shared" && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
             return WriteOutcome.InsufficientScope;
 
-        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
         entry.DeprecatedAt = DateTime.UtcNow;
         entry.UpdatedAt = DateTime.UtcNow;
 
@@ -304,6 +306,43 @@ internal class ExpertiseRepository(
         await db.SaveChangesAsync(ct);
         return WriteOutcome.Success;
     }
+
+    // Observability for the ADR-018 attribution caveat (#484): a successful approve/reject by
+    // a non-Human actor class is an anomaly. The Human tag is not cryptographically provable
+    // in the offline A2 issuer, so rather than pretend to enforce it we make the collapse
+    // scenario alertable (a Service/Agent principal reviewing) instead of silent.
+    private static readonly Counter NonHumanReviewCounter = Metrics.CreateCounter(
+        "expertise_review_non_human_total",
+        "Successful approve/reject actions performed by a non-Human actor class (ADR-018 attribution anomaly).",
+        new CounterConfiguration { LabelNames = new[] { "action", "actor_class" } });
+
+    private void EmitNonHumanReviewAnomaly(AuditAction action, ExpertiseEntry entry, TenantContext ctx, string reviewer)
+    {
+        if (ctx.ActorClass == ActorClass.Human)
+            return;
+        var actorClass = ctx.ActorClass.ToString();
+        NonHumanReviewCounter.WithLabels(action.ToString(), actorClass).Inc();
+        logger.LogWarning(
+            "Non-Human actor class {ActorClass} performed {Action} on entry {EntryId} (tenant {Tenant}, " +
+            "reviewer {Reviewer}); the human-review gate's audit value depends on a Human reviewer (ADR-018).",
+            actorClass, action, entry.Id, entry.Tenant, reviewer);
+    }
+
+    // Reviewer identity = the caller's OIDC subject; falls back to the identity name or
+    // "system" only when no sub is present (CLI/design-time paths). Also the audit Principal.
+    private static string ResolveReviewer(TenantContext ctx) =>
+        ctx.Principal.FindFirst("sub")?.Value
+        ?? ctx.Principal.Identity?.Name
+        ?? "system";
+
+    // Separation of duties (ADR-018): a principal may not approve/reject its own draft —
+    // the human-review gate is meaningless if the author can self-approve machine-written
+    // content (OWASP ASI04/ASI06). expertise.admin is the audited break-glass for the
+    // solo-operator case (write a manual entry AND approve it). Ordinal comparison: sub is
+    // an opaque, case-sensitive identifier.
+    private static bool IsSelfReview(string reviewer, ExpertiseEntry entry, TenantContext ctx) =>
+        string.Equals(reviewer, entry.AuthorPrincipal, StringComparison.Ordinal)
+        && !ctx.Scopes.Contains(AuthConstants.AdminScope);
 
     public async Task<(WriteOutcome Outcome, ExpertiseEntry? Entry)> ApproveAsync(
         Guid id, TenantContext ctx, Visibility visibility, CancellationToken ct)
@@ -315,14 +354,15 @@ internal class ExpertiseRepository(
         if (entry is null)
             return (WriteOutcome.NotFound, null);
 
+        var reviewer = ResolveReviewer(ctx);
+        // Authorization boundary evaluated before the state check.
+        if (IsSelfReview(reviewer, entry, ctx))
+            return (WriteOutcome.SelfReviewForbidden, null);
+
         if (entry.ReviewState != ReviewState.Draft)
             return (WriteOutcome.InvalidState, null);
 
-        var reviewer = ctx.Principal.FindFirst("sub")?.Value
-                    ?? ctx.Principal.Identity?.Name
-                    ?? "system";
-
-        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
         entry.ReviewState = ReviewState.Approved;
         entry.Visibility = visibility;
         entry.ReviewedBy = reviewer;
@@ -335,6 +375,7 @@ internal class ExpertiseRepository(
         try
         {
             await db.SaveChangesAsync(ct);
+            EmitNonHumanReviewAnomaly(AuditAction.Approved, entry, ctx, reviewer);
             return (WriteOutcome.Success, entry);
         }
         catch (DbUpdateConcurrencyException)
@@ -353,14 +394,15 @@ internal class ExpertiseRepository(
         if (entry is null)
             return (WriteOutcome.NotFound, null);
 
+        var reviewer = ResolveReviewer(ctx);
+        // Authorization boundary evaluated before the state check.
+        if (IsSelfReview(reviewer, entry, ctx))
+            return (WriteOutcome.SelfReviewForbidden, null);
+
         if (entry.ReviewState != ReviewState.Draft)
             return (WriteOutcome.InvalidState, null);
 
-        var reviewer = ctx.Principal.FindFirst("sub")?.Value
-                    ?? ctx.Principal.Identity?.Name
-                    ?? "system";
-
-        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
         entry.ReviewState = ReviewState.Rejected;
         entry.ReviewedBy = reviewer;
         entry.ReviewedAt = DateTime.UtcNow;
@@ -372,6 +414,7 @@ internal class ExpertiseRepository(
         try
         {
             await db.SaveChangesAsync(ct);
+            EmitNonHumanReviewAnomaly(AuditAction.Rejected, entry, ctx, reviewer);
             return (WriteOutcome.Success, entry);
         }
         catch (DbUpdateConcurrencyException)

@@ -26,6 +26,44 @@ namespace ExpertiseApi.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "vector");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("ExpertiseApi.Models.AuditCheckpoint", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("CheckpointMac")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("MerkleRoot")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PrevCheckpointMac")
+                        .HasColumnType("text");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("SeqFrom")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("SeqTo")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("AuditCheckpoints");
+                });
+
             modelBuilder.Entity("ExpertiseApi.Models.EmbeddingMetadata", b =>
                 {
                     b.Property<int>("Id")
@@ -89,6 +127,12 @@ namespace ExpertiseApi.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<long>("Seq")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Seq"));
+
                     b.Property<string>("Tenant")
                         .IsRequired()
                         .HasColumnType("text");
@@ -99,6 +143,9 @@ namespace ExpertiseApi.Migrations
                         .HasDefaultValueSql("now()");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Seq")
+                        .IsUnique();
 
                     b.HasIndex("ActorClass", "Timestamp");
 
@@ -241,6 +288,35 @@ namespace ExpertiseApi.Migrations
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("Tenant", "ReviewState"), new[] { "Id", "EntryType", "Severity" });
 
                     b.ToTable("ExpertiseEntries");
+                });
+
+            modelBuilder.Entity("ExpertiseApi.Models.IntegrityVerificationState", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("LastResult")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("LastRunAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("LegacyCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MismatchCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("UnhashedCount")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("IntegrityVerificationStates");
                 });
 
             modelBuilder.Entity("ExpertiseApi.Models.SyncState", b =>

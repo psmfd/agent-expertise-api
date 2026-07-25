@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@@LABEL@@</string>
+
+  <!-- ADR-020 daily integrity sweep — system-scope (LaunchDaemon) variant.
+       Drops from root to @@SERVICE_USER@@:@@SERVICE_GROUP@@ before exec,
+       same as the main daemon plist. The launch wrapper forwards arguments
+       to the API binary, so `verify` runs with the exact env (secrets.env,
+       Integrity__HmacKeyFile, DOTNET_ROOT) as the service itself.
+       Exit codes: 0 clean, 1 integrity mismatch (ALERT — check
+       verify-stderr.log), 2 precondition failure. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@WRAPPER@@</string>
+    <string>verify</string>
+  </array>
+
+  <key>UserName</key>
+  <string>@@SERVICE_USER@@</string>
+  <key>GroupName</key>
+  <string>@@SERVICE_GROUP@@</string>
+
+  <key>WorkingDirectory</key>
+  <string>@@WORKDIR@@</string>
+
+  <!-- Scheduled run only — never at load, never kept alive (oneshot). -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <!-- Daily at 03:17 local time. launchd runs a missed StartCalendarInterval
+       once at next wake if the machine was asleep (NOT if it was powered
+       off — the expertise_integrity_last_verify_age_seconds gauge surfaces
+       staleness either way). -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>17</integer>
+  </dict>
+
+  <!-- Background: a scheduled batch sweep should never compete with
+       interactive work for CPU/I/O priority. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>@@LOG_DIR@@/verify-stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@LOG_DIR@@/verify-stderr.log</string>
+</dict>
+</plist>

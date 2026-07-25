@@ -116,6 +116,11 @@ internal enum WriteOutcome
     InvalidState,
     /// <summary>Caller is missing a scope required for this specific entry (e.g., shared-entry mutation).</summary>
     InsufficientScope,
+    /// <summary>
+    /// Caller is the author of the entry and is attempting to approve/reject it (ADR-018
+    /// separation of duties). Maps to 403. Overridden by <c>expertise.admin</c> break-glass.
+    /// </summary>
+    SelfReviewForbidden,
     /// <summary>Optimistic concurrency conflict on <c>xmin</c>.</summary>
     ConcurrentConflict
 }

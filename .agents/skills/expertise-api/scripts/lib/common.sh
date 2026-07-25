@@ -19,6 +19,9 @@
 #   - api_curl ARGS...   Wrap curl with -sS, Bearer auth, and HTTP-status check.
 #                        Writes response body to stdout. On non-2xx, writes the
 #                        body to stderr along with the status line and exits 1.
+#                        The bearer travels via `curl --config` (a 600-perm
+#                        temp file), NEVER argv — `ps` on a shared host must
+#                        not see it (issue #486, pattern per ADR-019).
 #   - urlencode STR      RFC 3986 percent-encoding for query-string values.
 #   - require_cmd CMD    Fail loudly if a required CLI is missing.
 #
@@ -200,9 +203,64 @@ _resolve_idempotency_key() {
     uuidgen
 }
 
+# _validate_token_charset TOKEN
+# Charset guard before splicing the bearer into a curl config file value:
+# inside curl's double-quoted config values only \\ \" \t \n \r \v are
+# escapes, '#' starts a comment, and control bytes/whitespace would
+# truncate the header. Legitimate bearer tokens (JWT base64url,
+# LocalDev dev:{tenant}:{scopes}) contain none of these — fail loudly
+# rather than send a corrupted Authorization header. Mirrors apictl's
+# _resolve_api_token guard (ADR-019).
+_validate_token_charset() {
+    # shellcheck disable=SC1003  # '\' below is a one-character backslash pattern, not a quote escape
+    case "$1" in
+        *[![:graph:]]*|*'"'*|*'\'*|*'#'*)
+            echo "error: token contains characters never valid in a bearer token (whitespace, control byte, quote, backslash, or '#') — check your token source" >&2
+            exit 2
+            ;;
+    esac
+}
+
+# _make_auth_config [curl-args...]
+# Write the injected headers (Authorization, Accept, and — when the
+# caller's curl args specify a POST — Idempotency-Key) to a 600-perm
+# temp curl config file and echo its path. The bearer never touches
+# curl argv this way (issue #486): `ps` shows only `--config <path>`.
+# The file is registered in _API_CURL_TMP_FILES so the EXIT trap cleans
+# it up on abnormal exit; callers still `rm -f` it immediately after
+# the request. Called via normal command substitution (NOT process
+# substitution) so an `exit 2` from the token guard or
+# _resolve_idempotency_key propagates to the caller process.
+_make_auth_config() {
+    _validate_token_charset "$EXPERTISE_API_TOKEN"
+    local cfg
+    cfg="$(mktemp -t expertise-api-cfg.XXXXXX)"
+    _API_CURL_TMP_FILES+=("$cfg")
+    local idem_key=""
+    if _args_have_post_method "$@"; then
+        idem_key="$(_resolve_idempotency_key)"
+    fi
+    # mktemp creates the file 600; the umask subshell is belt-and-braces
+    # in case a hardened mktemp replacement honours the caller's umask.
+    ( umask 077
+      {
+          printf 'header = "Authorization: Bearer %s"\n' "$EXPERTISE_API_TOKEN"
+          printf 'header = "Accept: application/json"\n'
+          if [ -n "$idem_key" ]; then
+              printf 'header = "Idempotency-Key: %s"\n' "$idem_key"
+          fi
+      } > "$cfg"
+    )
+    printf '%s' "$cfg"
+}
+
 # api_curl PATH [curl-args...]
 # - PATH starts with '/' (e.g. /expertise/search?q=foo)
-# - Bearer token + Accept: application/json injected.
+# - Bearer token + Accept: application/json injected via a 600-perm
+#   `curl --config` temp file, never argv (issue #486, ADR-019).
+#   NEVER add -v/--trace* to these curl invocations (or pass them from
+#   a caller): curl verbose modes print the Authorization header in
+#   cleartext — the standing ADR-019 constraint.
 # - On POST (detected via '-X POST' / '--request POST'), an
 #   Idempotency-Key header is injected automatically. Default value is
 #   `uuidgen`; pre-set IDEMPOTENCY_KEY in the environment to pin a key
@@ -213,31 +271,18 @@ api_curl() {
     require_cmd curl
     local path="$1"; shift
     local url="${EXPERTISE_API_BASE_URL}${path}"
-    local body_file status
+    local body_file status cfg
     body_file="$(mktemp -t expertise-api.XXXXXX)"
     _API_CURL_TMP_FILES+=("$body_file")
+    cfg="$(_make_auth_config "$@")"
 
-    local idem_args=()
-    if _args_have_post_method "$@"; then
-        local _idem_key
-        _idem_key="$(_resolve_idempotency_key)"
-        idem_args=(-H "Idempotency-Key: ${_idem_key}")
-    fi
-
-    # ${idem_args[@]+"${idem_args[@]}"} expands to nothing when the
-    # array is empty, which is safe under `set -u` on bash 3.2 (macOS
-    # system bash) as well as bash 4.4+. The plain "${idem_args[@]}"
-    # form raises 'unbound variable' on bash < 4.4 when the array is
-    # empty, which would break every non-POST request on a developer
-    # workstation running /bin/bash.
     status="$(curl -sS \
         -o "$body_file" \
         -w '%{http_code}' \
-        -H "Authorization: Bearer ${EXPERTISE_API_TOKEN}" \
-        -H 'Accept: application/json' \
-        ${idem_args[@]+"${idem_args[@]}"} \
+        --config "$cfg" \
         "$@" \
-        "$url")"
+        "$url")" || { rm -f "$cfg"; return 1; }
+    rm -f "$cfg"
 
     case "$status" in
         2??)
@@ -262,25 +307,18 @@ api_curl_status() {
     require_cmd curl
     local path="$1"; shift
     local url="${EXPERTISE_API_BASE_URL}${path}"
-    local body_file status
+    local body_file status cfg
     body_file="$(mktemp -t expertise-api.XXXXXX)"
     _API_CURL_TMP_FILES+=("$body_file")
-
-    local idem_args=()
-    if _args_have_post_method "$@"; then
-        local _idem_key
-        _idem_key="$(_resolve_idempotency_key)"
-        idem_args=(-H "Idempotency-Key: ${_idem_key}")
-    fi
+    cfg="$(_make_auth_config "$@")"
 
     status="$(curl -sS \
         -o "$body_file" \
         -w '%{http_code}' \
-        -H "Authorization: Bearer ${EXPERTISE_API_TOKEN}" \
-        -H 'Accept: application/json' \
-        ${idem_args[@]+"${idem_args[@]}"} \
+        --config "$cfg" \
         "$@" \
-        "$url")"
+        "$url")" || { rm -f "$cfg"; return 1; }
+    rm -f "$cfg"
 
     printf '%s' "$status"
     cat "$body_file" >&2

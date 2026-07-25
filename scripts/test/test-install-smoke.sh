@@ -442,6 +442,41 @@ assert "post-install install.env EXPERTISE_API_LOG_DIR points to prefix logs dir
   bash -c "grep -qF 'EXPERTISE_API_LOG_DIR=${PREFIX}/logs' '${INSTALL_ENV_FILE}' 2>/dev/null"
 
 # ---------------------------------------------------------------------------
+# 4e. ADR-020 integrity key + verify schedule (PR 3).
+#     The smoke pre-seeds secrets.env, so this run exercises the
+#     existing-install path: the key file must be generated (mode 600) but
+#     secrets.env must NOT be mutated (the installer only prints the wiring
+#     WARN). The daily verify schedule installs by default: a systemd timer
+#     unit (enabled) on Linux, a bootstrapped LaunchAgent plist on macOS.
+# ---------------------------------------------------------------------------
+INTEGRITY_KEY_FILE="${PREFIX}/integrity-hmac.key"   # --prefix co-locates CONFIG_DIR
+assert "integrity key file generated" test -s "${INTEGRITY_KEY_FILE}"
+case "$(uname -s)" in
+  Darwin) _key_mode=$(stat -f '%Lp' "${INTEGRITY_KEY_FILE}" 2>/dev/null || echo '') ;;
+  *)      _key_mode=$(stat -c '%a' "${INTEGRITY_KEY_FILE}" 2>/dev/null || echo '') ;;
+esac
+assert "integrity key file mode 600" test "${_key_mode}" = "600"
+assert "pre-existing secrets.env NOT mutated with Integrity line" \
+  bash -c "! grep -q '^Integrity__HmacKeyFile=' '${SECRETS_FILE}' 2>/dev/null"
+
+case "$(uname -s)" in
+  Darwin)
+    _verify_plist="${HOME}/Library/LaunchAgents/com.thesemicolon.expertise-api.verify.plist"
+    assert "verify schedule plist installed" test -f "${_verify_plist}"
+    assert "verify schedule bootstrapped in launchd" \
+      bash -c "launchctl print 'gui/$(id -u)/com.thesemicolon.expertise-api.verify' >/dev/null 2>&1"
+    ;;
+  *)
+    _verify_timer="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/expertise-api-verify.timer"
+    assert "verify timer unit installed" test -f "${_verify_timer}"
+    assert "verify service unit installed" \
+      test -f "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/expertise-api-verify.service"
+    assert "verify timer enabled" \
+      bash -c "systemctl --user is-enabled expertise-api-verify.timer 2>/dev/null | grep -q enabled"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
 # 5. Service is active under systemd-user (Linux) / launchd (macOS).
 #    apictl status is the OS-agnostic shim.
 # ---------------------------------------------------------------------------
@@ -582,6 +617,20 @@ else
   printf 'FAIL: uninstall.sh --yes --purge exit %d\n' "$rc" >&2
   tail -n 40 "${_uninstall_log}" >&2 || true
 fi
+
+# 11b. ADR-020 verify schedule removed by uninstall (PR 3).
+case "$(uname -s)" in
+  Darwin)
+    assert "verify schedule plist removed after uninstall" \
+      bash -c "! test -f '${HOME}/Library/LaunchAgents/com.thesemicolon.expertise-api.verify.plist'"
+    ;;
+  *)
+    assert "verify timer unit removed after uninstall" \
+      bash -c "! test -f '${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/expertise-api-verify.timer'"
+    assert "verify service unit removed after uninstall" \
+      bash -c "! test -f '${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/expertise-api-verify.service'"
+    ;;
+esac
 
 # macOS-only: assert no stale launchd override entry remains after uninstall.
 case "$(uname -s)" in
@@ -729,6 +778,16 @@ case "$(uname -s)" in
         printf 'FAIL: daemon plist not written to /Library/LaunchDaemons/\n' >&2
       fi
 
+      # ADR-020 verify schedule (PR 3): daemon variant installed alongside.
+      _verify_daemon_plist="/Library/LaunchDaemons/com.thesemicolon.expertise-api.verify.plist"
+      if [ -f "${_verify_daemon_plist}" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: verify schedule daemon plist written to /Library/LaunchDaemons/\n'
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: verify schedule daemon plist not written\n' >&2
+      fi
+
       # Assert install.env records scope=system.
       _sys_install_env="${HOME}/.config/expertise-api/install.env"
       if grep -q '^EXPERTISE_API_SCOPE=system' "${_sys_install_env}" 2>/dev/null; then
@@ -765,6 +824,13 @@ case "$(uname -s)" in
       else
         FAIL=$((FAIL + 1))
         printf 'FAIL: daemon plist still present after uninstall\n' >&2
+      fi
+      if [ ! -f "${_verify_daemon_plist}" ]; then
+        PASS=$((PASS + 1))
+        printf 'PASS: verify schedule daemon plist removed after uninstall\n'
+      else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: verify schedule daemon plist still present after uninstall\n' >&2
       fi
       set +e
       _pd_system=$(launchctl print-disabled system 2>&1)

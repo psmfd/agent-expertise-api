@@ -149,6 +149,8 @@ scripts/expertise-apictl backup [--output DIR] [--instance-id ID]
 
 Preflight (tools, keys, config — every failure points at `backup-init`) → `ExpertiseApi backup` verb (NDJSON export under one RepeatableRead snapshot) → `tar -czf` → `age -e` → payload SHA injected into the manifest → `ssh-keygen -Y sign` (offline; `allowed_signers` is the trust root — ADR-012 Amendment 1) → single `expertise-backup-<instance>-<ts>.tar`, chmod 600. Plaintext intermediates live only in a `mktemp` dir removed on exit.
 
+The payload carries `entries.jsonl`, `audit.jsonl`, and — since ADR-020 PR 2 — `checkpoints.jsonl`, the audit checkpoint chain (`manifest.checkpointsMerkleRoot` covers it). The signed artifact is the chain's **off-host anchor**: a host-level attacker who rewrites the local chain cannot also rewrite a backup that has already left the host.
+
 ### Restore
 
 ```bash
@@ -156,6 +158,8 @@ scripts/expertise-apictl restore ARTIFACT.tar [--force-draft] [--i-accept-unsign
 ```
 
 Member allowlist on the outer tar → `ssh-keygen -Y verify` (fail-closed; `--i-accept-unsigned-backup` is the dev-only escape hatch) → payload SHA vs manifest → `age -d` → `ExpertiseApi restore` verb, which enforces: pending-migrations empty, empty target (replace mode), per-record hash verification (mismatch → imported as Draft + `RestoreQuarantined` audit row), Merkle roots matching the signed manifest (mismatch → abort, nothing imported), and embedding-model compatibility (mismatch → abort, run `reembed`). `--force-draft` re-gates every entry as Draft — required posture for seeding from someone else's backup.
+
+Restore deliberately does **not** import `checkpoints.jsonl`: restored audit rows get fresh `Seq` values (identity column), so old checkpoint ranges cannot apply. The chain restarts at the first post-restore `verify`. After restoring a backup taken under a different (or no) integrity key, run `rehash --force` before trusting `verify` output (ADR-020 migration notes).
 
 ### Key discipline
 

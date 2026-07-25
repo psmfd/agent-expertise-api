@@ -178,7 +178,7 @@ public class DeduplicationServiceTests
         _repo.FindExactMatchesAsync("shared", Arg.Any<IReadOnlyList<string>>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
             .Returns(new List<ExpertiseEntry>());
         _repo.FindNearestInDomainAsync("shared", Arg.Any<Vector>(), Arg.Any<double>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
-            .Returns((ExpertiseEntry?)null);
+            .Returns(default(ExpertiseEntry));
 
         var results = await service.CheckBatchAsync(requests, vectors, _ctx);
 
@@ -224,7 +224,7 @@ public class DeduplicationServiceTests
         _repo.FindExactMatchesAsync("shared", Arg.Any<IReadOnlyList<string>>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
             .Returns(new List<ExpertiseEntry>());
         _repo.FindNearestInDomainAsync("shared", Arg.Any<Vector>(), Arg.Any<double>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
-            .Returns((ExpertiseEntry?)null);
+            .Returns(default(ExpertiseEntry));
 
         var results = await service.CheckBatchAsync(requests, vectors, _ctx);
 
@@ -248,7 +248,7 @@ public class DeduplicationServiceTests
             .Returns([existingEntry]);
         // Item 0 is caught by exact-match; item 1 has no near neighbour.
         _repo.FindNearestInDomainAsync("shared", Arg.Any<Vector>(), Arg.Any<double>(), Arg.Any<TenantContext>(), Arg.Any<CancellationToken>())
-            .Returns((ExpertiseEntry?)null);
+            .Returns(default(ExpertiseEntry));
 
         var results = await service.CheckBatchAsync(requests, vectors, _ctx);
 

@@ -249,6 +249,103 @@ public class ExpertiseEndpointTests : IAsyncLifetime
         problem.Should().Contain("maximum length of 16000");
     }
 
+    // #470 short-field caps: Domain/Source/SourceVersion/Tags previously had only a
+    // non-empty check. The 400 cases below fail before embedding generation (no model
+    // needed); the at-limit case exercises the full create path.
+
+    [Fact]
+    public async Task CreateEntry_WithOverlongDomain_Returns400()
+    {
+        // 128 is MaxDomainLength in ExpertiseEndpoints.
+        var payload = new { domain = new string('d', 129), title = "Ok", body = "Body ok", entryType = "Pattern", severity = "Info", source = "test" };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("Domain exceeds maximum length of 128");
+    }
+
+    [Fact]
+    public async Task CreateEntry_WithOverlongSource_Returns400()
+    {
+        // 128 is MaxSourceLength in ExpertiseEndpoints.
+        var payload = new { domain = "shared", title = "Ok", body = "Body ok", entryType = "Pattern", severity = "Info", source = new string('s', 129) };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("Source exceeds maximum length of 128");
+    }
+
+    [Fact]
+    public async Task CreateEntry_WithOverlongSourceVersion_Returns400()
+    {
+        // 64 is MaxSourceVersionLength in ExpertiseEndpoints.
+        var payload = new { domain = "shared", title = "Ok", body = "Body ok", entryType = "Pattern", severity = "Info", source = "test", sourceVersion = new string('v', 65) };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("SourceVersion exceeds maximum length of 64");
+    }
+
+    [Fact]
+    public async Task CreateEntry_WithOverlongTag_Returns400()
+    {
+        // 64 is MaxTagLength in ExpertiseEndpoints.
+        var payload = new { domain = "shared", title = "Ok", body = "Body ok", entryType = "Pattern", severity = "Info", source = "test", tags = new[] { "fine", new string('x', 65) } };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("Tag at index 1 exceeds maximum length of 64");
+    }
+
+    [Fact]
+    public async Task CreateEntry_WithTooManyTags_Returns400()
+    {
+        // 32 is MaxTagCount in ExpertiseEndpoints.
+        var tags = Enumerable.Range(0, 33).Select(i => $"t{i}").ToArray();
+        var payload = new { domain = "shared", title = "Ok", body = "Body ok", entryType = "Pattern", severity = "Info", source = "test", tags };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("Tags exceed maximum count of 32");
+    }
+
+    [Fact]
+    public async Task UpdateEntry_WithOverlongSource_Returns400()
+    {
+        var entry = await SeedEntryViaRepo("shared", "Source patch target");
+
+        var response = await _client.PatchAsJsonAsync($"/expertise/{entry.Id}", new { source = new string('s', 129) });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadAsStringAsync();
+        problem.Should().Contain("Source exceeds maximum length of 128");
+    }
+
+    [Fact]
+    public async Task CreateEntry_WithShortFieldsAtLimit_Returns201()
+    {
+        // Every short field exactly at its cap must still succeed.
+        var payload = new
+        {
+            domain = new string('d', 128),
+            title = "At limit",
+            body = "Body ok",
+            entryType = "Pattern",
+            severity = "Info",
+            source = new string('s', 128),
+            sourceVersion = new string('v', 64),
+            tags = new[] { new string('x', 64) },
+        };
+        var response = await _client.PostAsJsonAsync("/expertise", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
     private async Task<ExpertiseEntry> SeedEntryViaRepo(
         string domain = "shared",
         string title = "Test",

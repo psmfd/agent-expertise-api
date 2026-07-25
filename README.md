@@ -579,6 +579,27 @@ Backup artifacts contain Drafts, Rejected entries, and the audit log —
 treat them as sensitive (the tooling chmods them 600) even though the
 payload is encrypted.
 
+#### Integrity verification (ADR-020)
+
+The installer provisions the keyed integrity hash and its daily sweep
+automatically:
+
+- A 32-byte HMAC key is generated at `${CONFIG_DIR}/integrity-hmac.key`
+  (mode 600, never rotated, never echoed). New installs get
+  `Integrity__HmacKeyFile` wired into the `secrets.env` stub; existing
+  installs keep their `secrets.env` untouched and the installer prints the
+  exact line to add plus the one-time `rehash --force` rekey and first
+  `verify` steps.
+- A daily `verify` schedule is installed next to the main service — a
+  systemd timer (`expertise-api-verify.timer`, `Persistent=true`) on Linux,
+  a launchd calendar job (`com.thesemicolon.expertise-api.verify`, 03:17)
+  on macOS, both scopes. Opt out with `--no-verify-timer`. Exit 1 from a
+  scheduled run means an integrity mismatch — alert on it.
+
+Key provisioning for Helm/Compose/Windows, rotation via
+`Integrity__RetiredKeys__<id>`, alerting rules, and tamper response live in
+the [Integrity Verification Runbook](docs/operations/integrity-verification-runbook.md).
+
 #### Upgrade safety
 
 `scripts/install.sh` is safe to re-run for upgrades. Each invocation:
@@ -798,10 +819,19 @@ edit the service secrets.env                      # set ConnectionStrings__Defau
 ./scripts/expertise-apictl status                 # daily-use service control
 ./scripts/expertise-apictl logs -f                # follow logs (journald / launchd)
 ./scripts/expertise-apictl health                 # curl /health
+./scripts/expertise-apictl drafts                 # list the pending review queue
+./scripts/expertise-apictl review                 # interactive approve/reject loop (ADR-018/019)
 ./scripts/uninstall.sh --yes                      # remove service + binaries
 ./scripts/uninstall.sh --yes --purge              # also remove models + secrets
 ./scripts/uninstall.sh --yes --dry-run            # print what would happen; execute nothing
 ```
+
+`drafts`/`review` need a reviewer token carrying `expertise.write.approve`,
+supplied via `EXPERTISE_API_TOKEN` or (recommended) `EXPERTISE_API_TOKEN_FILE`.
+Mint it as a **distinct** credential — never reuse an agent `write.draft`
+token, so the ADR-018 author ≠ reviewer gate keeps meaning something. Draft
+content is rendered through a terminal-control-byte sanitizer before it
+reaches your eyes; see [ADR-019](adrs/019-apictl-review-cli.md).
 
 The uninstaller defends against destructive `--prefix` mistakes:
 
@@ -916,6 +946,7 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | [.agents/skills/expertise-api/references/DESIGN.md](.agents/skills/expertise-api/references/DESIGN.md) | Authoritative design reference (data model, API, architecture) |
 | [docs/testing-and-coverage.md](docs/testing-and-coverage.md) | Testing conventions and silent-bug guardrails (translation tests, coverage ratchet, mock embeddings, enum guard) |
 | [docs/operations/backup-restore-runbook.md](docs/operations/backup-restore-runbook.md) | Backup/restore operator procedures (pg_dump seed + signed-artifact CLI) |
+| [docs/operations/integrity-verification-runbook.md](docs/operations/integrity-verification-runbook.md) | ADR-020 key provisioning, rekey/rotation, verify scheduling, alerting, tamper response |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | Copilot agent instructions |
 
 ## Security
@@ -930,6 +961,7 @@ Adding the label is an explicit human decision recorded on the PR. Anyone with `
 | Application-level signed + encrypted backup artifact (format, trust policy) | [ADR-012](adrs/012-backup-artifact-format.md) |
 | Aggregator up-sync: draft-only scope as the knowledge-supply-chain control | [ADR-013](adrs/013-aggregator-upsync.md) |
 | LAN/offline embedded static-JWKS issuer (no HTTPS discovery on the API host; fail-closed key load) | [ADR-015](adrs/015-embedded-static-jwks.md) (supersedes [ADR-014](adrs/014-lightweight-oidc-static-jwks.md)) |
+| Keyed integrity hash + MAC'd audit checkpoint chain + `verify` sweep (DB-writer tamper evidence) | [ADR-020](adrs/020-integrity-verification.md) · [runbook](docs/operations/integrity-verification-runbook.md) |
 
 ## License
 

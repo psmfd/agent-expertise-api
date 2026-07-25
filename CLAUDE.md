@@ -61,7 +61,16 @@ dotnet run --project src/ExpertiseApi -- reembed [--batch-size 50]
 
 # Backfill IntegrityHash for entries created before the secure-rebuild data model
 # (entries with IntegrityHash = NULL). Idempotent — only touches null rows.
-dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50]
+# --force recomputes EVERY row: the one-time rekey migration after configuring or
+# rotating Integrity:HmacKey (ADR-020) — run it once before trusting verification.
+dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50] [--force]
+
+# ADR-020 integrity verification sweep: recompute every entry MAC (format prefix
+# decides keyed vs legacy; unknown key id = mismatch), re-verify every sealed audit
+# checkpoint (Merkle root + MAC + chain link), then seal a new checkpoint through the
+# latest audit row older than the grace window. Exit 0 clean / 1 mismatch (ALERT) /
+# 2 precondition. Schedule via OS timer/CronJob; wrapped as `expertise-apictl verify`.
+dotnet run --project src/ExpertiseApi -- verify [--batch-size 500] [--grace-seconds 300] [--no-seal]
 
 # Export all entries (every tenant + review state) + audit log as NDJSON with an
 # RFC 6962 Merkle manifest (ADR-012). Plain files only — signing/encryption is
@@ -114,7 +123,8 @@ curl http://localhost:5000/health
 
 # 5. Create an entry (under Hybrid mode in Development — accepts the API key from .env)
 # POSTs require an Idempotency-Key header per ADR-010 (hard-required since 2026-05-19).
-# Write guards: title max 200 chars, body max 16000 (400 beyond — embedding-window caps, #429/#436/ADR-017).
+# Write guards: title max 200 chars, body max 16000 (embedding-window caps, #429/#436/ADR-017);
+# domain/source max 128, sourceVersion max 64, per-tag max 64, tag count max 32 (#470). 400 beyond any cap.
 curl -X POST http://localhost:5000/expertise \
   -H "Authorization: Bearer dev-api-key-change-me" \
   -H "Idempotency-Key: $(uuidgen)" \
@@ -216,6 +226,16 @@ calls are no-ops outside their host environment, so Docker / Helm /
 
 Daily-use control: `scripts/expertise-apictl {start|stop|restart|status|logs|health}`.
 
+Integrity verification (ADR-020): `expertise-apictl verify [--batch-size N] [--grace-seconds N] [--no-seal]` runs the sweep against the database (no service restart needed) and preserves the verb's exit codes — 0 clean, 1 integrity mismatch (alert on this), 2 precondition failure. `install.sh` auto-provisions the HMAC key (`${CONFIG_DIR}/integrity-hmac.key`, wired via `Integrity__HmacKeyFile` in the secrets stub on new installs) and installs a daily verify schedule (systemd timer / launchd calendar job; `--no-verify-timer` opts out). `expertise-apictl rehash [--force]` wraps the rekey verb. Operator procedures (key provisioning per deploy path, rotation via `Integrity:RetiredKeys`, alerting, tamper response): [`docs/operations/integrity-verification-runbook.md`](docs/operations/integrity-verification-runbook.md).
+
+Human draft review (ADR-018/ADR-019): `expertise-apictl drafts [--json]` lists
+the pending queue; `expertise-apictl review` is the interactive
+approve/reject/skip/view loop. Both need a reviewer token carrying
+`expertise.write.approve` via `EXPERTISE_API_TOKEN` or
+`EXPERTISE_API_TOKEN_FILE` — mint it as a distinct credential, never reuse an
+agent `write.draft` token (separation of duties). Base URL: `EXPERTISE_API_URL`
+(default `http://127.0.0.1:8080`).
+
 ## Authentication
 
 `Auth:Mode` config switch governs which authentication scheme(s) are accepted:
@@ -264,6 +284,7 @@ Approval transitions:
 - `POST /expertise/{id}/approve` — `Draft → Approved`. Sets `ReviewedBy`, `ReviewedAt`, applies optional `Visibility` from request body (default `Private`), clears `RejectionReason`.
 - `POST /expertise/{id}/reject` — `Draft → Rejected`. Body `{ "rejectionReason": "..." }` is required, max 2000 characters.
 - Both require `expertise.write.approve`. Both return 409 if the entry is not in `Draft` state.
+- **Separation of duties (ADR-018):** both return **403** when the caller's `sub` equals the entry's `AuthorPrincipal` — a principal may not approve or reject its **own** draft — **unless** the caller holds `expertise.admin` (audited break-glass). The check runs before the Draft-state check (authz precedes state). This enforces the human-review invariant (OWASP ASI04/ASI06); the normal service-mode flow is unaffected because the writing agent's `sub` differs from the human reviewer's. Attribution caveat: the `Human`/`Service` actor-class tag is not cryptographically provable in the offline A2 issuer (`mint_token.py` defaults every token to `Human`; a real-IdP `client_credentials` reviewer token resolves `Service`) — a non-`Human` approve/reject is not blocked but is made observable — it emits a structured warning and increments `expertise_review_non_human_total{action,actor_class}` (#484) — and the reviewer credential must be minted deliberately (`write.approve`, distinct from any agent `write.draft` token).
 - Both use a Postgres `xmin` row-version concurrency token: a concurrent approve+reject race resolves to one 200 + one 409 instead of last-write-wins. The same applies to concurrent PATCHes — `UpdateAsync` catches `DbUpdateConcurrencyException` and returns 409.
 
 PATCH state regression (per ADR-003): when a `write.draft`-only caller PATCHes an `Approved` or `Rejected` entry, the entry regresses to `Draft` and review metadata (`ReviewedBy`, `ReviewedAt`, `RejectionReason`) is cleared. A caller carrying `write.approve` preserves the source state. The Approved branch closes the ASI06 path where post-approval content edits would otherwise bypass review; the Rejected branch lets an author resubmit content after addressing the rejection reason.
@@ -352,7 +373,7 @@ Scope shorthand (`read`, `draft`, `approve`, `admin`) expands to full scope stri
 
 CodeQL, Trivy, and Hadolint run in separate workflows — see [Security Scanning](#security-scanning).
 
-> **Breaking releases need a `BREAKING CHANGE:` footer, not just `!`.** `.releaserc` uses the default semantic-release **angular** preset, whose commit parser does **not** honor the `type(scope)!:` shorthand — a `fix!`/`feat!` header alone is silently ignored and produces *no release* (observed on the v2.0.0 promotion #476). A MAJOR bump requires an explicit `BREAKING CHANGE:` footer in the commit body. Tracked in #477 (switch to the `conventionalcommits` preset so `!` works as `rules/semver-tagging.md` documents).
+> **Breaking releases: `!` shorthand works (via the conventionalcommits preset).** `.releaserc` configures `@semantic-release/commit-analyzer` + `@semantic-release/release-notes-generator` with the **conventionalcommits** preset, which honors the `type(scope)!:` breaking shorthand — a `feat!`/`fix!` header (or a `BREAKING CHANGE:` footer) triggers a MAJOR bump as `rules/semver-tagging.md` documents (#477). This preset ships in a separate package (`conventional-changelog-conventionalcommits`) that commit-analyzer does **not** bundle, so `release.yml` pre-installs it via the action's `extra_plugins` — do not remove that entry or the release job will fail to load the preset. **Historical note:** before #477 the default **angular** preset silently dropped `!` and produced *no release* on the v2.0.0 promotion (#476), forcing a re-cut with an explicit `BREAKING CHANGE:` footer. That workaround is no longer required.
 
 GHCR image: `ghcr.io/psmfd/agent-expertise-api` (multi-arch: amd64 + arm64).
 
@@ -465,7 +486,7 @@ The `ExpertiseEntry` entity carries the original content fields (`Domain`, `Tags
 | `Visibility` | `enum { Private, Shared }` | Stored as string. Defaults to `Private`. Setting `Shared` on create requires `expertise.write.approve`. Changing `Visibility` via PATCH (either direction) requires `expertise.write.approve`; no-op (PATCH supplies the current value) does not escalate. |
 | `AuthorPrincipal` | `string`, required | OIDC `sub` of the writer. Server-set. Migration backfills `pre-rebuild`. |
 | `AuthorAgent` | `string?` | Agent name when written via an agent. Distinct from `AuthorPrincipal`. |
-| `IntegrityHash` | `string?` | SHA-256 hex over canonical JSON of `{tenant, title, body, entryType, severity}`. Backfilled by the `rehash` CLI. |
+| `IntegrityHash` | `string?` | Canonical content hash over `{tenant, title, body, entryType, severity}`. Keyed format `{keyId}:{hex}` = HMAC-SHA256 under `Integrity:HmacKey(File)` (ADR-020, unforgeable by a DB-only writer); bare 64-hex = legacy unkeyed SHA-256 (soft-require phase, flip tracked in #490). Backfilled by `rehash`; rekeyed by `rehash --force`. |
 | `ReviewState` | `enum { Draft, Approved, Rejected }` | Stored as string. Defaults to `Draft`. |
 | `ReviewedBy`, `ReviewedAt`, `RejectionReason` | `string?`, `DateTime?`, `string?` | Approval/rejection metadata, server-set on `/approve` or `/reject` (later PR). |
 | `OriginInstanceId` | `string?` | ADR-013 up-sync attribution. Server-set on the hub from the authenticated client's `Sync:KnownInstances` mapping — never from the request body. Excluded from canonical hash and dedup equality. |
@@ -476,6 +497,8 @@ Indexes added: standalone B-tree on `Tenant`; composite B-tree on `(Tenant, Revi
 A separate **`ExpertiseAuditLog`** table records every state-changing operation: `{Id, Timestamp, Action, EntryId, Tenant, Principal, Agent?, BeforeHash, AfterHash, IpAddress, ActorClass, AuthMethod?, ActorClassHeader?}` (the last three added by ADR-008). FK to `ExpertiseEntries.Id` with `ON DELETE RESTRICT` (audit must survive entry deletion). Reads are not audited. Indexes on `(EntryId, Timestamp)` and `(Principal, Timestamp)`.
 
 A **`SyncStates`** singleton-row table (EmbeddingMetadata pattern) holds the spoke-side up-sync cursor: `{Id, LastSyncedUpdatedAt, LastSyncedId, LastSuccessAt}` (ADR-013).
+
+ADR-020 PR 2 adds the audit checkpoint chain: `ExpertiseAuditLog.Seq` (`bigint GENERATED ALWAYS AS IDENTITY`, unique — the stable ordinal checkpoint ranges are defined over; never set by app code, re-sequenced on restore so the chain restarts); an **`AuditCheckpoints`** table `{Id, SeqFrom, SeqTo, RowCount, MerkleRoot, PrevCheckpointMac?, CheckpointMac, CreatedAt}` (RFC 6962 root over the range's `BackupRecordHash.ComputeAudit` leaves, MAC'd + chained so a DB-only writer can neither rewrite nor re-seal a range; sole writer is the `verify` sweep — zero write-path contention); and an **`IntegrityVerificationStates`** singleton the API re-exposes as gauges (`expertise_integrity_checkpoint_age_seconds`, `expertise_integrity_last_verify_age_seconds`, `expertise_integrity_last_verify_mismatches` — a short-lived CLI's own counters are never scraped). `backup` exports the chain as `checkpoints.jsonl` + manifest root (off-host anchor); restore never imports it. After key rotation, move the old id→base64 into `Integrity:RetiredKeys` so `verify` keeps old values resolvable.
 
 The `ExpertiseDbContext` exposes these as `DbSet<>`. **`IExpertiseRepository` is the only sanctioned consumer of `ExpertiseDbContext` for entry data** — the architectural test in `tests/ExpertiseApi.Tests/Architecture/` enforces this for everything outside `Data/` and `Cli/`. CLI commands (`reembed`, `rehash`) are intentional exceptions because they need cursor-based paging the repository interface does not expose.
 

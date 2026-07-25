@@ -191,6 +191,9 @@ jobs:
       - name: Run skill token-file resolution tests (#464)
         run: bash tests/skill/test-common-token-file.sh
 
+      - name: Run skill api_curl argv-hygiene tests (#486)
+        run: bash tests/skill/test-common-api-curl.sh
+
   install-script-guards:
     name: install/uninstall script guard tests (#242)
     runs-on: ubuntu-latest
@@ -215,6 +218,9 @@ jobs:
 
       - name: Run apictl backup subcommand tests
         run: bash tests/backup/test-apictl-backup.sh
+
+      - name: Run apictl drafts/review subcommand tests
+        run: bash tests/review/test-apictl-review.sh
 
   apictl-restart-race-macos:
     name: apictl restart race regression (macOS)

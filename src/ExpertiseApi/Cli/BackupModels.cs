@@ -63,6 +63,37 @@ internal sealed record BackupAuditRecord
     public string? AuthMethod { get; init; }
     public string? ActorClassHeader { get; init; }
 
+    /// <summary>
+    /// ADR-020 checkpoint ordinal, exported so a checkpoint's <c>[SeqFrom, SeqTo]</c>
+    /// range can be re-verified from the backup alone. Deliberately EXCLUDED from
+    /// <see cref="RecordHash"/>: it is a server-generated ordinal (like <c>xmin</c>),
+    /// regenerated on restore — and including it would change every audit RecordHash,
+    /// breaking verification of pre-PR2 backups. Null in pre-PR2 artifacts.
+    /// </summary>
+    public long? Seq { get; init; }
+
+    /// <inheritdoc cref="BackupEntryRecord.RecordHash"/>
+    public required string RecordHash { get; init; }
+}
+
+/// <summary>
+/// NDJSON line shape for one <see cref="Models.AuditCheckpoint"/> row (ADR-020).
+/// Exported as the off-host anchor of the checkpoint chain head: a local rewrite of
+/// the chain cannot also rewrite a signed backup that has left the host. Restore does
+/// NOT import checkpoints — restored audit rows re-sequence (identity column), so the
+/// chain restarts from the first post-restore <c>verify</c>.
+/// </summary>
+internal sealed record BackupCheckpointRecord
+{
+    public required long Id { get; init; }
+    public required long SeqFrom { get; init; }
+    public required long SeqTo { get; init; }
+    public required int RowCount { get; init; }
+    public required string MerkleRoot { get; init; }
+    public string? PrevCheckpointMac { get; init; }
+    public required string CheckpointMac { get; init; }
+    public required DateTime CreatedAt { get; init; }
+
     /// <inheritdoc cref="BackupEntryRecord.RecordHash"/>
     public required string RecordHash { get; init; }
 }
@@ -87,6 +118,13 @@ internal sealed record BackupManifest
     public required int AuditCount { get; init; }
     public required string EntriesMerkleRoot { get; init; }
     public required string AuditMerkleRoot { get; init; }
+
+    // ADR-020 checkpoint export. Nullable additive fields — SchemaVersion stays 1 so
+    // pre-PR2 binaries restore new artifacts (unknown fields ignored) and new binaries
+    // restore pre-PR2 artifacts (fields absent → null).
+    public int? CheckpointCount { get; init; }
+    public string? CheckpointsMerkleRoot { get; init; }
+
     public string? DbSchemaVersion { get; init; }
     public BackupEmbeddingModel? EmbeddingModel { get; init; }
     public string? PayloadSha256 { get; init; }
@@ -102,5 +140,6 @@ internal sealed record BackupManifest
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(BackupEntryRecord))]
 [JsonSerializable(typeof(BackupAuditRecord))]
+[JsonSerializable(typeof(BackupCheckpointRecord))]
 [JsonSerializable(typeof(BackupManifest))]
 internal sealed partial class BackupJsonContext : JsonSerializerContext;
