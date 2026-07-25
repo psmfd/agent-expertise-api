@@ -365,6 +365,13 @@ builder.Services.AddSingleton<ExpertiseApi.Services.IIntegrityKeyProvider>(integ
 
 builder.Services.AddScoped<IExpertiseRepository, ExpertiseRepository>();
 builder.Services.AddScoped<ITenantContextAccessor, HttpTenantContextAccessor>();
+
+// ADR-020 PR 2: the verification sweep (verify CLI verb) and the API-side gauge
+// poller that re-exposes its persisted outcome (a short-lived CLI's own Prometheus
+// metrics are never scraped). Hosted services only start under app.Run, so CLI
+// verbs never spin the poller up.
+builder.Services.AddScoped<IntegrityVerificationService>();
+builder.Services.AddHostedService<ExpertiseApi.Services.IntegrityMetricsService>();
 builder.Services.AddExpertiseAuth(builder.Configuration, builder.Environment);
 
 // Part D C7 — response hygiene. Always-on for /expertise/* read responses per ADR-008.
@@ -561,6 +568,14 @@ if (BackupCommand.IsBackupRequested(args))
 if (RestoreCommand.IsRestoreRequested(args))
 {
     Environment.ExitCode = await RestoreCommand.RunAsync(app, args);
+    return;
+}
+
+if (VerifyCommand.IsVerifyRequested(args))
+{
+    // Exit code drives the scheduled runner (systemd timer / CronJob): 0 clean,
+    // 1 integrity mismatch (alert), 2 precondition failure (ADR-020).
+    Environment.ExitCode = await VerifyCommand.RunAsync(app, args);
     return;
 }
 
