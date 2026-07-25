@@ -276,7 +276,13 @@ internal sealed class IntegrityVerificationService(
 
         var (root, rowCount) = await ComputeRangeRootAsync(sealedThrough + 1, boundary.Value, batchSize, ct);
 
-        var createdAt = DateTime.UtcNow;
+        // The MAC binds CreatedAt, and verification recomputes it from the DB
+        // round-trip — Postgres timestamptz stores MICROSECOND precision, so the
+        // 100ns residue DateTime.UtcNow carries on Linux would be truncated on
+        // storage and every re-verify would report a false checkpoint_mac mismatch
+        // (macOS ticks are microsecond-aligned, which hides the bug locally).
+        var nowTicks = DateTime.UtcNow.Ticks;
+        var createdAt = new DateTime(nowTicks - (nowTicks % (TimeSpan.TicksPerMillisecond / 1000)), DateTimeKind.Utc);
         var checkpoint = new AuditCheckpoint
         {
             SeqFrom = sealedThrough + 1,
