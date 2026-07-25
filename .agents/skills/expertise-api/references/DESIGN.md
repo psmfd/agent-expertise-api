@@ -61,7 +61,7 @@ public class ExpertiseEntry
     public Visibility Visibility { get; set; }       // Private (default) | Shared
     public required string AuthorPrincipal { get; set; } // OIDC sub of writer, server-set
     public string? AuthorAgent { get; set; }         // agent name if written by an agent
-    public string? IntegrityHash { get; set; }       // SHA-256 hex; nullable until rehash CLI runs
+    public string? IntegrityHash { get; set; }       // {keyId}:{hmac-hex} keyed (ADR-020) or legacy bare hex; nullable until rehash CLI runs
     public ReviewState ReviewState { get; set; }     // Draft (default) | Approved | Rejected
     public string? ReviewedBy { get; set; }
     public DateTime? ReviewedAt { get; set; }
@@ -96,7 +96,7 @@ public class ExpertiseAuditLog
 
 Trust decisions are based on `AuthorPrincipal` (token-asserted) and `ReviewState` (gate-enforced) — `Source` is self-reported and informational only post-rebuild.
 
-`IntegrityHash` is SHA-256 over canonical JSON of `{tenant, title, body, entryType, severity}` with alphabetical key order. Computed via `IntegrityHashService.Compute`. The `rehash` CLI command backfills `IntegrityHash` for any entry with a null hash (pre-rebuild rows or rows created before the audit-write path lands).
+`IntegrityHash` is computed over canonical JSON of `{tenant, title, body, entryType, severity}` with alphabetical key order via `IntegrityHashService.Compute`. With `Integrity:HmacKey(File)` configured (ADR-020) the value is HMAC-SHA256 in `{keyId}:{hex}` format — unforgeable by a database-only writer; without a key it falls back to legacy unkeyed SHA-256 (bare 64-hex, soft-require phase — hard-require flip tracked in #490). The `rehash` CLI command backfills null hashes; `rehash --force` recomputes every row (the one-time rekey after configuring or rotating the key). The `verify` CLI sweep recomputes every entry MAC and maintains a MAC'd, chained RFC 6962 checkpoint chain over the audit log (`AuditCheckpoints`), making audit-row deletion/edit detectable; see `docs/operations/integrity-verification-runbook.md` for the operator procedures.
 
 Indexes on `ExpertiseEntries`: standalone B-tree on `Tenant`; covering composite on `(Tenant, ReviewState)` `INCLUDE (Id, EntryType, Severity)`. Existing GIN on `Tags`, GIN on `SearchVector`, HNSW on `Embedding`, B-tree on `Domain` and `DeprecatedAt`, expression index on `LOWER("Title")` are unchanged.
 
@@ -128,7 +128,8 @@ Single-row `EmbeddingMetadata` table tracks model name, dimensions, and `LastRee
 CLI:
 
 - `dotnet run --project src/ExpertiseApi -- reembed [--batch-size 50]` — regenerate all embeddings.
-- `dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50]` — backfill `IntegrityHash` for entries with a null hash. Idempotent.
+- `dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50] [--force]` — backfill `IntegrityHash` for entries with a null hash (idempotent); `--force` recomputes every row under the active key — the one-time rekey after configuring or rotating `Integrity:HmacKey(File)` (ADR-020).
+- `dotnet run --project src/ExpertiseApi -- verify [--batch-size 500] [--grace-seconds 300] [--no-seal]` — ADR-020 integrity sweep: recompute every entry MAC, re-verify the sealed audit checkpoint chain, seal the next checkpoint. Exit 0 clean / 1 mismatch (alert) / 2 precondition. Scheduled automatically by the A2 installer (systemd timer / launchd) and the Helm chart (CronJob, `integrity.verify.*`).
 - `dotnet run --project src/ExpertiseApi -- backup --output <dir> [--instance-id <id>]` — export all entries (every tenant + review state) + audit log as NDJSON with an RFC 6962 Merkle manifest (ADR-012). Plain files; signing/encryption is `scripts/expertise-apictl`'s job. Deliberately CLI-only — a backup is a full-fidelity cross-tenant extract, more privileged than `GET /audit/{id}/raw`, so it must never be reachable through a bearer token.
 - `dotnet run --project src/ExpertiseApi -- restore --input <dir> [--force-draft]` — import a decrypted backup payload. Replace mode only (empty target, pending migrations empty); verifies per-record `BackupRecordHash` + Merkle roots against the manifest (root mismatch → abort; single-record mismatch → quarantine as Draft + `RestoreQuarantined` audit row); `--force-draft` re-gates every entry for foreign-backup seeds.
 

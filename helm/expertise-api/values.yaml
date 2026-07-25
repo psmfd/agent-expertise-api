@@ -129,6 +129,32 @@ sync:
   # Example:
   #   "spoke-alpha-client-id": spoke-alpha
 
+# ADR-020 integrity verification.
+#
+# The keyed integrity hash needs Integrity__HmacKey in the secret named by
+# `auth.secretName` (base64 of >=32 random bytes — e.g. `openssl rand -base64
+# 32`). The API and the verify CronJob both envFrom that secret, so one entry
+# wires both. Without the key the API runs in soft-require mode (legacy
+# unkeyed hashes, expertise_integrity_unkeyed gauge > 0).
+#
+# After FIRST configuring (or rotating) the key, run the one-time rekey:
+#   kubectl exec deploy/<release> -- dotnet ExpertiseApi.dll rehash --force
+# then let the next scheduled verify seal the first checkpoint. Full
+# procedure incl. rotation via Integrity__RetiredKeys__<id>:
+# docs/operations/integrity-verification-runbook.md
+integrity:
+  verify:
+    # Daily sweep bounds the ADR-020 tamper-detection gap to ~24h.
+    enabled: true
+    schedule: "17 3 * * *"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
 api:
   resources:
     requests:

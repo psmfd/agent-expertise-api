@@ -226,7 +226,7 @@ calls are no-ops outside their host environment, so Docker / Helm /
 
 Daily-use control: `scripts/expertise-apictl {start|stop|restart|status|logs|health}`.
 
-Integrity verification (ADR-020): `expertise-apictl verify [--batch-size N] [--grace-seconds N] [--no-seal]` runs the sweep against the database (no service restart needed) and preserves the verb's exit codes — 0 clean, 1 integrity mismatch (alert on this), 2 precondition failure. Schedule it from a systemd timer / launchd / cron (templates land in ADR-020 PR 3).
+Integrity verification (ADR-020): `expertise-apictl verify [--batch-size N] [--grace-seconds N] [--no-seal]` runs the sweep against the database (no service restart needed) and preserves the verb's exit codes — 0 clean, 1 integrity mismatch (alert on this), 2 precondition failure. `install.sh` auto-provisions the HMAC key (`${CONFIG_DIR}/integrity-hmac.key`, wired via `Integrity__HmacKeyFile` in the secrets stub on new installs) and installs a daily verify schedule (systemd timer / launchd calendar job; `--no-verify-timer` opts out). `expertise-apictl rehash [--force]` wraps the rekey verb. Operator procedures (key provisioning per deploy path, rotation via `Integrity:RetiredKeys`, alerting, tamper response): [`docs/operations/integrity-verification-runbook.md`](docs/operations/integrity-verification-runbook.md).
 
 Human draft review (ADR-018/ADR-019): `expertise-apictl drafts [--json]` lists
 the pending queue; `expertise-apictl review` is the interactive

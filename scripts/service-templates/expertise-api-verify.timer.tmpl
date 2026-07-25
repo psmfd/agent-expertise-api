@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily integrity verification for Agent Expertise API (ADR-020)
+Documentation=https://github.com/psmfd/agent-expertise-api
+
+[Timer]
+# Daily sweep bounds the ADR-020 tamper-detection gap to ~24h. Persistent
+# catches up after the machine was asleep/off at the scheduled time — the
+# common case on a workstation A2 install. The randomized delay avoids a
+# thundering herd when several services share a 00:00 boundary.
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+# User timer — default.target does not pull timers; timers.target does.
+WantedBy=timers.target

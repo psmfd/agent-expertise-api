@@ -67,6 +67,9 @@ services:
       Onnx__ModelPath: models/model.onnx
       Onnx__VocabPath: models/vocab.txt
       # Aggregator up-sync (ADR-013) — off by default; see .env.example.
+      # ADR-020 keyed integrity hash — optional locally (empty = soft-require
+      # legacy mode). base64 of >=32 random bytes; see .env.example.
+      Integrity__HmacKey: ${INTEGRITY__HMACKEY:-}
       Sync__Enabled: ${SYNC__ENABLED:-false}
       Sync__HubUrl: ${SYNC__HUBURL:-}
       Sync__TokenEndpoint: ${SYNC__TOKENENDPOINT:-}

@@ -1,0 +1,40 @@
+[Unit]
+Description=Agent Expertise API integrity verification sweep (ADR-020)
+Documentation=https://github.com/psmfd/agent-expertise-api
+# Ordering only — user units cannot Require= system targets.
+After=network-online.target
+
+[Service]
+# Oneshot: the verify verb runs the sweep, seals a checkpoint, and exits.
+# Exit codes: 0 clean, 1 integrity mismatch (the unit lands in the failed
+# state — alert on `systemctl --user list-units --failed` or the
+# expertise_integrity_last_verify_mismatches gauge), 2 precondition failure.
+Type=oneshot
+WorkingDirectory=@@WORKDIR@@
+# The launch wrapper forwards arguments to the API binary, so the sweep runs
+# with the exact env (secrets.env, Integrity__HmacKeyFile, DOTNET_ROOT) as
+# the service itself.
+ExecStart=@@WRAPPER@@ verify
+
+# Environment file (optional — install.sh creates a chmod-600 stub)
+EnvironmentFile=-@@SECRETS_FILE@@
+
+# Hardening — same subset as the main service unit (see
+# expertise-api.service.tmpl for the rationale on each directive).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# DO NOT enable MemoryDenyWriteExecute — RyuJIT writes executable pages.
+MemoryDenyWriteExecute=false
+
+ReadWritePaths=@@LOG_DIR@@

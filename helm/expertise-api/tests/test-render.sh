@@ -123,8 +123,10 @@ else
     err "postgres-pgbouncer-caps" "Expected 2+ 'drop: [ALL]' in StatefulSet, found $caps_count"
 fi
 
-# 13. Backup CronJob is gone (moved to sidecar)
-if ! echo "$output" | grep -q "kind: CronJob"; then
+# 13. Backup CronJob is gone (moved to sidecar). Name-scoped since the
+#     ADR-020 verify CronJob (component: integrity-verify) is a legitimate
+#     CronJob in the chart — "no CronJob at all" is no longer the invariant.
+if ! echo "$output" | grep -qE "name: .*-backup"; then
     ok "no-backup-cronjob" "Backup CronJob removed (handled by sidecar in infra repo)"
 else
     err "no-backup-cronjob" "Backup CronJob still present in chart — should be dropped"
@@ -470,6 +472,43 @@ if echo "$out_pretag" | grep -qF "image: \"ghcr.io/psmfd/agent-expertise-api:0.1
     ok "schema-image-tag-prerelease" "schema accepts SemVer prerelease tag (0.1.4-rc.1)"
 else
     err "schema-image-tag-prerelease" "prerelease tag rejected or rendered wrong: $(echo "$out_pretag" | tail -2 | tr '\n' ' ')"
+fi
+
+# 47. Verify CronJob renders by default (integrity.verify.enabled=true) with
+#     the ADR-020 essentials: verify args, Forbid concurrency, no retry, and
+#     the same secret envFrom as the API.
+out_verify=$(helm template test-release "$CHART" 2>&1)
+if echo "$out_verify" | grep -q "kind: CronJob" \
+   && echo "$out_verify" | grep -q 'args: \["verify"\]' \
+   && echo "$out_verify" | grep -q "concurrencyPolicy: Forbid" \
+   && echo "$out_verify" | grep -q "backoffLimit: 0"; then
+    ok "verify-cronjob-default" "verify CronJob renders by default with Forbid concurrency and backoffLimit 0"
+else
+    err "verify-cronjob-default" "verify CronJob missing or missing verify/Forbid/backoffLimit essentials"
+fi
+
+# 48. Verify CronJob envFrom's the auth secret (key + connection string travel
+#     together — Integrity__HmacKey is added to that secret, not values).
+if echo "$out_verify" | awk '/kind: CronJob/,0' | grep -q "name: expertise-api-app"; then
+    ok "verify-cronjob-secret" "verify CronJob envFrom's auth.secretName"
+else
+    err "verify-cronjob-secret" "verify CronJob does not reference auth.secretName"
+fi
+
+# 49. Verify CronJob absent when integrity.verify.enabled=false
+out_verify_off=$(helm template test-release "$CHART" --set integrity.verify.enabled=false 2>&1)
+if ! echo "$out_verify_off" | grep -q "kind: CronJob"; then
+    ok "verify-cronjob-disabled" "verify CronJob absent when integrity.verify.enabled=false"
+else
+    err "verify-cronjob-disabled" "verify CronJob still renders when integrity.verify.enabled=false"
+fi
+
+# 50. Custom schedule propagates
+out_verify_sched=$(helm template test-release "$CHART" --set 'integrity.verify.schedule=0 5 * * 0' 2>&1)
+if echo "$out_verify_sched" | grep -q 'schedule: "0 5 \* \* 0"'; then
+    ok "verify-cronjob-schedule" "custom integrity.verify.schedule propagates"
+else
+    err "verify-cronjob-schedule" "custom schedule not rendered"
 fi
 
 echo "=================================="

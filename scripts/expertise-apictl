@@ -11,6 +11,7 @@
 #   expertise-apictl logs [-f] [-n LINES]
 #   expertise-apictl health
 #   expertise-apictl reembed [--batch-size N]
+#   expertise-apictl rehash [--batch-size N] [--force]
 #   expertise-apictl verify [--batch-size N] [--grace-seconds N] [--no-seal]
 #   expertise-apictl backup-init [--install-deps]
 #   expertise-apictl backup [--output DIR] [--instance-id ID]
@@ -37,6 +38,11 @@
 # mismatch (ALERT), 2 precondition failure — schedule it from a systemd
 # timer / launchd / cron and alert on non-zero.
 #
+# rehash backfills IntegrityHash for null-hash entries; --force recomputes
+# EVERY row under the active key — the one-time rekey after configuring or
+# rotating Integrity__HmacKey(File) (ADR-020). Run it once before trusting
+# verify output; see docs/operations/integrity-verification-runbook.md.
+#
 
 set -euo pipefail
 
@@ -49,7 +55,7 @@ READY_TIMEOUT="${EXPERTISE_API_READY_TIMEOUT:-30}"
 log() { printf '[expertise-apictl] %s\n' "$1"; }
 err() { printf '[expertise-apictl] ERROR: %s\n' "$1" >&2; exit 1; }
 
-usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
 
 detect_os() {
   case "$(uname -s)" in
@@ -91,7 +97,7 @@ _detect_install_scope() {
 # and drafts/review talk plain HTTP — never to launchd, so they work fine
 # against a --system install.
 case "${1:-}" in
-  backup-init|backup|restore|reembed|verify|drafts|review) _lifecycle_cmd=0 ;;
+  backup-init|backup|restore|reembed|rehash|verify|drafts|review) _lifecycle_cmd=0 ;;
   *)                          _lifecycle_cmd=1 ;;
 esac
 
@@ -966,6 +972,15 @@ cmd_reembed() {
   log "reembed: OK"
 }
 
+cmd_rehash() {
+  # Pass-through to the ExpertiseApi rehash verb: backfill IntegrityHash for
+  # null-hash entries; --force recomputes EVERY row under the active key —
+  # the one-time rekey migration after configuring or rotating
+  # Integrity__HmacKey(File) (ADR-020). Idempotent without --force.
+  _run_api_verb rehash "$@" || err "rehash verb failed — see log output above"
+  log "rehash: OK"
+}
+
 cmd_verify() {
   # Pass-through to the ExpertiseApi verify verb (ADR-020): recompute every
   # entry MAC, re-verify the audit checkpoint chain, seal a new checkpoint.
@@ -1052,6 +1067,7 @@ case "${1:-}" in
   backup)     shift; cmd_backup "$@" ;;
   restore)    shift; cmd_restore "$@" ;;
   reembed)    shift; cmd_reembed "$@" ;;
+  rehash)     shift; cmd_rehash "$@" ;;
   verify)     shift; cmd_verify "$@" ;;
   drafts)     shift; cmd_drafts "$@" ;;
   review)     shift; cmd_review "$@" ;;
