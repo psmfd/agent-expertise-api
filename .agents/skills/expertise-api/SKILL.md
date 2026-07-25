@@ -40,7 +40,7 @@ chmod 600 ~/.config/expertise-api/secrets.env
 
 The scripts source this file automatically when present, so env vars do not need to be exported per-shell.
 
-**Trust model.** The secrets file is sourced via POSIX `.` (dot), so anyone with write access to it can execute arbitrary code in the invoker's shell. Keep it `chmod 600` on a user-owned path. The bearer token is also passed to `curl` as a command-line `-H` argument and is therefore briefly visible in `ps auxww` / `/proc/<pid>/cmdline` to other local users on multi-user systems; this matches common `curl` usage but is worth noting if you share the workstation.
+**Trust model.** The secrets file is sourced via POSIX `.` (dot), so anyone with write access to it can execute arbitrary code in the invoker's shell. Keep it `chmod 600` on a user-owned path. The bearer token is passed to `curl` via a 600-perm `--config` temp file, never as a command-line argument, so it is not visible in `ps auxww` / `/proc/<pid>/cmdline` on multi-user systems (issue #486; same pattern as `expertise-apictl`, ADR-019).
 
 ## Toolkit
 

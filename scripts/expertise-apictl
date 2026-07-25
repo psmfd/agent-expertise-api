@@ -347,7 +347,7 @@ _api_http_init() {
 # Called as a plain command (never via $(...)) so both globals survive.
 # The bearer travels via `curl --config` (a 600-perm file under the 700-perm
 # workdir), NEVER argv — `ps` on a shared host must not see it (the skill's
-# api_curl still leaks it that way; #486). The config file is removed
+# api_curl uses the same pattern since #486). The config file is removed
 # immediately after each call; the EXIT trap is only the abnormal-exit
 # backstop. NEVER add -v/--trace* to this curl invocation: curl verbose modes
 # print the Authorization header in cleartext (standing ADR-019 constraint).
