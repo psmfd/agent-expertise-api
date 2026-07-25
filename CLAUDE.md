@@ -61,7 +61,9 @@ dotnet run --project src/ExpertiseApi -- reembed [--batch-size 50]
 
 # Backfill IntegrityHash for entries created before the secure-rebuild data model
 # (entries with IntegrityHash = NULL). Idempotent — only touches null rows.
-dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50]
+# --force recomputes EVERY row: the one-time rekey migration after configuring or
+# rotating Integrity:HmacKey (ADR-020) — run it once before trusting verification.
+dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50] [--force]
 
 # Export all entries (every tenant + review state) + audit log as NDJSON with an
 # RFC 6962 Merkle manifest (ADR-012). Plain files only — signing/encryption is
@@ -475,7 +477,7 @@ The `ExpertiseEntry` entity carries the original content fields (`Domain`, `Tags
 | `Visibility` | `enum { Private, Shared }` | Stored as string. Defaults to `Private`. Setting `Shared` on create requires `expertise.write.approve`. Changing `Visibility` via PATCH (either direction) requires `expertise.write.approve`; no-op (PATCH supplies the current value) does not escalate. |
 | `AuthorPrincipal` | `string`, required | OIDC `sub` of the writer. Server-set. Migration backfills `pre-rebuild`. |
 | `AuthorAgent` | `string?` | Agent name when written via an agent. Distinct from `AuthorPrincipal`. |
-| `IntegrityHash` | `string?` | SHA-256 hex over canonical JSON of `{tenant, title, body, entryType, severity}`. Backfilled by the `rehash` CLI. |
+| `IntegrityHash` | `string?` | Canonical content hash over `{tenant, title, body, entryType, severity}`. Keyed format `{keyId}:{hex}` = HMAC-SHA256 under `Integrity:HmacKey(File)` (ADR-020, unforgeable by a DB-only writer); bare 64-hex = legacy unkeyed SHA-256 (soft-require phase, flip tracked in #490). Backfilled by `rehash`; rekeyed by `rehash --force`. |
 | `ReviewState` | `enum { Draft, Approved, Rejected }` | Stored as string. Defaults to `Draft`. |
 | `ReviewedBy`, `ReviewedAt`, `RejectionReason` | `string?`, `DateTime?`, `string?` | Approval/rejection metadata, server-set on `/approve` or `/reject` (later PR). |
 | `OriginInstanceId` | `string?` | ADR-013 up-sync attribution. Server-set on the hub from the authenticated client's `Sync:KnownInstances` mapping — never from the request body. Excluded from canonical hash and dedup equality. |

@@ -14,7 +14,8 @@ namespace ExpertiseApi.Data;
 internal class ExpertiseRepository(
     ExpertiseDbContext db,
     IHttpContextAccessor httpContextAccessor,
-    ILogger<ExpertiseRepository> logger) : IExpertiseRepository
+    ILogger<ExpertiseRepository> logger,
+    IIntegrityKeyProvider integrityKeys) : IExpertiseRepository
 {
     /// <summary>
     /// Builds the tenant predicate per ADR-001: a row is visible if its <c>Tenant</c>
@@ -199,7 +200,7 @@ internal class ExpertiseRepository(
 
         entry.CreatedAt = DateTime.UtcNow;
         entry.UpdatedAt = DateTime.UtcNow;
-        entry.IntegrityHash = IntegrityHashService.Compute(entry);
+        entry.IntegrityHash = IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
 
         db.ExpertiseEntries.Add(entry);
         db.ExpertiseAuditLogs.Add(BuildAuditRow(AuditAction.Created, entry, ctx, beforeHash: null, afterHash: entry.IntegrityHash));
@@ -228,7 +229,7 @@ internal class ExpertiseRepository(
         if (entry.Tenant == "shared" && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
             return (WriteOutcome.InsufficientScope, null);
 
-        var beforeHash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var beforeHash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
         var beforeVisibility = entry.Visibility;
 
         await applyUpdates(entry);
@@ -253,7 +254,7 @@ internal class ExpertiseRepository(
         }
 
         entry.UpdatedAt = DateTime.UtcNow;
-        entry.IntegrityHash = IntegrityHashService.Compute(entry);
+        entry.IntegrityHash = IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
 
         // ADR-003 state-regression rule: a write.draft-only caller editing an Approved
         // or Rejected entry resets it to Draft (forces re-review); write.approve callers
@@ -297,7 +298,7 @@ internal class ExpertiseRepository(
         if (entry.Tenant == "shared" && !ctx.Scopes.Contains(AuthConstants.WriteApproveScope))
             return WriteOutcome.InsufficientScope;
 
-        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
         entry.DeprecatedAt = DateTime.UtcNow;
         entry.UpdatedAt = DateTime.UtcNow;
 
@@ -361,7 +362,7 @@ internal class ExpertiseRepository(
         if (entry.ReviewState != ReviewState.Draft)
             return (WriteOutcome.InvalidState, null);
 
-        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
         entry.ReviewState = ReviewState.Approved;
         entry.Visibility = visibility;
         entry.ReviewedBy = reviewer;
@@ -401,7 +402,7 @@ internal class ExpertiseRepository(
         if (entry.ReviewState != ReviewState.Draft)
             return (WriteOutcome.InvalidState, null);
 
-        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry);
+        var hash = entry.IntegrityHash ?? IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
         entry.ReviewState = ReviewState.Rejected;
         entry.ReviewedBy = reviewer;
         entry.ReviewedAt = DateTime.UtcNow;

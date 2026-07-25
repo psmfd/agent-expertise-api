@@ -355,6 +355,14 @@ builder.Services.AddHealthChecks()
         name: "migrations",
         tags: readyTag);
 
+// ADR-020: integrity HMAC key. Loaded eagerly so a configured-but-unusable key
+// (missing file, bad base64, short key) aborts boot — fail-closed, the ADR-015
+// posture. An entirely unconfigured key is the sanctioned soft-require state
+// (legacy unkeyed SHA-256 + warning below + expertise_integrity_unkeyed gauge);
+// the hard-require flip is tracked in #490.
+var integrityKeyProvider = ExpertiseApi.Services.IntegrityKeyProvider.Load(builder.Configuration);
+builder.Services.AddSingleton<ExpertiseApi.Services.IIntegrityKeyProvider>(integrityKeyProvider);
+
 builder.Services.AddScoped<IExpertiseRepository, ExpertiseRepository>();
 builder.Services.AddScoped<ITenantContextAccessor, HttpTenantContextAccessor>();
 builder.Services.AddExpertiseAuth(builder.Configuration, builder.Environment);
@@ -499,6 +507,14 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 });
 
 var app = builder.Build();
+
+if (integrityKeyProvider.ActiveKey is null)
+{
+    app.Logger.LogWarning(
+        "Integrity:HmacKey(File) is not configured — IntegrityHash values are legacy unkeyed "
+        + "SHA-256, forgeable by any database-level writer. Configure a key per ADR-020 and run "
+        + "`rehash --force` once. Hard-require flip tracked in #490.");
+}
 
 // Top-level Serilog flush guard — wraps ALL post-Build() paths (one-shot CLI
 // verbs AND the long-running web host) so the Console sink's async buffer is

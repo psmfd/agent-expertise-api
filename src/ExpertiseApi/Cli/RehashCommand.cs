@@ -14,12 +14,19 @@ internal static class RehashCommand
         using var scope = app.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ExpertiseDbContext>();
         var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Rehash");
+        var integrityKeys = scope.ServiceProvider.GetRequiredService<IIntegrityKeyProvider>();
 
         var batchSize = GetBatchSize(args);
+        // --force: recompute EVERY row, not just nulls — the one-time rekey migration
+        // after configuring (or rotating) Integrity:HmacKey (ADR-020). Without it the
+        // first `verify` run after a key change reports a false mass mismatch.
+        var force = Array.Exists(args, a => a.Equals("--force", StringComparison.OrdinalIgnoreCase));
         var processed = 0;
         Guid? lastId = null;
 
-        logger.LogInformation("Starting rehash with batch size {BatchSize}", batchSize);
+        logger.LogInformation(
+            "Starting rehash with batch size {BatchSize} (force={Force}, keyed={Keyed})",
+            batchSize, force, integrityKeys.ActiveKey is not null);
 
         while (true)
         {
@@ -27,9 +34,12 @@ internal static class RehashCommand
             // See ReembedCommand for rationale.
             var query = db.ExpertiseEntries
                 .IgnoreQueryFilters()
-                .Where(e => e.IntegrityHash == null)
-                .OrderBy(e => e.Id)
                 .AsQueryable();
+
+            if (!force)
+                query = query.Where(e => e.IntegrityHash == null);
+
+            query = query.OrderBy(e => e.Id);
 
             if (lastId is not null)
                 query = query.Where(e => e.Id > lastId.Value);
@@ -40,7 +50,7 @@ internal static class RehashCommand
 
             foreach (var entry in entries)
             {
-                entry.IntegrityHash = IntegrityHashService.Compute(entry);
+                entry.IntegrityHash = IntegrityHashService.Compute(entry, integrityKeys.ActiveKey);
             }
 
             await db.SaveChangesAsync();
