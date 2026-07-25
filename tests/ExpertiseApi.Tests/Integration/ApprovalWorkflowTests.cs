@@ -201,12 +201,14 @@ public class ApprovalWorkflowTests : IAsyncLifetime
         using var client = _factory.CreateClient(); // /metrics is auth-free
         var text = await (await client.GetAsync("/metrics")).Content.ReadAsStringAsync();
         var needle = $"expertise_review_non_human_total{{action=\"{action}\",actor_class=\"{actorClass}\"}}";
-        foreach (var trimmed in text.Split('\n').Select(line => line.Trim()))
-        {
-            if (trimmed.StartsWith(needle, StringComparison.Ordinal))
-                return double.Parse(trimmed[needle.Length..].Trim(), CultureInfo.InvariantCulture);
-        }
-        return 0;
+        // FirstOrDefault yields 0.0 when the series is absent — matching the "counter
+        // not created yet" fallback. Fully-LINQ so CodeQL's foreach-to-Select/Where
+        // quality rules have no loop to flag.
+        return text.Split('\n')
+            .Select(line => line.Trim())
+            .Where(trimmed => trimmed.StartsWith(needle, StringComparison.Ordinal))
+            .Select(trimmed => double.Parse(trimmed[needle.Length..].Trim(), CultureInfo.InvariantCulture))
+            .FirstOrDefault();
     }
 
     [Fact]
