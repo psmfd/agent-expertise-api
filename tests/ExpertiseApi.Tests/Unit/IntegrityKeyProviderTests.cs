@@ -48,7 +48,7 @@ public class IntegrityKeyProviderTests : IDisposable
     [Fact]
     public void Load_KeyFile_ResolvesTrimmingWhitespace()
     {
-        var path = Path.Combine(_workDir, "hmac.key");
+        var path = Path.Join(_workDir, "hmac.key");
         File.WriteAllText(path, ValidKeyBase64 + "\n");
 
         var provider = IntegrityKeyProvider.Load(Config(("Integrity:HmacKeyFile", path)));
@@ -60,7 +60,7 @@ public class IntegrityKeyProviderTests : IDisposable
     [Fact]
     public void Load_InlineWinsOverFile()
     {
-        var path = Path.Combine(_workDir, "hmac-file.key");
+        var path = Path.Join(_workDir, "hmac-file.key");
         File.WriteAllText(path, Convert.ToBase64String(Enumerable.Repeat((byte)0x01, 32).ToArray()));
 
         var provider = IntegrityKeyProvider.Load(Config(
@@ -84,7 +84,7 @@ public class IntegrityKeyProviderTests : IDisposable
     public void Load_MissingKeyFile_FailsClosed()
     {
         var act = () => IntegrityKeyProvider.Load(Config(
-            ("Integrity:HmacKeyFile", Path.Combine(_workDir, "does-not-exist"))));
+            ("Integrity:HmacKeyFile", Path.Join(_workDir, "does-not-exist"))));
 
         act.Should().Throw<InvalidOperationException>().WithMessage("*missing file*");
     }

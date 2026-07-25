@@ -101,16 +101,7 @@ internal sealed class IntegrityKeyProvider : IIntegrityKeyProvider
         return new IntegrityKeyProvider(new IntegrityKey(keyId, key));
     }
 
-    private static bool IsValidKeyId(string keyId)
-    {
-        if (keyId.Length is < 1 or > 32)
-            return false;
-        foreach (var c in keyId)
-        {
-            if (!char.IsAsciiLetterOrDigit(c) && c is not ('.' or '_' or '-'))
-                return false;
-        }
-
-        return true;
-    }
+    private static bool IsValidKeyId(string keyId) =>
+        keyId.Length is >= 1 and <= 32
+        && keyId.All(static c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-');
 }
