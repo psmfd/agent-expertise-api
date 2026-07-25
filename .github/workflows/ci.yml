@@ -216,6 +216,9 @@ jobs:
       - name: Run apictl backup subcommand tests
         run: bash tests/backup/test-apictl-backup.sh
 
+      - name: Run apictl drafts/review subcommand tests
+        run: bash tests/review/test-apictl-review.sh
+
   apictl-restart-race-macos:
     name: apictl restart race regression (macOS)
     runs-on: macos-latest

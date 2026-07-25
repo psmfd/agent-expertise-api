@@ -798,10 +798,19 @@ edit the service secrets.env                      # set ConnectionStrings__Defau
 ./scripts/expertise-apictl status                 # daily-use service control
 ./scripts/expertise-apictl logs -f                # follow logs (journald / launchd)
 ./scripts/expertise-apictl health                 # curl /health
+./scripts/expertise-apictl drafts                 # list the pending review queue
+./scripts/expertise-apictl review                 # interactive approve/reject loop (ADR-018/019)
 ./scripts/uninstall.sh --yes                      # remove service + binaries
 ./scripts/uninstall.sh --yes --purge              # also remove models + secrets
 ./scripts/uninstall.sh --yes --dry-run            # print what would happen; execute nothing
 ```
+
+`drafts`/`review` need a reviewer token carrying `expertise.write.approve`,
+supplied via `EXPERTISE_API_TOKEN` or (recommended) `EXPERTISE_API_TOKEN_FILE`.
+Mint it as a **distinct** credential — never reuse an agent `write.draft`
+token, so the ADR-018 author ≠ reviewer gate keeps meaning something. Draft
+content is rendered through a terminal-control-byte sanitizer before it
+reaches your eyes; see [ADR-019](adrs/019-apictl-review-cli.md).
 
 The uninstaller defends against destructive `--prefix` mistakes:
 
