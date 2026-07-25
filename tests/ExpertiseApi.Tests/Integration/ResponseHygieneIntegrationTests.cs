@@ -56,7 +56,11 @@ public class ResponseHygieneIntegrationTests : IAsyncLifetime
     public async Task GetEntry_ReturnsHygienizedEnvelope()
     {
         var writer = AuthorizedClient(AuthConstants.WriteDraftScope);
-        var approver = AuthorizedClient(AuthConstants.WriteApproveScope);
+        // Admin (break-glass) approver: writer and approver share the default minter sub
+        // "test-principal", so a plain write.approve token would trip the ADR-018
+        // author != reviewer gate. This test only needs the entry Approved, not to
+        // exercise the reviewer identity, so admin is the least-churn correct choice.
+        var approver = AuthorizedClient(AuthConstants.AdminScope);
 
         // Unique title/body to defeat the dedup service.
         var unique = Guid.NewGuid();
@@ -125,7 +129,11 @@ public class ResponseHygieneIntegrationTests : IAsyncLifetime
     public async Task ListEntries_SharesOneNonceAcrossItems()
     {
         var writer = AuthorizedClient(AuthConstants.WriteDraftScope);
-        var approver = AuthorizedClient(AuthConstants.WriteApproveScope);
+        // Admin (break-glass) approver: writer and approver share the default minter sub
+        // "test-principal", so a plain write.approve token would trip the ADR-018
+        // author != reviewer gate. This test only needs the entry Approved, not to
+        // exercise the reviewer identity, so admin is the least-churn correct choice.
+        var approver = AuthorizedClient(AuthConstants.AdminScope);
 
         // Seed two distinct entries. The Guid suffix defeats the deduplication
         // service so each POST lands as Created (not Conflict) regardless of
