@@ -1,0 +1,77 @@
+{{- if .Values.integrity.verify.enabled }}
+# ADR-020 integrity verification sweep: recompute every entry MAC, re-verify
+# the sealed audit checkpoint chain (Merkle root + MAC + chain link), then
+# seal a new checkpoint. Exit codes: 0 clean, 1 integrity mismatch (the Job
+# fails — alert on CronJob failure and/or the
+# expertise_integrity_last_verify_mismatches gauge the API exports), 2
+# precondition failure.
+#
+# The key: add Integrity__HmacKey (base64 of >=32 random bytes) to the secret
+# named by auth.secretName — this container envFrom's the same secret as the
+# API, so key and connection string arrive together. Without the key the
+# sweep still verifies legacy unkeyed hashes (soft-require, ADR-020).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "expertise-api.fullname" . }}-verify
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "expertise-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: integrity-verify
+spec:
+  schedule: {{ .Values.integrity.verify.schedule | quote }}
+  # A sweep sealing checkpoints must never race a second sweep: SealCheckpointAsync
+  # reads the previous chain link before writing the next.
+  concurrencyPolicy: Forbid
+  # A missed window (cluster maintenance) is picked up within this margin;
+  # beyond it, skip and wait for the next schedule — the checkpoint-age gauge
+  # surfaces the gap either way.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0   # exit 1 = integrity mismatch, not a transient error — never auto-retry
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            {{- include "expertise-api.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: integrity-verify
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1654
+            runAsGroup: 1654
+            fsGroup: 1654
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: verify
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.auth.secretName }}
+              # Image ENTRYPOINT is `dotnet ExpertiseApi.dll`; the verify verb
+              # dispatches before the web host starts (no port binding).
+              args: ["verify"]
+              resources:
+                {{- toYaml .Values.integrity.verify.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{- end }}

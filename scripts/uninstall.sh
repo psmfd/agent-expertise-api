@@ -205,6 +205,14 @@ fi
 # README. Do not wrap these probes in do_action.
 case "${OS}" in
   linux|wsl)
+    # ADR-020 verify timer teardown first (independent of the main unit —
+    # a --no-verify-timer install may not have created it; rm -f + `|| true`
+    # keep this idempotent either way).
+    if systemctl --user list-unit-files expertise-api-verify.timer 2>/dev/null | grep -q expertise-api-verify; then
+      do_action systemctl --user disable --now expertise-api-verify.timer 2>/dev/null || true
+    fi
+    do_action rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/expertise-api-verify.timer"
+    do_action rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/expertise-api-verify.service"
     if systemctl --user list-unit-files expertise-api.service 2>/dev/null | grep -q expertise-api; then
       do_action systemctl --user stop expertise-api.service 2>/dev/null || true
       do_action systemctl --user disable expertise-api.service 2>/dev/null || true
@@ -220,6 +228,22 @@ case "${OS}" in
     fi ;;
   macos)
     LABEL="com.thesemicolon.expertise-api"
+    # ADR-020 verify schedule teardown first — same bootout+rm-only
+    # discipline as the main service (no enable/disable, #286/#301).
+    VERIFY_LABEL="com.thesemicolon.expertise-api.verify"
+    if [[ "${INSTALL_SCOPE}" == "system" ]]; then
+      VERIFY_PLIST="/Library/LaunchDaemons/${VERIFY_LABEL}.plist"
+      if [[ -f "${VERIFY_PLIST}" ]]; then
+        do_action launchctl bootout "system/${VERIFY_LABEL}" 2>/dev/null || true
+        do_action rm -f "${VERIFY_PLIST}"
+      fi
+    else
+      VERIFY_PLIST="${HOME}/Library/LaunchAgents/${VERIFY_LABEL}.plist"
+      if [[ -f "${VERIFY_PLIST}" ]]; then
+        do_action launchctl bootout "gui/$(id -u)/${VERIFY_LABEL}" 2>/dev/null || true
+        do_action rm -f "${VERIFY_PLIST}"
+      fi
+    fi
     if [[ "${INSTALL_SCOPE}" == "system" ]]; then
       # macOS --system: LaunchDaemon teardown (#145).
       #
