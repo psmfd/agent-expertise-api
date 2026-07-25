@@ -217,6 +217,14 @@ calls are no-ops outside their host environment, so Docker / Helm /
 
 Daily-use control: `scripts/expertise-apictl {start|stop|restart|status|logs|health}`.
 
+Human draft review (ADR-018/ADR-019): `expertise-apictl drafts [--json]` lists
+the pending queue; `expertise-apictl review` is the interactive
+approve/reject/skip/view loop. Both need a reviewer token carrying
+`expertise.write.approve` via `EXPERTISE_API_TOKEN` or
+`EXPERTISE_API_TOKEN_FILE` — mint it as a distinct credential, never reuse an
+agent `write.draft` token (separation of duties). Base URL: `EXPERTISE_API_URL`
+(default `http://127.0.0.1:8080`).
+
 ## Authentication
 
 `Auth:Mode` config switch governs which authentication scheme(s) are accepted:
