@@ -11,6 +11,7 @@
 #   expertise-apictl logs [-f] [-n LINES]
 #   expertise-apictl health
 #   expertise-apictl reembed [--batch-size N]
+#   expertise-apictl verify [--batch-size N] [--grace-seconds N] [--no-seal]
 #   expertise-apictl backup-init [--install-deps]
 #   expertise-apictl backup [--output DIR] [--instance-id ID]
 #   expertise-apictl restore ARTIFACT [--force-draft] [--i-accept-unsigned-backup]
@@ -31,6 +32,11 @@
 # EXPERTISE_API_TOKEN or EXPERTISE_API_TOKEN_FILE (keep it distinct from any
 # agent write.draft token). Base URL comes from EXPERTISE_API_URL.
 #
+# verify runs the ADR-020 integrity sweep (entry MACs + audit checkpoint
+# chain) and seals a new checkpoint. Exit codes: 0 clean, 1 integrity
+# mismatch (ALERT), 2 precondition failure — schedule it from a systemd
+# timer / launchd / cron and alert on non-zero.
+#
 
 set -euo pipefail
 
@@ -43,7 +49,7 @@ READY_TIMEOUT="${EXPERTISE_API_READY_TIMEOUT:-30}"
 log() { printf '[expertise-apictl] %s\n' "$1"; }
 err() { printf '[expertise-apictl] ERROR: %s\n' "$1" >&2; exit 1; }
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; }
 
 detect_os() {
   case "$(uname -s)" in
@@ -85,7 +91,7 @@ _detect_install_scope() {
 # and drafts/review talk plain HTTP — never to launchd, so they work fine
 # against a --system install.
 case "${1:-}" in
-  backup-init|backup|restore|reembed|drafts|review) _lifecycle_cmd=0 ;;
+  backup-init|backup|restore|reembed|verify|drafts|review) _lifecycle_cmd=0 ;;
   *)                          _lifecycle_cmd=1 ;;
 esac
 
@@ -929,9 +935,10 @@ cmd_backup() {
     || err "export verb failed — nothing was signed or written to ${out_dir}"
 
   log "compressing + encrypting payload"
-  tar -czf "${workdir}/payload.tar.gz" -C "${workdir}/payload" entries.jsonl audit.jsonl
+  tar -czf "${workdir}/payload.tar.gz" -C "${workdir}/payload" entries.jsonl audit.jsonl checkpoints.jsonl
   age -e -R "${AGE_RECIPIENTS_FILE}" -o "${workdir}/payload.tar.gz.age" "${workdir}/payload.tar.gz"
-  rm -f "${workdir}/payload.tar.gz" "${workdir}/payload/entries.jsonl" "${workdir}/payload/audit.jsonl"
+  rm -f "${workdir}/payload.tar.gz" "${workdir}/payload/entries.jsonl" "${workdir}/payload/audit.jsonl" \
+        "${workdir}/payload/checkpoints.jsonl"
 
   # Bind the encrypted payload to the manifest BEFORE signing, so the
   # signature covers the payload hash (ADR-012 manifest schema).
@@ -957,6 +964,21 @@ cmd_reembed() {
   # completes, pre-existing entries are invisible to semantic/hybrid search.
   _run_api_verb reembed "$@" || err "reembed verb failed — see log output above"
   log "reembed: OK"
+}
+
+cmd_verify() {
+  # Pass-through to the ExpertiseApi verify verb (ADR-020): recompute every
+  # entry MAC, re-verify the audit checkpoint chain, seal a new checkpoint.
+  # Exit codes are preserved (not collapsed to err's exit 1) so a scheduled
+  # runner can distinguish 1=integrity mismatch (ALERT) from 2=precondition.
+  local rc=0
+  _run_api_verb verify "$@" || rc=$?
+  case "${rc}" in
+    0) log "verify: OK (clean)" ;;
+    1) printf '[expertise-apictl] ERROR: verify: INTEGRITY MISMATCH detected — see log output above\n' >&2 ;;
+    *) printf '[expertise-apictl] ERROR: verify: precondition failure (rc=%s) — see log output above\n' "${rc}" >&2 ;;
+  esac
+  return "${rc}"
 }
 
 cmd_restore() {
@@ -1030,6 +1052,7 @@ case "${1:-}" in
   backup)     shift; cmd_backup "$@" ;;
   restore)    shift; cmd_restore "$@" ;;
   reembed)    shift; cmd_reembed "$@" ;;
+  verify)     shift; cmd_verify "$@" ;;
   drafts)     shift; cmd_drafts "$@" ;;
   review)     shift; cmd_review "$@" ;;
   ''|-h|--help) usage ;;

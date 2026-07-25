@@ -12,6 +12,8 @@ internal class ExpertiseDbContext(
     public DbSet<EmbeddingMetadata> EmbeddingMetadata => Set<EmbeddingMetadata>();
     public DbSet<ExpertiseAuditLog> ExpertiseAuditLogs => Set<ExpertiseAuditLog>();
     public DbSet<SyncState> SyncStates => Set<SyncState>();
+    public DbSet<AuditCheckpoint> AuditCheckpoints => Set<AuditCheckpoint>();
+    public DbSet<IntegrityVerificationState> IntegrityVerificationStates => Set<IntegrityVerificationState>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -146,6 +148,33 @@ internal class ExpertiseDbContext(
             // Supports the /audit?actor_class= filter introduced with C6. Composite with
             // Timestamp keeps the index aligned with the (Timestamp DESC, Id) sort order.
             entity.HasIndex(e => new { e.ActorClass, e.Timestamp });
+
+            // ADR-020 checkpoint ordinal. GENERATED ALWAYS AS IDENTITY: Postgres
+            // backfills existing rows on ADD COLUMN, rejects application-supplied
+            // values (restore re-sequences; the checkpoint chain restarts), and gives
+            // checkpoint ranges a stable ordering that neither the uuid PK nor the
+            // client-set Timestamp provides.
+            entity.Property(e => e.Seq).UseIdentityAlwaysColumn();
+            entity.HasIndex(e => e.Seq).IsUnique();
+        });
+
+        // ADR-020 audit checkpoint chain. Sole writer is IntegrityVerificationService
+        // (the verify CLI); the request write path never touches this table.
+        modelBuilder.Entity<AuditCheckpoint>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityAlwaysColumn();
+            entity.Property(e => e.MerkleRoot).IsRequired();
+            entity.Property(e => e.CheckpointMac).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        });
+
+        // ADR-020 last-verify singleton (SyncState pattern: get-or-create at the call
+        // site, sole writer is the verification sweep).
+        modelBuilder.Entity<IntegrityVerificationState>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.LastResult).IsRequired();
         });
     }
 }

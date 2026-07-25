@@ -86,6 +86,28 @@ internal static class BackupRecordHash
         return Convert.ToHexStringLower(SHA256.HashData(stream.ToArray()));
     }
 
+    public static string ComputeCheckpoint(BackupCheckpointRecord r)
+    {
+        ArgumentNullException.ThrowIfNull(r);
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("checkpointMac", r.CheckpointMac);
+            writer.WriteString("createdAt", Canonical(r.CreatedAt));
+            writer.WriteNumber("id", r.Id);
+            writer.WriteString("merkleRoot", r.MerkleRoot);
+            WriteNullable(writer, "prevCheckpointMac", r.PrevCheckpointMac);
+            writer.WriteNumber("rowCount", r.RowCount);
+            writer.WriteNumber("seqFrom", r.SeqFrom);
+            writer.WriteNumber("seqTo", r.SeqTo);
+            writer.WriteEndObject();
+        }
+
+        return Convert.ToHexStringLower(SHA256.HashData(stream.ToArray()));
+    }
+
     private static string Canonical(DateTime value) =>
         value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 

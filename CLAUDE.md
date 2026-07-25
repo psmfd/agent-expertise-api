@@ -65,6 +65,13 @@ dotnet run --project src/ExpertiseApi -- reembed [--batch-size 50]
 # rotating Integrity:HmacKey (ADR-020) — run it once before trusting verification.
 dotnet run --project src/ExpertiseApi -- rehash [--batch-size 50] [--force]
 
+# ADR-020 integrity verification sweep: recompute every entry MAC (format prefix
+# decides keyed vs legacy; unknown key id = mismatch), re-verify every sealed audit
+# checkpoint (Merkle root + MAC + chain link), then seal a new checkpoint through the
+# latest audit row older than the grace window. Exit 0 clean / 1 mismatch (ALERT) /
+# 2 precondition. Schedule via OS timer/CronJob; wrapped as `expertise-apictl verify`.
+dotnet run --project src/ExpertiseApi -- verify [--batch-size 500] [--grace-seconds 300] [--no-seal]
+
 # Export all entries (every tenant + review state) + audit log as NDJSON with an
 # RFC 6962 Merkle manifest (ADR-012). Plain files only — signing/encryption is
 # scripts/expertise-apictl's job (backup-init | backup | restore subcommands).
@@ -218,6 +225,8 @@ calls are no-ops outside their host environment, so Docker / Helm /
 `dotnet run` paths remain identical.
 
 Daily-use control: `scripts/expertise-apictl {start|stop|restart|status|logs|health}`.
+
+Integrity verification (ADR-020): `expertise-apictl verify [--batch-size N] [--grace-seconds N] [--no-seal]` runs the sweep against the database (no service restart needed) and preserves the verb's exit codes — 0 clean, 1 integrity mismatch (alert on this), 2 precondition failure. Schedule it from a systemd timer / launchd / cron (templates land in ADR-020 PR 3).
 
 Human draft review (ADR-018/ADR-019): `expertise-apictl drafts [--json]` lists
 the pending queue; `expertise-apictl review` is the interactive
@@ -488,6 +497,8 @@ Indexes added: standalone B-tree on `Tenant`; composite B-tree on `(Tenant, Revi
 A separate **`ExpertiseAuditLog`** table records every state-changing operation: `{Id, Timestamp, Action, EntryId, Tenant, Principal, Agent?, BeforeHash, AfterHash, IpAddress, ActorClass, AuthMethod?, ActorClassHeader?}` (the last three added by ADR-008). FK to `ExpertiseEntries.Id` with `ON DELETE RESTRICT` (audit must survive entry deletion). Reads are not audited. Indexes on `(EntryId, Timestamp)` and `(Principal, Timestamp)`.
 
 A **`SyncStates`** singleton-row table (EmbeddingMetadata pattern) holds the spoke-side up-sync cursor: `{Id, LastSyncedUpdatedAt, LastSyncedId, LastSuccessAt}` (ADR-013).
+
+ADR-020 PR 2 adds the audit checkpoint chain: `ExpertiseAuditLog.Seq` (`bigint GENERATED ALWAYS AS IDENTITY`, unique — the stable ordinal checkpoint ranges are defined over; never set by app code, re-sequenced on restore so the chain restarts); an **`AuditCheckpoints`** table `{Id, SeqFrom, SeqTo, RowCount, MerkleRoot, PrevCheckpointMac?, CheckpointMac, CreatedAt}` (RFC 6962 root over the range's `BackupRecordHash.ComputeAudit` leaves, MAC'd + chained so a DB-only writer can neither rewrite nor re-seal a range; sole writer is the `verify` sweep — zero write-path contention); and an **`IntegrityVerificationStates`** singleton the API re-exposes as gauges (`expertise_integrity_checkpoint_age_seconds`, `expertise_integrity_last_verify_age_seconds`, `expertise_integrity_last_verify_mismatches` — a short-lived CLI's own counters are never scraped). `backup` exports the chain as `checkpoints.jsonl` + manifest root (off-host anchor); restore never imports it. After key rotation, move the old id→base64 into `Integrity:RetiredKeys` so `verify` keeps old values resolvable.
 
 The `ExpertiseDbContext` exposes these as `DbSet<>`. **`IExpertiseRepository` is the only sanctioned consumer of `ExpertiseDbContext` for entry data** — the architectural test in `tests/ExpertiseApi.Tests/Architecture/` enforces this for everything outside `Data/` and `Cli/`. CLI commands (`reembed`, `rehash`) are intentional exceptions because they need cursor-based paging the repository interface does not expose.
 

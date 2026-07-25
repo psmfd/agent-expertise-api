@@ -11,8 +11,9 @@ namespace ExpertiseApi.Cli;
 /// <summary>
 /// One-shot CLI verb that exports every expertise entry (all tenants, all review
 /// states) and the full audit log as NDJSON plus a manifest carrying RFC 6962
-/// Merkle roots (ADR-012). Emits three plain files into <c>--output</c>:
-/// <c>entries.jsonl</c>, <c>audit.jsonl</c>, <c>manifest.json</c>. Compression,
+/// Merkle roots (ADR-012). Emits four plain files into <c>--output</c>:
+/// <c>entries.jsonl</c>, <c>audit.jsonl</c>, <c>checkpoints.jsonl</c> (ADR-020 audit
+/// checkpoint chain — the off-host anchor), <c>manifest.json</c>. Compression,
 /// age encryption, and cosign signing are the orchestration wrapper's job
 /// (<c>scripts/expertise-apictl backup</c>) — the binary alone produces a valid
 /// unsigned payload for dev loops.
@@ -44,9 +45,10 @@ internal static class BackupCommand
             Directory.CreateDirectory(outputDir);
             var entriesPath = Path.Join(outputDir, "entries.jsonl");
             var auditPath = Path.Join(outputDir, "audit.jsonl");
+            var checkpointsPath = Path.Join(outputDir, "checkpoints.jsonl");
             var manifestPath = Path.Join(outputDir, "manifest.json");
 
-            foreach (var path in new[] { entriesPath, auditPath, manifestPath })
+            foreach (var path in new[] { entriesPath, auditPath, checkpointsPath, manifestPath })
             {
                 if (File.Exists(path))
                 {
@@ -157,6 +159,7 @@ internal static class BackupCommand
                             ActorClass = row.ActorClass.ToString(),
                             AuthMethod = row.AuthMethod,
                             ActorClassHeader = row.ActorClassHeader,
+                            Seq = row.Seq,
                             RecordHash = "",
                         };
                         record = record with { RecordHash = BackupRecordHash.ComputeAudit(record) };
@@ -170,6 +173,50 @@ internal static class BackupCommand
                 }
             }
 
+            // ADR-020: checkpoint chain export — the off-host anchor of the chain head.
+            // Restore never imports these (restored audit rows re-sequence; the chain
+            // restarts), but a signed backup that has left the host pins what the chain
+            // looked like at export time against a later local rewrite.
+            var checkpointHashes = new List<string>();
+            await using (var writer = new StreamWriter(File.Create(checkpointsPath), new UTF8Encoding(false)))
+            {
+                long lastCheckpointId = 0;
+                while (true)
+                {
+                    var checkpoints = await db.AuditCheckpoints
+                        .Where(c => c.Id > lastCheckpointId)
+                        .OrderBy(c => c.Id)
+                        .Take(batchSize)
+                        .AsNoTracking()
+                        .ToListAsync();
+                    if (checkpoints.Count == 0)
+                        break;
+
+                    foreach (var checkpoint in checkpoints)
+                    {
+                        var record = new BackupCheckpointRecord
+                        {
+                            Id = checkpoint.Id,
+                            SeqFrom = checkpoint.SeqFrom,
+                            SeqTo = checkpoint.SeqTo,
+                            RowCount = checkpoint.RowCount,
+                            MerkleRoot = checkpoint.MerkleRoot,
+                            PrevCheckpointMac = checkpoint.PrevCheckpointMac,
+                            CheckpointMac = checkpoint.CheckpointMac,
+                            CreatedAt = checkpoint.CreatedAt,
+                            RecordHash = "",
+                        };
+                        record = record with { RecordHash = BackupRecordHash.ComputeCheckpoint(record) };
+
+                        checkpointHashes.Add(record.RecordHash);
+                        await writer.WriteLineAsync(
+                            JsonSerializer.Serialize(record, BackupJsonContext.Default.BackupCheckpointRecord));
+                    }
+
+                    lastCheckpointId = checkpoints[^1].Id;
+                }
+            }
+
             var manifest = new BackupManifest
             {
                 SchemaVersion = 1,
@@ -179,6 +226,8 @@ internal static class BackupCommand
                 AuditCount = auditHashes.Count,
                 EntriesMerkleRoot = MerkleTree.ComputeRoot(entryHashes),
                 AuditMerkleRoot = MerkleTree.ComputeRoot(auditHashes),
+                CheckpointCount = checkpointHashes.Count,
+                CheckpointsMerkleRoot = MerkleTree.ComputeRoot(checkpointHashes),
                 DbSchemaVersion = dbSchemaVersion,
                 EmbeddingModel = embeddingMetadata is null
                     ? null
@@ -192,8 +241,8 @@ internal static class BackupCommand
                 new UTF8Encoding(false));
 
             logger.LogInformation(
-                "Backup: complete — {EntryCount} entries, {AuditCount} audit rows, schema {Schema}, output {Output}",
-                manifest.EntryCount, manifest.AuditCount, dbSchemaVersion ?? "(none)", outputDir);
+                "Backup: complete — {EntryCount} entries, {AuditCount} audit rows, {CheckpointCount} checkpoints, schema {Schema}, output {Output}",
+                manifest.EntryCount, manifest.AuditCount, manifest.CheckpointCount, dbSchemaVersion ?? "(none)", outputDir);
             return 0;
         }
         // Same narrowed-catch posture as MigrateCommand (process-fatal exceptions and

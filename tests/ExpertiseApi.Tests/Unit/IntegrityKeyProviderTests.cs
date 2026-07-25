@@ -125,4 +125,85 @@ public class IntegrityKeyProviderTests : IDisposable
     {
         IntegrityKeyProvider.Unkeyed.ActiveKey.Should().BeNull();
     }
+
+    // --- ADR-020 PR 2: retired keys + ResolveKey ---------------------------------
+
+    private static readonly string RetiredKeyBase64 =
+        Convert.ToBase64String(Enumerable.Repeat((byte)0x07, 32).ToArray());
+
+    [Fact]
+    public void ResolveKey_ActiveKeyId_ReturnsActiveKey()
+    {
+        var provider = IntegrityKeyProvider.Load(Config(("Integrity:HmacKey", ValidKeyBase64)));
+
+        provider.ResolveKey("k1").Should().BeSameAs(provider.ActiveKey);
+    }
+
+    [Fact]
+    public void ResolveKey_RetiredKeyId_ReturnsRetiredKey()
+    {
+        var provider = IntegrityKeyProvider.Load(Config(
+            ("Integrity:HmacKey", ValidKeyBase64),
+            ("Integrity:RetiredKeys:k0", RetiredKeyBase64)));
+
+        var resolved = provider.ResolveKey("k0");
+        resolved.Should().NotBeNull();
+        resolved!.KeyId.Should().Be("k0");
+        resolved.Key.Should().Equal(Enumerable.Repeat((byte)0x07, 32));
+    }
+
+    [Fact]
+    public void ResolveKey_UnknownKeyId_ReturnsNull()
+    {
+        var provider = IntegrityKeyProvider.Load(Config(
+            ("Integrity:HmacKey", ValidKeyBase64),
+            ("Integrity:RetiredKeys:k0", RetiredKeyBase64)));
+
+        provider.ResolveKey("k9").Should().BeNull();
+        IntegrityKeyProvider.Unkeyed.ResolveKey("k1").Should().BeNull();
+    }
+
+    [Fact]
+    public void Load_RetiredKeysWithoutActiveKey_StaysUnkeyedButResolvable()
+    {
+        // A rotated-out instance may retire its key without configuring a new one —
+        // verify must still resolve old values while new writes go unkeyed.
+        var provider = IntegrityKeyProvider.Load(Config(("Integrity:RetiredKeys:k0", RetiredKeyBase64)));
+
+        provider.ActiveKey.Should().BeNull();
+        provider.ResolveKey("k0").Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Load_RetiredKeyShadowingActiveKeyId_FailsClosed()
+    {
+        var act = () => IntegrityKeyProvider.Load(Config(
+            ("Integrity:HmacKey", ValidKeyBase64),
+            ("Integrity:RetiredKeys:k1", RetiredKeyBase64)));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*must not shadow*");
+    }
+
+    [Theory]
+    [InlineData("has:colon")]
+    [InlineData("way-too-long-key-identifier-value-over-32")]
+    public void Load_InvalidRetiredKeyId_FailsClosed(string keyId)
+    {
+        var act = () => IntegrityKeyProvider.Load(Config(
+            ($"Integrity:RetiredKeys:{keyId}", RetiredKeyBase64)));
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*RetiredKeys*");
+    }
+
+    [Fact]
+    public void Load_RetiredKeyBadMaterial_FailsClosed()
+    {
+        var badBase64 = () => IntegrityKeyProvider.Load(Config(
+            ("Integrity:RetiredKeys:k0", "not-base64!!!")));
+        badBase64.Should().Throw<InvalidOperationException>().WithMessage("*not valid base64*");
+
+        var shortKey = () => IntegrityKeyProvider.Load(Config(
+            ("Integrity:RetiredKeys:k0", Convert.ToBase64String(new byte[16]))));
+        shortKey.Should().Throw<InvalidOperationException>().WithMessage("*at least 32 bytes*");
+    }
 }

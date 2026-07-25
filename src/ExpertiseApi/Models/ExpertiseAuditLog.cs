@@ -37,4 +37,11 @@ internal class ExpertiseAuditLog
     // the header was absent. Stored verbatim (truncated to 32 chars at write time) so a
     // mismatch between header and scope is forensically recoverable.
     public string? ActorClassHeader { get; set; }
+
+    // ADR-020 checkpoint ordinal. Postgres GENERATED ALWAYS AS IDENTITY — a stable,
+    // unique insertion ordinal that checkpoint ranges are defined over (the PK is a
+    // random uuid and Timestamp is client-set, so neither orders reliably). Never set
+    // by application code; regenerated on restore (the chain restarts — see ADR-020
+    // migration notes). Gaps from rolled-back inserts are normal.
+    public long Seq { get; set; }
 }
