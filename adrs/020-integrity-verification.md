@@ -1,6 +1,6 @@
 # Keyed IntegrityHash and audit-log checkpoint chain (verification path for #468)
 
-- Status: accepted
+- Status: accepted (hard-require since 2026-07-25; see [Amendment 1](#amendment-1--hard-require-flip-2026-07-25) at the bottom of this file)
 - Date: 2026-07-25
 
 ## Context and Problem Statement
@@ -88,3 +88,23 @@ On A2 the operator *is* the DB admin; the meaningful A2 attacker is one who reac
 - #468 (this issue), #333 Finding 3 (origin), #490 (hard-require flip)
 - ADR-012 (backup Merkle manifest — the off-host anchor), ADR-015 (fail-closed key loading posture), ADR-010 (soft→hard require precedent)
 - `Services/IntegrityHashService.cs`, `Services/BackupRecordHash.cs`, `Services/MerkleTree.cs`
+
+## Amendment 1 — hard-require flip (2026-07-25)
+
+**Status:** applied.
+**Driver:** the #490 observability gate is satisfied — the fleet is a single A2 instance, rolled over to v2.1.0 on 2026-07-25 with `rehash --force` leaving 0 of 695 entries unkeyed, checkpoint #1 sealed and re-verified clean, and the daily verify schedule live.
+
+**Decision change.** The original rollout posture ("soft-require + auto-keying on A2 with a tracked flip") is amended to its endpoint: an unconfigured `Integrity:HmacKey(File)` now aborts boot outside Development, mirroring the `Auth:Mode` startup guard. The guard lives in `IntegrityKeyProvider.Load(configuration, isDevelopment)` and therefore fires at builder time for the API **and every CLI verb** (`migrate` included) — an unkeyed deployment fails at install/migrate time with an actionable error instead of crash-looping at service start. A key that is configured but unusable was already fail-closed in the base decision; this amendment closes the remaining unconfigured branch.
+
+**Rollback.** `Integrity:RequireKey=false` in an environment overlay restores the legacy unkeyed state (the `Idempotency:RequireKey` idiom from ADR-010 Amendment 1); no code change required. The unkeyed state remains observable while the overlay is active: the `expertise_integrity_unkeyed` gauge reads 1 and the startup warning fires. The overlay is a rollback ramp, not an operating mode — unkeyed hashes are forgeable by any database-level writer, the threat this ADR exists to close.
+
+**Rationale for skipping a bake window.** The pre-flip gate ("gauge at 0 across scrape targets") exists to find production instances still writing unkeyed. The fleet is one instance, keyed and verified; the gate is satisfied by direct inspection (`IntegrityHash NOT LIKE '%:%'` count = 0) rather than scrape aggregation — the A2 launch wrapper disables `/metrics` by design, so SQL is the authoritative check on that deploy path.
+
+**Operational deltas.**
+
+- Compose: `deploy/local/docker-compose.yml` passes `Integrity__RequireKey` through (default `true`); `.env.example` documents `INTEGRITY__HMACKEY` as required (the container defaults to the Production environment).
+- Helm: the key in `auth.secretName` is now load-bearing — a chart upgrade without it fails at pod boot. `values.yaml` documents the requirement and the overlay.
+- A2 native installs are unaffected: `install.sh` has auto-provisioned the key since v2.1.0 (new installs get the wired stub; existing installs got the explicit WARN sequence).
+- Versioning: shipped as a breaking change (`feat!`) — the release notes carry the operational requirement, per this issue's acceptance criteria.
+
+**Consequences (delta).** The "Good, because rollout is non-breaking (soft-require + auto-keying on A2) with a tracked flip (#490)" entry in the Consequences list is retired by this amendment: the flip has landed, and rollout onto an unkeyed deployment is now deliberately breaking-by-default with an explicit overlay escape hatch.

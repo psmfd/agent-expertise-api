@@ -115,6 +115,8 @@ public class ProblemDetailsTests : IAsyncLifetime
             // override; ours must come AFTER base to take effect.
             base.ConfigureWebHost(builder);
             builder.UseEnvironment(_environment);
+            // #490: the integrity key is hard-required outside Development.
+            builder.UseSetting("Integrity:HmacKey", Convert.ToBase64String(new byte[32]));
         }
 
         protected override IHost CreateHost(IHostBuilder builder)

@@ -33,7 +33,8 @@ public class IntegrityVerificationTests : IAsyncLifetime
             {
                 ["Integrity:HmacKey"] = Convert.ToBase64String(Enumerable.Repeat((byte)0x42, 32).ToArray()),
             })
-            .Build());
+            .Build(),
+        isDevelopment: true);
 
     public async Task InitializeAsync()
     {

@@ -38,6 +38,8 @@ public class QueryEndpointGatingTests : IAsyncLifetime
             b.UseSetting("Auth:Oidc:Issuers:0:Name", "test-issuer");
             b.UseSetting("Auth:Oidc:Issuers:0:Issuer", "https://example.test/");
             b.UseSetting("Auth:Oidc:Issuers:0:Audience", "test-audience");
+            // #490: the integrity key is hard-required outside Development.
+            b.UseSetting("Integrity:HmacKey", Convert.ToBase64String(new byte[32]));
         });
         return Task.CompletedTask;
     }
