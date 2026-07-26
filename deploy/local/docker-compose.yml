@@ -67,9 +67,12 @@ services:
       Onnx__ModelPath: models/model.onnx
       Onnx__VocabPath: models/vocab.txt
       # Aggregator up-sync (ADR-013) — off by default; see .env.example.
-      # ADR-020 keyed integrity hash — optional locally (empty = soft-require
-      # legacy mode). base64 of >=32 random bytes; see .env.example.
+      # ADR-020 keyed integrity hash — hard-required outside Development since
+      # #490 (the container defaults to Production). base64 of >=32 random bytes;
+      # see .env.example. INTEGRITY__REQUIREKEY=false is the explicit rollback
+      # overlay that restores the legacy unkeyed mode.
       Integrity__HmacKey: ${INTEGRITY__HMACKEY:-}
+      Integrity__RequireKey: ${INTEGRITY__REQUIREKEY:-true}
       Sync__Enabled: ${SYNC__ENABLED:-false}
       Sync__HubUrl: ${SYNC__HUBURL:-}
       Sync__TokenEndpoint: ${SYNC__TOKENENDPOINT:-}

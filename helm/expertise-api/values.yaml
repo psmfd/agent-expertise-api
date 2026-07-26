@@ -134,8 +134,10 @@ sync:
 # The keyed integrity hash needs Integrity__HmacKey in the secret named by
 # `auth.secretName` (base64 of >=32 random bytes — e.g. `openssl rand -base64
 # 32`). The API and the verify CronJob both envFrom that secret, so one entry
-# wires both. Without the key the API runs in soft-require mode (legacy
-# unkeyed hashes, expertise_integrity_unkeyed gauge > 0).
+# wires both. The key is HARD-REQUIRED outside Development since #490: without
+# it the pod fails at boot. Rollback overlay: Integrity__RequireKey=false in
+# the same secret temporarily restores the legacy unkeyed mode (forgeable
+# hashes, expertise_integrity_unkeyed gauge = 1) — temporary use only.
 #
 # After FIRST configuring (or rotating) the key, run the one-time rekey:
 #   kubectl exec deploy/<release> -- dotnet ExpertiseApi.dll rehash --force
