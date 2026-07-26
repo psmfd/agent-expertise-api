@@ -357,10 +357,15 @@ builder.Services.AddHealthChecks()
 
 // ADR-020: integrity HMAC key. Loaded eagerly so a configured-but-unusable key
 // (missing file, bad base64, short key) aborts boot — fail-closed, the ADR-015
-// posture. An entirely unconfigured key is the sanctioned soft-require state
-// (legacy unkeyed SHA-256 + warning below + expertise_integrity_unkeyed gauge);
-// the hard-require flip is tracked in #490.
-var integrityKeyProvider = ExpertiseApi.Services.IntegrityKeyProvider.Load(builder.Configuration);
+// posture. A missing key is hard-required outside Development (#490, ADR-020
+// Amendment 1, mirroring the Auth:Mode startup guard); Integrity:RequireKey=false
+// is the explicit rollback overlay that restores the legacy unkeyed state
+// (SHA-256 + warning below + expertise_integrity_unkeyed gauge). The guard runs
+// at builder time, so CLI verbs (migrate/rehash/verify/...) enforce it too — an
+// unkeyed deploy fails at install/migrate with a clear error rather than
+// crash-looping at service start.
+var integrityKeyProvider = ExpertiseApi.Services.IntegrityKeyProvider.Load(
+    builder.Configuration, builder.Environment.IsDevelopment());
 builder.Services.AddSingleton<ExpertiseApi.Services.IIntegrityKeyProvider>(integrityKeyProvider);
 
 builder.Services.AddScoped<IExpertiseRepository, ExpertiseRepository>();
@@ -517,10 +522,13 @@ var app = builder.Build();
 
 if (integrityKeyProvider.ActiveKey is null)
 {
+    // Reachable only in Development or under the Integrity:RequireKey=false rollback
+    // overlay — outside those, the startup guard in IntegrityKeyProvider.Load already
+    // aborted boot (#490, ADR-020 Amendment 1).
     app.Logger.LogWarning(
-        "Integrity:HmacKey(File) is not configured — IntegrityHash values are legacy unkeyed "
-        + "SHA-256, forgeable by any database-level writer. Configure a key per ADR-020 and run "
-        + "`rehash --force` once. Hard-require flip tracked in #490.");
+        "Running UNKEYED — IntegrityHash values are legacy unkeyed SHA-256, forgeable by any "
+        + "database-level writer (Development or Integrity:RequireKey=false overlay). Configure "
+        + "a key per ADR-020 and run `rehash --force` once.");
 }
 
 // Top-level Serilog flush guard — wraps ALL post-Build() paths (one-shot CLI

@@ -12,8 +12,12 @@ interactions in the
 - **Entry MACs** — every entry's `IntegrityHash` is an HMAC-SHA256
   (`{keyId}:{hex}`) over the canonical content fields, keyed by
   `Integrity:HmacKey`. A database-level writer without the key cannot forge a
-  matching value. Bare 64-hex values are legacy unkeyed SHA-256 (soft-require
-  phase; counted, not failed — the hard-require flip is tracked in #490).
+  matching value. Bare 64-hex values are legacy unkeyed SHA-256 (counted, not
+  failed, so a partially-rekeyed corpus stays verifiable). The key itself is
+  **hard-required outside Development** since #490 (ADR-020 Amendment 1): an
+  instance with no key configured fails at boot unless the
+  `Integrity:RequireKey=false` rollback overlay is set — see
+  [Rollback overlay](#rollback-overlay-integrityrequirekeyfalse) below.
 - **Audit checkpoint chain** — `verify` seals MAC'd, chained RFC 6962 Merkle
   checkpoints over audit-log ranges. Deleting or editing an audit row inside
   a sealed range, or rewriting a checkpoint, breaks the root, the MAC, or the
@@ -32,7 +36,7 @@ The key is base64 of at least 32 random bytes. Never commit it; never log it.
 | A2 native (macOS/Linux/WSL) | `${CONFIG_DIR}/integrity-hmac.key`, mode 600 | `scripts/install.sh` generates it and (new installs) writes `Integrity__HmacKeyFile=` into the `secrets.env` stub. Existing installs: add the line yourself — see below. |
 | A2 Windows | `%ProgramData%\ExpertiseApi\config\integrity-hmac.key` | `scripts/install.ps1` generates it and sets `Integrity__HmacKeyFile` in the service's registry `Environment` value. |
 | Helm / k8s | `Integrity__HmacKey` entry in the secret named by `auth.secretName` | Operator adds the entry; the API Deployment and the verify CronJob both `envFrom` that secret. |
-| Docker Compose (local dev) | `INTEGRITY__HMACKEY` in `deploy/local/.env` | Optional — empty keeps soft-require legacy mode. |
+| Docker Compose (local dev) | `INTEGRITY__HMACKEY` in `deploy/local/.env` | Required — the container runs as Production, so an empty key fails at boot (#490). `INTEGRITY__REQUIREKEY=false` is the temporary rollback overlay. |
 
 Generate a key manually when needed:
 
@@ -44,6 +48,12 @@ openssl rand -base64 32
 
 Order matters: the service must hold the key **before** the rekey, and the
 rekey must complete **before** you trust `verify` output.
+
+Since the #490 hard-require flip, an unkeyed instance fails at boot — and at
+the installer's `migrate` step — the moment it runs the flip version outside
+Development. Provision the key (step 1) **as part of the same upgrade**, or
+set the `Integrity:RequireKey=false` overlay first and remove it after step 3
+if you need to stage the key separately.
 
 1. **Provision the key** per the table above. On A2, re-running
    `scripts/install.sh` generates the key file if absent and prints the exact
@@ -73,6 +83,26 @@ rekey must complete **before** you trust `verify` output.
 
 5. **Confirm the schedule exists** (next section) and that
    `expertise_integrity_last_verify_age_seconds` starts reporting.
+
+## Rollback overlay: `Integrity:RequireKey=false`
+
+The hard-require guard (#490, ADR-020 Amendment 1) has one sanctioned escape
+hatch, mirroring `Idempotency:RequireKey` (ADR-010 Amendment 1): setting
+`Integrity:RequireKey=false` in an environment overlay
+(`Integrity__RequireKey=false` as an env var; `INTEGRITY__REQUIREKEY=false` in
+the Compose `.env`) lets the instance boot unkeyed.
+
+- **It is a rollback ramp, not an operating mode.** Unkeyed hashes are
+  forgeable by any database-level writer — the exact threat ADR-020 closes.
+  While the overlay is active, `expertise_integrity_unkeyed` reads 1 and the
+  startup log carries a `Running UNKEYED` warning; alert on either.
+- **When to use it:** an upgrade to the flip version failed at boot because
+  the key was not staged, and service availability matters more than the
+  hours it takes to provision the key properly.
+- **Exit path:** provision the key per the table above, run
+  `rehash --force`, run `verify`, then remove the overlay and restart. Do not
+  leave the overlay in place after the key is wired — it silently downgrades
+  the next misconfiguration from a loud boot failure to forgeable hashes.
 
 ## Scheduling `verify`
 
@@ -133,9 +163,11 @@ Wire at least one of:
     (e.g. > 2× the schedule interval).
   - `expertise_integrity_checkpoint_age_seconds` — the sealed-chain
     staleness bound.
-  - `expertise_integrity_unkeyed` — 1 means this instance has no key
-    configured and is writing legacy unkeyed hashes; must be 0 fleet-wide
-    before the #490 hard-require flip.
+  - `expertise_integrity_unkeyed` — 1 means this instance is writing legacy
+    unkeyed hashes. Since the #490 hard-require flip this is only reachable in
+    Development or under the `Integrity:RequireKey=false` rollback overlay —
+    a non-zero value in production means the overlay is active and should be
+    alerted on until the key is wired and the overlay removed.
 
 Example Prometheus rules:
 

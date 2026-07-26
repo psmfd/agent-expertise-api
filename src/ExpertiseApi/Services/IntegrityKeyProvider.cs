@@ -14,8 +14,9 @@ internal interface IIntegrityKeyProvider
 {
     /// <summary>
     /// The key used for all new IntegrityHash / audit BeforeHash/AfterHash computations,
-    /// or <c>null</c> when the instance runs unkeyed (legacy SHA-256; soft-require phase
-    /// per ADR-020, hard-require flip tracked in #490).
+    /// or <c>null</c> when the instance runs unkeyed (legacy SHA-256) — permitted only in
+    /// Development or under the <c>Integrity:RequireKey=false</c> rollback overlay
+    /// (#490 hard-require flip, ADR-020 Amendment 1).
     /// </summary>
     IntegrityKey? ActiveKey { get; }
 
@@ -32,10 +33,14 @@ internal interface IIntegrityKeyProvider
 /// a key that is present in config but unusable (missing file, invalid base64, too
 /// short, malformed key id) aborts boot — the ADR-015 posture — because silently
 /// falling back to the unkeyed hash would quietly write forgeable values. An entirely
-/// unconfigured active key is the sanctioned soft-require state: legacy unkeyed hashing
-/// plus the <c>expertise_integrity_unkeyed</c> gauge and a startup warning.
-/// <c>Integrity:RetiredKeys</c> (<c>{id: base64}</c>) keeps rotated-out keys resolvable
-/// so <c>verify</c> can check values sealed under a previous key.
+/// unconfigured active key is hard-required outside Development (#490, ADR-020
+/// Amendment 1, mirroring the <c>Auth:Mode</c> startup guard): boot aborts unless
+/// <c>Integrity:RequireKey=false</c> is set as an explicit rollback overlay (the
+/// <c>Idempotency:RequireKey</c> idiom). Development, or the overlay, keeps the legacy
+/// unkeyed state: SHA-256 hashing plus the <c>expertise_integrity_unkeyed</c> gauge and
+/// a startup warning. <c>Integrity:RetiredKeys</c> (<c>{id: base64}</c>) keeps
+/// rotated-out keys resolvable so <c>verify</c> can check values sealed under a
+/// previous key.
 /// </summary>
 internal sealed class IntegrityKeyProvider : IIntegrityKeyProvider
 {
@@ -69,7 +74,7 @@ internal sealed class IntegrityKeyProvider : IIntegrityKeyProvider
         return _retiredKeys.TryGetValue(keyId, out var key) ? key : null;
     }
 
-    public static IntegrityKeyProvider Load(IConfiguration configuration)
+    public static IntegrityKeyProvider Load(IConfiguration configuration, bool isDevelopment)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
@@ -101,6 +106,20 @@ internal sealed class IntegrityKeyProvider : IIntegrityKeyProvider
         }
         else
         {
+            // Build-time OpenAPI emission (dotnet-getdocument, Part D C8) boots the
+            // host against placeholder config with no key — same bypass as the auth
+            // zero-issuers guard; nothing is deployed in that context.
+            if (!isDevelopment
+                && configuration.GetValue("Integrity:RequireKey", true)
+                && !Auth.AuthExtensions.IsBuildTimeOpenApiContext())
+            {
+                throw new InvalidOperationException(
+                    "Integrity:HmacKey(File) is required outside Development (#490, ADR-020 Amendment 1) "
+                    + "— unkeyed IntegrityHash values are forgeable by any database-level writer. Configure "
+                    + "a key per docs/operations/integrity-verification-runbook.md, or set "
+                    + "Integrity:RequireKey=false as a temporary rollback overlay.");
+            }
+
             UnkeyedGauge.Set(1);
             return retired.Count == 0
                 ? Unkeyed

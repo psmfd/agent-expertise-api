@@ -589,7 +589,9 @@ automatically:
   `Integrity__HmacKeyFile` wired into the `secrets.env` stub; existing
   installs keep their `secrets.env` untouched and the installer prints the
   exact line to add plus the one-time `rehash --force` rekey and first
-  `verify` steps.
+  `verify` steps. The key is hard-required outside Development (#490,
+  ADR-020 Amendment 1) — an unkeyed instance fails at boot unless the
+  `Integrity:RequireKey=false` rollback overlay is set.
 - A daily `verify` schedule is installed next to the main service — a
   systemd timer (`expertise-api-verify.timer`, `Persistent=true`) on Linux,
   a launchd calendar job (`com.thesemicolon.expertise-api.verify`, 03:17)

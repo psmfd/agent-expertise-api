@@ -185,7 +185,8 @@ public class CliMaintenanceCommandTests : IAsyncLifetime
             {
                 ["Integrity:HmacKey"] = Convert.ToBase64String(Enumerable.Repeat((byte)0x42, 32).ToArray()),
             })
-            .Build());
+            .Build(),
+            isDevelopment: true);
 
         // Without --force, populated rows are untouched even when a key is configured.
         await using (var app = BuildApp(keyed))
