@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ── Build stage ────────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 
 # Copy SDK pin + tool manifest first so the restore + tool-restore layers cache
@@ -51,7 +51,7 @@ RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages \
 # explicitly via `ENV ASPNETCORE_HTTP_PORTS=8080` — otherwise Kestrel falls back
 # to `http://localhost:5000` and the container becomes unreachable from the
 # k8s Service. See docs/security/integration-threat-model.md Part D C1.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS runtime
 WORKDIR /app
 
 # Match the upstream image's app user. ARG default is the fallback if a
